@@ -1,0 +1,37 @@
+{
+  "name": "@humanify/bot-bun",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "bun run typecheck",
+    "dev": "bun --watch src/index.ts",
+    "lint": "bun run typecheck",
+    "start": "bun run src/index.ts",
+    "typecheck": "tsc --project tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@humanify/contracts": "workspace:*",
+    "discord.js": "^14.26.3"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.13",
+    "typescript": "^6.0.3"
+  },
+  "humanify": {
+    "governingDocs": [
+      "AGENTS.md",
+      "Implementation Plan.txt",
+      "docs\\reference-baseline.md",
+      "docs\\contracts.md",
+      "docs\\observability-security.md",
+      "docs\\workspaces.md"
+    ],
+    "upstreamDocs": [
+      "https://discord.js.org/docs/packages/discord.js/main",
+      "https://discord.com/developers/docs/intro",
+      "https://bun.sh/docs/runtime/env"
+    ],
+    "notes": "The bot scaffold stops at client bootstrap and shared-contract awareness; moderation behavior stays behind future policy and executor work."
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "name": "@humanify/contracts",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "bun run typecheck",
+    "lint": "bun run typecheck",
+    "typecheck": "tsc --project tsconfig.json --noEmit"
+  },
+  "humanify": {
+    "governingDocs": [
+      "AGENTS.md",
+      "Implementation Plan.txt",
+      "docs\\reference-baseline.md",
+      "docs\\contracts.md",
+      "docs\\workspaces.md"
+    ],
+    "upstreamDocs": [
+      "https://json-schema.org/draft/2020-12",
+      "https://www.rfc-editor.org/rfc/rfc8259.txt",
+      "https://semver.org/spec/v2.0.0.html"
+    ],
+    "notes": "The package re-exports the canonical schema from docs/contracts so Bun workspaces stay aligned with the Rust-owned contract source of truth."
+  }
+}

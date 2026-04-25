@@ -1,0 +1,32 @@
+{
+  "name": "@humanify/ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.tsx"
+  },
+  "scripts": {
+    "build": "bun run typecheck",
+    "lint": "bun run typecheck",
+    "typecheck": "tsc --project tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@heroui/react": "^3.0.3",
+    "react": "^19.2.5"
+  },
+  "humanify": {
+    "governingDocs": [
+      "AGENTS.md",
+      "Implementation Plan.txt",
+      "docs\\reference-baseline.md",
+      "docs\\workspaces.md"
+    ],
+    "upstreamDocs": [
+      "https://www.heroui.com/docs/react/getting-started",
+      "https://www.heroui.com/docs/react/getting-started/theming",
+      "https://www.heroui.com/docs/react/getting-started/styling"
+    ],
+    "notes": "Shared UI components stay deliberately small so dashboard and verifier shells share HeroUI composition without inventing a second design system."
+  }
+}

@@ -1,0 +1,24 @@
+{
+  // Governing docs:
+  // - AGENTS.md
+  // - Implementation Plan.txt
+  // - docs\reference-baseline.md
+  // - docs\workspaces.md
+  // Upstream docs:
+  // - https://www.typescriptlang.org/tsconfig
+  // - https://bun.sh/docs/install/workspaces
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "Preserve",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noEmit": true,
+    "allowJs": false,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "allowImportingTsExtensions": true
+  },
+  "include": [
+    "tooling/**/*.ts"
+  ]
+}

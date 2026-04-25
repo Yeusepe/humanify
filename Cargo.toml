@@ -1,0 +1,82 @@
+# Governing docs:
+# - AGENTS.md
+# - Implementation Plan.txt
+# - docs\reference-baseline.md
+# - docs\workspaces.md
+# Upstream docs:
+# - https://doc.rust-lang.org/cargo/reference/workspaces.html
+# - https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[workspace]
+resolver = "3"
+members = [
+  "crates/humanify-core",
+  "crates/humanify-evidence",
+  "crates/humanify-inference",
+  "crates/humanify-learning",
+  "crates/humanify-policy",
+  "crates/humanify-proto",
+  "crates/humanify-risk",
+  "services/evidence-rs",
+  "services/inference-rs",
+  "services/learning-rs",
+  "services/trust-rs",
+]
+default-members = [
+  "crates/humanify-core",
+  "crates/humanify-evidence",
+  "crates/humanify-inference",
+  "crates/humanify-learning",
+  "crates/humanify-policy",
+  "crates/humanify-proto",
+  "crates/humanify-risk",
+  "services/evidence-rs",
+  "services/inference-rs",
+  "services/learning-rs",
+  "services/trust-rs",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/Yeusepe/humanify"
+publish = false
+
+[workspace.dependencies]
+axum = { version = "0.8.1", features = ["json", "macros"] }
+blake3 = "1.5.5"
+fast_image_resize = "6.0.0"
+image = { version = "0.25.5", default-features = true, features = ["jpeg", "png", "webp"] }
+serde = { version = "1.0.217", features = ["derive"] }
+serde_json = "1.0.138"
+tokio = { version = "1.43.0", features = ["full"] }
+tower = { version = "0.5.2", features = ["util"] }
+tower-http = { version = "0.6.2", features = ["trace"] }
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter", "fmt", "json"] }
+xxhash-rust = { version = "0.8.15", features = ["xxh3"] }
+humanify-core = { path = "crates/humanify-core" }
+humanify-evidence = { path = "crates/humanify-evidence" }
+humanify-inference = { path = "crates/humanify-inference" }
+humanify-learning = { path = "crates/humanify-learning" }
+humanify-policy = { path = "crates/humanify-policy" }
+humanify-proto = { path = "crates/humanify-proto" }
+humanify-risk = { path = "crates/humanify-risk" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.metadata.humanify]
+governing_docs = [
+  "AGENTS.md",
+  "Implementation Plan.txt",
+  "docs\\reference-baseline.md",
+  "docs\\workspaces.md",
+]
+upstream_docs = [
+  "https://doc.rust-lang.org/cargo/reference/workspaces.html",
+  "https://doc.rust-lang.org/cargo/reference/manifest.html",
+]
+notes = "Rust workspace members, shared dependency versions, and lints are now owned at the root manifest."

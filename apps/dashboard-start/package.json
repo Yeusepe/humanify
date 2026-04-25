@@ -1,0 +1,53 @@
+{
+  "name": "@humanify/dashboard-start",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "sideEffects": false,
+  "scripts": {
+    "build": "vite build && tsc --project tsconfig.json --noEmit",
+    "dev": "vite dev --port 3000",
+    "lint": "bun run typecheck",
+    "preview": "vite preview",
+    "typecheck": "tsc --project tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@heroui/react": "^3.0.3",
+    "@heroui/styles": "^3.0.3",
+    "@humanify/contracts": "workspace:*",
+    "@humanify/ui": "workspace:*",
+    "@tanstack/react-router": "^1.168.24",
+    "@tanstack/react-start": "^1.167.49",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
+    "tailwind-variants": "^3.2.2"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.2.4",
+    "@types/node": "^25.6.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "tailwindcss": "^4.2.4",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.10"
+  },
+  "humanify": {
+    "governingDocs": [
+      "AGENTS.md",
+      "Implementation Plan.txt",
+      "docs\\reference-baseline.md",
+      "docs\\contracts.md",
+      "docs\\data-platform.md",
+      "docs\\observability-security.md",
+      "docs\\workspaces.md"
+    ],
+    "upstreamDocs": [
+      "https://tanstack.com/start/latest/docs/framework/react/overview",
+      "https://tanstack.dev/start/latest/docs/framework/react/build-from-scratch",
+      "https://tanstack.dev/start/latest/docs/framework/react/guide/tailwind-integration",
+      "https://www.heroui.com/docs/react/getting-started"
+    ],
+    "notes": "The dashboard shell stays intentionally static until TanStack DB collections and Electric shapes are designed against Postgres-backed read models."
+  }
+}

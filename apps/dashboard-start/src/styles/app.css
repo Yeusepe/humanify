@@ -1,0 +1,21 @@
+/*
+ Purpose: Loads Tailwind CSS v4 and HeroUI styles for the dashboard shell and applies a light default theme.
+ Governing docs:
+ - AGENTS.md
+ - Implementation Plan.txt
+ - docs\reference-baseline.md
+ - docs\workspaces.md
+ External references:
+ - https://tanstack.dev/start/latest/docs/framework/react/guide/tailwind-integration
+ - https://www.heroui.com/docs/react/getting-started
+ - https://www.heroui.com/docs/react/getting-started/theming
+ Tests:
+ - apps/dashboard-start package build
+*/
+
+@import "tailwindcss" source("../");
+@import "@heroui/styles";
+
+:root {
+  --accent: oklch(0.62 0.19 253.83);
+}

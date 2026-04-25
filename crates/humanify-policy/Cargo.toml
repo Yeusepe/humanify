@@ -1,0 +1,15 @@
+[package]
+name = "humanify-policy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+humanify-core.workspace = true
+humanify-proto.workspace = true
+serde.workspace = true

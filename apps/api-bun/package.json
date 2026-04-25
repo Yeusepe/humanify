@@ -1,0 +1,37 @@
+{
+  "name": "@humanify/api-bun",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "bun run typecheck",
+    "dev": "bun --watch src/index.ts",
+    "lint": "bun run typecheck",
+    "start": "bun run src/index.ts",
+    "typecheck": "tsc --project tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@humanify/contracts": "workspace:*",
+    "elysia": "^1.4.28"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.13",
+    "typescript": "^6.0.3"
+  },
+  "humanify": {
+    "governingDocs": [
+      "AGENTS.md",
+      "Implementation Plan.txt",
+      "docs\\reference-baseline.md",
+      "docs\\contracts.md",
+      "docs\\observability-security.md",
+      "docs\\workspaces.md"
+    ],
+    "upstreamDocs": [
+      "https://elysiajs.com/at-glance",
+      "https://bun.sh/docs/runtime/env",
+      "https://bun.sh/docs/typescript"
+    ],
+    "notes": "The API skeleton deliberately limits itself to health and contract summary routes until policy, auth, and storage surfaces are designed."
+  }
+}

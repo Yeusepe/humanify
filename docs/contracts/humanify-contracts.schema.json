@@ -1,0 +1,579 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://humanify.dev/schemas/contracts/humanify-contracts.schema.json",
+  "title": "Humanify shared contracts",
+  "description": "Canonical Bun-to-Rust wire contracts and shared domain objects for the initial Humanify Bun + Rust architecture.",
+  "type": "object",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/RiskDecision"
+    },
+    {
+      "$ref": "#/$defs/CaseOutcome"
+    },
+    {
+      "$ref": "#/$defs/LearnedSignal"
+    },
+    {
+      "$ref": "#/$defs/PolicyInput"
+    },
+    {
+      "$ref": "#/$defs/InferenceRequest"
+    },
+    {
+      "$ref": "#/$defs/InferenceResponse"
+    }
+  ],
+  "$defs": {
+    "SemVer": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\\\d*)\\.(0|[1-9]\\\\d*)\\.(0|[1-9]\\\\d*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+    },
+    "Timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "Action": {
+      "type": "string",
+      "enum": [
+        "none",
+        "watch",
+        "verify",
+        "quarantine",
+        "timeout",
+        "kick",
+        "ban"
+      ]
+    },
+    "ReasonCode": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:_[a-z0-9]+)*$"
+    },
+    "EvidenceRef": {
+      "type": "string",
+      "minLength": 1
+    },
+    "ReasonCodeList": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ReasonCode"
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "EvidenceRefList": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/EvidenceRef"
+      },
+      "uniqueItems": true,
+      "default": []
+    },
+    "RiskDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "userId",
+        "guildId",
+        "score",
+        "confidence",
+        "reasonCodes",
+        "recommendedAction",
+        "evidenceRefs"
+      ],
+      "properties": {
+        "userId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "guildId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "score": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "reasonCodes": {
+          "$ref": "#/$defs/ReasonCodeList"
+        },
+        "recommendedAction": {
+          "$ref": "#/$defs/Action"
+        },
+        "evidenceRefs": {
+          "$ref": "#/$defs/EvidenceRefList"
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/Timestamp"
+        }
+      }
+    },
+    "CaseOutcomeType": {
+      "type": "string",
+      "enum": [
+        "confirmed_scam",
+        "confirmed_bot",
+        "confirmed_hacked_account",
+        "false_positive",
+        "dismissed",
+        "overturned"
+      ]
+    },
+    "CaseOutcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "caseId",
+        "guildId",
+        "subjectUserIdHash",
+        "outcome",
+        "confidence",
+        "decidedBy",
+        "decidedAt",
+        "reasonCodes",
+        "evidenceRefs"
+      ],
+      "properties": {
+        "caseId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "guildId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "subjectUserIdHash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "outcome": {
+          "$ref": "#/$defs/CaseOutcomeType"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "decidedBy": {
+          "type": "string",
+          "minLength": 1
+        },
+        "decidedAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "reasonCodes": {
+          "$ref": "#/$defs/ReasonCodeList"
+        },
+        "evidenceRefs": {
+          "$ref": "#/$defs/EvidenceRefList"
+        }
+      }
+    },
+    "LearnedSignalType": {
+      "type": "string",
+      "enum": [
+        "text_similarity",
+        "domain_reputation",
+        "invite_reputation",
+        "image_hash",
+        "behavior_pattern",
+        "reporter_reputation",
+        "server_trust"
+      ]
+    },
+    "LearnedSignal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "valueHash",
+        "weight",
+        "confidence",
+        "sourceCaseIds",
+        "falsePositiveCount",
+        "truePositiveCount",
+        "lastSeenAt"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "$ref": "#/$defs/LearnedSignalType"
+        },
+        "valueHash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "weight": {
+          "type": "number"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "sourceCaseIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "falsePositiveCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "truePositiveCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lastSeenAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/Timestamp"
+        }
+      }
+    },
+    "ScoringPolicyInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "serverSensitivity",
+        "preferredContainmentAction",
+        "suspiciousRoleIds",
+        "trustedRoleIds",
+        "enabledSignalFamilies",
+        "allowCrossServerSignals"
+      ],
+      "properties": {
+        "serverSensitivity": {
+          "type": "string",
+          "enum": [
+            "low",
+            "balanced",
+            "high"
+          ]
+        },
+        "preferredContainmentAction": {
+          "type": "string",
+          "enum": [
+            "verify",
+            "quarantine"
+          ]
+        },
+        "suspiciousRoleIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "trustedRoleIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "enabledSignalFamilies": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "uniqueItems": true
+        },
+        "allowCrossServerSignals": {
+          "type": "boolean"
+        }
+      }
+    },
+    "InferenceEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "occurredAt"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "join",
+            "message",
+            "report",
+            "verification_update",
+            "manual_review"
+          ]
+        },
+        "occurredAt": {
+          "$ref": "#/$defs/Timestamp"
+        }
+      }
+    },
+    "InferenceFeatures": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "accountAgeHours",
+        "joinedAgeMinutes",
+        "hasAvatar",
+        "hasBanner",
+        "normalizedDomains",
+        "mentionCountLastMinute",
+        "duplicateMessageCount"
+      ],
+      "properties": {
+        "accountAgeHours": {
+          "type": "number",
+          "minimum": 0
+        },
+        "joinedAgeMinutes": {
+          "type": "number",
+          "minimum": 0
+        },
+        "hasAvatar": {
+          "type": "boolean"
+        },
+        "hasBanner": {
+          "type": "boolean"
+        },
+        "firstMessageDelaySeconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "messageTextHash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "normalizedDomains": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "inviteCodeHash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mentionCountLastMinute": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "duplicateMessageCount": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "InferenceRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "requestId",
+        "guildId",
+        "subjectUserId",
+        "event",
+        "features",
+        "evidenceRefs",
+        "policyInput"
+      ],
+      "properties": {
+        "contractVersion": {
+          "$ref": "#/$defs/SemVer"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "guildId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "subjectUserId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event": {
+          "$ref": "#/$defs/InferenceEvent"
+        },
+        "features": {
+          "$ref": "#/$defs/InferenceFeatures"
+        },
+        "evidenceRefs": {
+          "$ref": "#/$defs/EvidenceRefList"
+        },
+        "policyInput": {
+          "$ref": "#/$defs/ScoringPolicyInput"
+        }
+      }
+    },
+    "InferenceResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "requestId",
+        "modelVersion",
+        "decision",
+        "learnedSignals",
+        "warnings"
+      ],
+      "properties": {
+        "contractVersion": {
+          "$ref": "#/$defs/SemVer"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "modelVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "decision": {
+          "$ref": "#/$defs/RiskDecision"
+        },
+        "learnedSignals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LearnedSignal"
+          },
+          "default": []
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      }
+    },
+    "PolicyInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "riskDecision",
+        "serverPolicy",
+        "capabilityContext",
+        "caseContext"
+      ],
+      "properties": {
+        "riskDecision": {
+          "$ref": "#/$defs/RiskDecision"
+        },
+        "serverPolicy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "maxAutomaticAction",
+            "allowAutoBan",
+            "verificationRequiredAtOrAbove",
+            "quarantineAtOrAbove"
+          ],
+          "properties": {
+            "maxAutomaticAction": {
+              "$ref": "#/$defs/Action"
+            },
+            "allowAutoBan": {
+              "type": "boolean"
+            },
+            "verificationRequiredAtOrAbove": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10
+            },
+            "quarantineAtOrAbove": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10
+            },
+            "timeoutAtOrAbove": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10
+            },
+            "kickAtOrAbove": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10
+            },
+            "banAtOrAbove": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10
+            }
+          }
+        },
+        "capabilityContext": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "canManageRoles",
+            "canTimeout",
+            "canKick",
+            "canBan"
+          ],
+          "properties": {
+            "canManageRoles": {
+              "type": "boolean"
+            },
+            "canTimeout": {
+              "type": "boolean"
+            },
+            "canKick": {
+              "type": "boolean"
+            },
+            "canBan": {
+              "type": "boolean"
+            }
+          }
+        },
+        "caseContext": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "existingOpenCase",
+            "verificationStatus",
+            "appealOpen"
+          ],
+          "properties": {
+            "existingOpenCase": {
+              "type": "boolean"
+            },
+            "verificationStatus": {
+              "type": "string",
+              "enum": [
+                "unknown",
+                "pending",
+                "passed",
+                "failed"
+              ]
+            },
+            "appealOpen": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    }
+  }
+}

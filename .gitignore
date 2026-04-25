@@ -1,0 +1,19 @@
+# Governing docs:
+# - AGENTS.md
+# - Implementation Plan.txt
+# - docs\reference-baseline.md
+# - docs\workspaces.md
+# Upstream docs:
+# - https://bun.sh/docs/install/workspaces
+# - https://doc.rust-lang.org/cargo/reference/workspaces.html
+
+node_modules/
+target/
+dist/
+coverage/
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
+
