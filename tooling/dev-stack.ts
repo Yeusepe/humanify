@@ -1,5 +1,5 @@
 /**
- * Purpose: Starts the full local Humanify Bun + Rust development stack from the repo root.
+ * Purpose: Starts the full local Humanify Docker + Bun + Rust development stack from the repo root.
  * Governing docs:
  * - AGENTS.md
  * - Implementation Plan.txt
@@ -8,25 +8,36 @@
  * - docs\contracts.md
  * - docs\data-platform.md
  * - docs\observability-security.md
+ * - docs\local-development.md
  * External references:
  * - https://bun.sh/docs/api/spawn
  * - https://bun.sh/docs/runtime/env
+ * - https://docs.docker.com/reference/cli/docker/compose/up/
  * - https://doc.rust-lang.org/cargo/commands/cargo-run.html
  * Tests:
  * - tooling/dev-stack.test.ts
  */
 
+import { fetch as bunFetch } from "bun";
+
 type DevProcessSpec = {
   name: string;
   command: string[];
+  readinessUrl?: string;
 };
 
 type DevStackPlan = {
   notices: string[];
+  composeFile: string;
+  composeProjectName: string;
   processes: DevProcessSpec[];
 };
 
 const rootDirectory = process.cwd();
+const composeProjectName = "humanify-local";
+const composeFile = "docker-compose.local.yml";
+const readinessTimeoutMs = 120_000;
+const readinessPollIntervalMs = 1_000;
 
 export function createDevStackPlan(env: NodeJS.ProcessEnv = process.env): DevStackPlan {
   const notices: string[] = [];
@@ -34,49 +45,105 @@ export function createDevStackPlan(env: NodeJS.ProcessEnv = process.env): DevSta
     {
       name: "@humanify/api-bun",
       command: ["bun", "run", "--filter", "@humanify/api-bun", "dev"],
+      readinessUrl: "http://127.0.0.1:3211/healthz",
     },
     {
       name: "@humanify/dashboard-start",
       command: ["bun", "run", "--filter", "@humanify/dashboard-start", "dev"],
+      readinessUrl: "http://127.0.0.1:3210/",
     },
     {
       name: "@humanify/verifier-start",
       command: ["bun", "run", "--filter", "@humanify/verifier-start", "dev"],
+      readinessUrl: "http://127.0.0.1:3212/",
     },
     {
       name: "inference-rs",
       command: ["cargo", "run", "-p", "inference-rs"],
+      readinessUrl: "http://127.0.0.1:4101/healthz",
     },
     {
       name: "learning-rs",
       command: ["cargo", "run", "-p", "learning-rs"],
+      readinessUrl: "http://127.0.0.1:4102/healthz",
     },
     {
       name: "evidence-rs",
       command: ["cargo", "run", "-p", "evidence-rs"],
+      readinessUrl: "http://127.0.0.1:4103/healthz",
     },
     {
       name: "trust-rs",
       command: ["cargo", "run", "-p", "trust-rs"],
+      readinessUrl: "http://127.0.0.1:4104/healthz",
     },
   ];
 
-  if (env.DISCORD_BOT_TOKEN?.trim()) {
+  if (env.HUMANIFY_SKIP_BOT === "1") {
+    notices.push("Skipping @humanify/bot-bun because HUMANIFY_SKIP_BOT=1.");
+  } else if (env.DISCORD_BOT_TOKEN?.trim()) {
     processes.unshift({
       name: "@humanify/bot-bun",
       command: ["bun", "run", "--filter", "@humanify/bot-bun", "dev"],
     });
   } else {
-    notices.push("Skipping @humanify/bot-bun because DISCORD_BOT_TOKEN is not set.");
+    throw new Error(
+      "DISCORD_BOT_TOKEN is required for the full local stack. Set HUMANIFY_SKIP_BOT=1 only if you intentionally want to run without the Discord bot.",
+    );
   }
 
-  return { notices, processes };
+  return { notices, composeFile, composeProjectName, processes };
 }
 
 function readEnvironment(): Record<string, string> {
   return Object.fromEntries(
     Object.entries(process.env).flatMap(([key, value]) => (typeof value === "string" ? [[key, value]] : [])),
   );
+}
+
+function runComposeCommand(
+  plan: DevStackPlan,
+  environment: Record<string, string>,
+  args: string[],
+  allowFailure = false,
+) {
+  const command = ["docker", "compose", "--project-name", plan.composeProjectName, "-f", plan.composeFile, ...args];
+  const result = Bun.spawnSync(command, {
+    cwd: rootDirectory,
+    env: environment,
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+
+  if (!allowFailure && result.exitCode !== 0) {
+    throw new Error(`Docker Compose command failed: ${command.join(" ")}`);
+  }
+}
+
+function sleep(milliseconds: number) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function waitForReadiness(name: string, url: string, timeoutMs = readinessTimeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    try {
+      const response = await bunFetch(url, {
+        signal: AbortSignal.timeout(2_000),
+      });
+
+      if (response.ok || response.status < 500) {
+        return;
+      }
+    } catch {
+      // Keep polling until timeout.
+    }
+
+    await sleep(readinessPollIntervalMs);
+  }
+
+  throw new Error(`Timed out waiting for ${name} readiness at ${url}.`);
 }
 
 async function pipeOutput(
@@ -123,6 +190,9 @@ async function pipeOutput(
 async function runDevStack() {
   const plan = createDevStackPlan();
   const environment = readEnvironment();
+  console.log("[dev-stack] Starting local infrastructure with Docker Compose.");
+  runComposeCommand(plan, environment, ["up", "-d", "--wait", "--remove-orphans"]);
+
   const children = plan.processes.map((processSpec) => {
     const subprocess = Bun.spawn(processSpec.command, {
       cwd: rootDirectory,
@@ -160,6 +230,13 @@ async function runDevStack() {
       ...children.map((child) => child.stderrTask),
     ]);
 
+    console.log("[dev-stack] Stopping local infrastructure.");
+    try {
+      runComposeCommand(plan, environment, ["down", "--remove-orphans"], true);
+    } catch {
+      // Best-effort cleanup only.
+    }
+
     process.exit(exitCode);
   };
 
@@ -172,22 +249,46 @@ async function runDevStack() {
   });
 
   console.log("[dev-stack] Starting the Humanify local development stack.");
-  console.log("[dev-stack] Dashboard: http://localhost:3000");
-  console.log("[dev-stack] Verifier:  http://localhost:3002");
-  console.log("[dev-stack] API:       http://localhost:3001");
+  console.log("[dev-stack] Dashboard: http://localhost:3210");
+  console.log("[dev-stack] Verifier:  http://localhost:3212");
+  console.log("[dev-stack] API:       http://localhost:3211");
   console.log("[dev-stack] Rust:      inference-rs=4101 learning-rs=4102 evidence-rs=4103 trust-rs=4104");
+  console.log("[dev-stack] Infra:     postgres=5432 redis=6379 electric=5133 minio=9000/9001 qdrant=6333/6334 grafana=4300");
 
   for (const notice of plan.notices) {
     console.warn(`[dev-stack] ${notice}`);
   }
 
-  const firstExit = await Promise.race(
+  const firstExitPromise = Promise.race(
     children.map(async (child) => ({
       name: child.spec.name,
       exitCode: await child.subprocess.exited,
     })),
   );
 
+  const readinessPromise = Promise.all(
+    children
+      .filter((child) => child.spec.readinessUrl)
+      .map((child) => waitForReadiness(child.spec.name, child.spec.readinessUrl!)),
+  );
+
+  const startupResult = await Promise.race([
+    readinessPromise.then(() => ({ kind: "ready" as const })),
+    firstExitPromise.then((result) => ({ kind: "exit" as const, result })),
+  ]);
+
+  if (startupResult.kind === "exit") {
+    const exitCode = startupResult.result.exitCode === 0 ? 1 : startupResult.result.exitCode;
+    await shutdown(
+      `${startupResult.result.name} exited with code ${startupResult.result.exitCode} before the full stack became ready. Stopping the remaining stack.`,
+      exitCode,
+    );
+    return;
+  }
+
+  console.log("[dev-stack] Full local stack is ready.");
+
+  const firstExit = await firstExitPromise;
   const exitCode = firstExit.exitCode === 0 ? 1 : firstExit.exitCode;
   await shutdown(`${firstExit.name} exited with code ${firstExit.exitCode}. Stopping the remaining stack.`, exitCode);
 }

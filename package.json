@@ -33,10 +33,11 @@
       "https://bun.sh/docs/api/spawn",
       "https://bun.sh/docs/test",
       "https://bun.sh/docs/typescript",
+      "https://docs.docker.com/reference/cli/docker/compose/up/",
       "https://doc.rust-lang.org/cargo/commands/cargo-run.html",
       "https://doc.rust-lang.org/cargo/reference/workspaces.html",
       "https://github.com/rust-lang/rustfmt/blob/master/Configurations.md"
     ],
-    "notes": "Root scripts validate the workspace skeleton, expose a single `bun run dev` stack command, delegate build/lint/typecheck work to Bun workspaces, and only run Cargo metadata when the Rust workspace is locally complete."
+    "notes": "Root scripts validate the workspace skeleton, expose a single `bun run dev` full-stack command, delegate build/lint/typecheck work to Bun workspaces, and only run Cargo metadata when the Rust workspace is locally complete."
   }
 }

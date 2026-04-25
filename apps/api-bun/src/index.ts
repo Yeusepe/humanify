@@ -17,7 +17,7 @@
 
 import { createApiApp } from "./app";
 
-export const defaultApiPort = 3001;
+export const defaultApiPort = 3211;
 
 export function resolveApiPort(portValue = process.env.HUMANIFY_API_PORT) {
   const parsed = Number(portValue ?? defaultApiPort);

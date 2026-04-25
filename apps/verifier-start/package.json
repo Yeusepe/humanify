@@ -6,7 +6,7 @@
   "sideEffects": false,
   "scripts": {
     "build": "vite build && tsc --project tsconfig.json --noEmit",
-    "dev": "vite dev --port 3002",
+    "dev": "vite dev --host 127.0.0.1 --strictPort --port 3212",
     "lint": "bun run typecheck",
     "preview": "vite preview",
     "typecheck": "tsc --project tsconfig.json --noEmit"

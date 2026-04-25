@@ -42,10 +42,14 @@ export const requiredDirectories = [
 
 export const requiredFiles = [
   ".gitignore",
+  ".env.example",
   "package.json",
   "tsconfig.json",
   "Cargo.toml",
   "rustfmt.toml",
+  "docker-compose.local.yml",
+  "docker\\postgres\\init\\001-humanify.sql",
+  "docs\\local-development.md",
   "docs\\workspaces.md",
   "apps\\api-bun\\package.json",
   "apps\\api-bun\\src\\app.ts",

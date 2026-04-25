@@ -55,7 +55,7 @@ Current boundaries:
 - `tooling\verify-workspaces.ts` remains the single source of truth for required Bun workspace directories, root manifests, and first-class Bun app/package entry files.
 - Root Bun scripts delegate workspace work with `bun run --filter '*' ...` so new apps/packages participate automatically once they define the standard scripts.
 - `tooling\run-cargo-metadata.ts` skips Cargo metadata cleanly when a shared environment contains partial Rust scaffolding outside the Bun workstream.
-- `tooling\dev-stack.ts` owns root local-stack orchestration so developers can start the full Bun + Rust stack with one command.
+- `tooling\dev-stack.ts` owns root local-stack orchestration so developers can start the full Docker + Bun + Rust stack with one command.
 
 ### Bun workspace ownership
 
@@ -70,16 +70,11 @@ Current boundaries:
 
 ### Local dev stack command
 
-- Run `bun run dev` from the repo root to start the current local stack:
-  - `apps\api-bun` on port `3001`
-  - `apps\dashboard-start` on port `3000`
-  - `apps\verifier-start` on port `3002`
-  - `services\inference-rs` on port `4101`
-  - `services\learning-rs` on port `4102`
-  - `services\evidence-rs` on port `4103`
-  - `services\trust-rs` on port `4104`
-- The Discord bot is also included when `DISCORD_BOT_TOKEN` is set; otherwise the stack launcher skips it with a warning so the rest of local development remains usable.
-- The root launcher is intentionally orchestration-only: it starts the existing workspace/service dev entrypoints without inventing a second deployment model.
+- Run `bun run dev` from the repo root to start the local infra stack plus the Bun and Rust processes.
+- The local infrastructure is defined in `docker-compose.local.yml`.
+- `apps\dashboard-start` and `apps\verifier-start` now use Vite `--strictPort` so the documented ports remain stable instead of silently moving.
+- The app-facing defaults are now `3210` (dashboard), `3211` (API), and `3212` (verifier) to reduce collisions with other common local tooling.
+- See `docs\local-development.md` for the authoritative port map, env requirements, infra services, and bot inclusion rules.
 
 ### Rust
 

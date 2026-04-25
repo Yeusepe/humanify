@@ -39,6 +39,7 @@ Upstream docs:
 - Planned use: primary JavaScript/TypeScript runtime, package manager, workspace tool, script runner, and test runner for product surfaces.
 - Official docs:
   - https://bun.sh/docs
+  - https://bun.sh/docs/api/spawn
   - https://bun.sh/docs/runtime/env
 
 ### TypeScript
@@ -104,8 +105,17 @@ Upstream docs:
 - Official docs:
   - https://electric-sql.com/docs/intro
   - https://electric-sql.com/primitives/postgres-sync
+  - https://electric-sql.com/docs/guides/installation
+  - https://electric-sql.com/docs/api/config
 
 ## Data, search, queue, and storage references
+
+### Docker Compose
+
+- Planned use: local development orchestration for infrastructure services that support the Bun + Rust stack.
+- Official docs:
+  - https://docs.docker.com/compose/
+  - https://docs.docker.com/reference/cli/docker/compose/up/
 
 ### PostgreSQL
 
@@ -118,6 +128,7 @@ Upstream docs:
 - Planned use: canonical vector storage inside Postgres for embeddings tied to cases, evidence, and learned outcomes.
 - Official docs:
   - https://github.com/pgvector/pgvector/blob/master/README.md
+  - https://hub.docker.com/r/pgvector/pgvector
 
 ### SQLite
 
@@ -157,6 +168,12 @@ Upstream docs:
   - https://developers.cloudflare.com/r2/
   - https://developers.cloudflare.com/r2/api/s3/presigned-urls/
 
+### MinIO
+
+- Planned use: local S3-compatible object-storage stand-in for development flows that target Cloudflare R2 in deployed environments.
+- Official docs:
+  - https://min.io/docs/minio/container/index.html
+
 ## Observability references
 
 ### OpenTelemetry
@@ -184,6 +201,7 @@ Upstream docs:
 - Planned use: dashboards and observability visualization for metrics, logs, and traces.
 - Official docs:
   - https://grafana.com/docs/
+  - https://grafana.com/docs/grafana/latest/setup-grafana/installation/docker/
 
 ## Rust intelligence references
 
