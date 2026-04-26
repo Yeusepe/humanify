@@ -120,7 +120,12 @@ Important variables:
 | `DISCORD_BOT_TOKEN` | required for the bot unless explicitly skipped |
 | `HUMANIFY_SKIP_BOT` | explicit opt-out for botless local work |
 | `HUMANIFY_ENABLED_VERIFICATION_PROVIDERS` | comma-separated provider ids enabled in the Bun API (`self,world_id,didit` by default) |
+| `HUMANIFY_DIDIT_API_KEY` | Didit server API key used by `apps\api-bun` to create, inspect, and purge capture sessions |
+| `HUMANIFY_DIDIT_WEBHOOK_SECRET` | shared secret used to verify `x-signature-v2` on Didit callbacks |
+| `HUMANIFY_DIDIT_WORKFLOW_ID` | default Didit workflow UUID used for first-time capture |
+| `HUMANIFY_DIDIT_API_BASE_URL` | optional override for the Didit API origin (defaults to `https://verification.didit.me`) |
 | `HUMANIFY_API_PORT` | Bun API port |
+| `HUMANIFY_VERIFIER_BASE_URL` | absolute verifier shell base URL used when Bun builds Didit callback and launch URLs |
 | `HUMANIFY_DATABASE_URL` | optional full Postgres connection string for Bun-side migration/bootstrap tooling |
 | `HUMANIFY_POSTGRES_HOST` | host used by host-run Bun tooling when `HUMANIFY_DATABASE_URL` is unset |
 | `HUMANIFY_POSTGRES_PORT` | host Postgres port used by Docker publish + host-run Bun tooling |

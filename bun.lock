@@ -73,6 +73,7 @@
       "name": "@humanify/verifier-start",
       "version": "0.1.0",
       "dependencies": {
+        "@didit-protocol/sdk-web": "^0.1.9",
         "@heroui/react": "^3.0.3",
         "@heroui/styles": "^3.0.3",
         "@humanify/contracts": "workspace:*",
@@ -208,6 +209,8 @@
     "@babel/types": ["@babel/types@7.29.0", "", { "dependencies": { "@babel/helper-string-parser": "^7.27.1", "@babel/helper-validator-identifier": "^7.28.5" } }, "sha512-LwdZHpScM4Qz8Xw2iKSzS+cfglZzJGvofQICy7W7v4caru4EaAmyUuO6BGrbyQ2mYV11W0U8j5mBhd14dd3B0A=="],
 
     "@borewit/text-codec": ["@borewit/text-codec@0.2.2", "", {}, "sha512-DDaRehssg1aNrH4+2hnj1B7vnUGEjU6OIlyRdkMd0aUdIUvKXrJfXsy8LVtXAy7DRvYVluWbMspsRhz2lcW0mQ=="],
+
+    "@didit-protocol/sdk-web": ["@didit-protocol/sdk-web@0.1.9", "", {}, "sha512-lvC9FwSGkfiPtlMI90+Epuq7uD3yuCs87Z+APFuHI6PEdJDrXAbAtvWsGpJG3O+XdhCKkBK/MnAdmXyKhPnXQQ=="],
 
     "@discordjs/builders": ["@discordjs/builders@1.14.1", "", { "dependencies": { "@discordjs/formatters": "^0.6.2", "@discordjs/util": "^1.2.0", "@sapphire/shapeshift": "^4.0.0", "discord-api-types": "^0.38.40", "fast-deep-equal": "^3.1.3", "ts-mixer": "^6.0.4", "tslib": "^2.6.3" } }, "sha512-gSKkhXLqs96TCzk66VZuHHl8z2bQMJFGwrXC0f33ngK+FLNau4hU1PYny3DNJfNdSH+gVMzE85/d5FQ2BpcNwQ=="],
 

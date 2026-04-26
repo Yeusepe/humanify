@@ -1,5 +1,5 @@
 /**
- * Purpose: Defines the Bun-owned Humanify claim catalog and the default reusable Humanify ID bundle.
+ * Purpose: Defines the Bun-owned verification claim catalog and reusable proof bundles that stay generic across capture providers, reusable-proof backends, and Humanify policy consumers.
  * Governing docs:
  * - AGENTS.md
  * - Implementation Plan.txt
@@ -13,13 +13,13 @@
  * - packages/verification-providers/src/index.test.ts
  */
 
-export type HumanifyClaimDefinition = {
+export type VerificationClaimDefinition = {
   id: string;
   summary: string;
   title: string;
 };
 
-export type HumanifyIdClaimBundle = {
+export type VerificationClaimBundle = {
   bestFor: string;
   bundleId: string;
   claims: readonly HumanifyClaimKey[];
@@ -29,7 +29,7 @@ export type HumanifyIdClaimBundle = {
   title: string;
 };
 
-const humanifyClaimDefinitions = [
+const verificationClaimDefinitions = [
   {
     id: "age_over_18",
     summary: "Threshold proof that the holder is 18 or older without disclosing a birth date.",
@@ -40,14 +40,29 @@ const humanifyClaimDefinitions = [
     summary: "Selective-disclosure proof of nationality without exposing the full underlying document.",
     title: "Nationality",
   },
-] as const satisfies readonly HumanifyClaimDefinition[];
+  {
+    id: "document_identity",
+    summary: "Normalized proof that a first-time capture flow verified a supported identity document for the session.",
+    title: "Document identity",
+  },
+  {
+    id: "liveness",
+    summary: "Normalized anti-spoof or live-presence proof emitted by a capture flow without storing raw biometric data.",
+    title: "Liveness",
+  },
+  {
+    id: "unique_person",
+    summary: "Proof-of-personhood / uniqueness predicate backed by replay-safe nullifiers or equivalent anti-Sybil signals.",
+    title: "Unique person",
+  },
+] as const satisfies readonly VerificationClaimDefinition[];
 
-export type HumanifyClaimKey = (typeof humanifyClaimDefinitions)[number]["id"];
+export type HumanifyClaimKey = (typeof verificationClaimDefinitions)[number]["id"];
 
-const supportedClaimIds = humanifyClaimDefinitions.map((claim) => claim.id) as HumanifyClaimKey[];
+const supportedClaimIds = verificationClaimDefinitions.map((claim) => claim.id) as HumanifyClaimKey[];
 const supportedClaimIdSet = new Set<string>(supportedClaimIds);
 
-const humanifyIdClaimBundles = [
+const verificationClaimBundles = [
   {
     bestFor: "The server only needs an age gate and you want to reveal as little as possible.",
     bundleId: "humanify_id_age_over_18_v1",
@@ -96,13 +111,13 @@ const humanifyIdClaimBundles = [
     summary: "Default v1 bundle: prove age and nationality, but keep the underlying document data out of Humanify storage.",
     title: "Prove age + nationality",
   },
-] as const satisfies readonly HumanifyIdClaimBundle[];
+] as const satisfies readonly VerificationClaimBundle[];
 
-const defaultHumanifyIdClaimBundle = {
-  ...humanifyIdClaimBundles[2],
-} as const satisfies HumanifyIdClaimBundle;
+const defaultVerificationClaimBundle = {
+  ...verificationClaimBundles[2],
+} as const satisfies VerificationClaimBundle;
 
-function cloneClaimBundle(bundle: HumanifyIdClaimBundle): HumanifyIdClaimBundle {
+function cloneClaimBundle(bundle: VerificationClaimBundle): VerificationClaimBundle {
   return {
     ...bundle,
     claims: [...bundle.claims],
@@ -111,15 +126,15 @@ function cloneClaimBundle(bundle: HumanifyIdClaimBundle): HumanifyIdClaimBundle 
   };
 }
 
-export function getHumanifyIdClaimBundles(): HumanifyIdClaimBundle[] {
-  return humanifyIdClaimBundles.map((bundle) => cloneClaimBundle(bundle));
+export function getVerificationClaimBundles(): VerificationClaimBundle[] {
+  return verificationClaimBundles.map((bundle) => cloneClaimBundle(bundle));
 }
 
-export function getHumanifyClaimDefinitions(): HumanifyClaimDefinition[] {
-  return humanifyClaimDefinitions.map((definition) => ({ ...definition }));
+export function getVerificationClaimDefinitions(): VerificationClaimDefinition[] {
+  return verificationClaimDefinitions.map((definition) => ({ ...definition }));
 }
 
-export function getSupportedHumanifyClaimIds(): HumanifyClaimKey[] {
+export function getSupportedVerificationClaimIds(): HumanifyClaimKey[] {
   return [...supportedClaimIds];
 }
 
@@ -127,6 +142,14 @@ export function isHumanifyClaimKey(value: string): value is HumanifyClaimKey {
   return supportedClaimIdSet.has(value);
 }
 
-export function getDefaultHumanifyIdClaimBundle(): HumanifyIdClaimBundle {
-  return cloneClaimBundle(defaultHumanifyIdClaimBundle);
+export function getDefaultVerificationClaimBundle(): VerificationClaimBundle {
+  return cloneClaimBundle(defaultVerificationClaimBundle);
 }
+
+export type HumanifyClaimDefinition = VerificationClaimDefinition;
+export type HumanifyIdClaimBundle = VerificationClaimBundle;
+
+export const getDefaultHumanifyIdClaimBundle = getDefaultVerificationClaimBundle;
+export const getHumanifyClaimDefinitions = getVerificationClaimDefinitions;
+export const getHumanifyIdClaimBundles = getVerificationClaimBundles;
+export const getSupportedHumanifyClaimIds = getSupportedVerificationClaimIds;

@@ -1,5 +1,5 @@
 /**
- * Purpose: Registers the Self.xyz verification provider manifest behind the shared provider template.
+ * Purpose: Registers the Self.xyz reusable-proof strategy manifest behind the shared strategy template.
  * Governing docs:
  * - AGENTS.md
  * - Implementation Plan.txt
@@ -12,16 +12,16 @@
  * - packages/verification-providers/src/index.test.ts
  */
 
-import { defineVerificationProvider } from "../template";
+import { defineVerificationStrategy } from "../template";
 
-export const selfVerificationProvider = defineVerificationProvider({
+export const selfVerificationProvider = defineVerificationStrategy({
   benefits: [
+    "Alternative reusable-proof backend when supported issuer coverage matches the community's policy.",
     "Shows only the claims you need instead of exposing the whole document.",
-    "Best starting point for a reusable Humanify ID that stays private.",
-    "Good option if privacy matters more to you than raw coverage.",
+    "Useful when privacy matters more than broad browser-capture compatibility.",
   ],
-  defaultRank: 1,
-  goodFor: "People who want the most private way to prove age or nationality.",
+  defaultRank: 2,
+  goodFor: "People who want a privacy-preserving reusable proof path when Self.xyz supports their credential.",
   id: "self",
   integration: {
     completionMode: "provider_verification_required",
@@ -30,14 +30,15 @@ export const selfVerificationProvider = defineVerificationProvider({
     serverVerificationNote: "Humanify must verify a Self-issued proof server-side; browser success alone is never sufficient.",
   },
   privacyDetails: "Humanify can verify the proof without seeing the raw document details behind it.",
-  privacySummary: "Most private",
-  summary: "Choose Self.xyz if you want the most private option and you have a supported biometric passport or ID.",
+  privacySummary: "Alternative reusable proof",
+  role: "reusable_proof_backend",
+  summary: "Choose Self.xyz when you want a reusable proof path and its supported credentials fit your policy needs.",
   supportedClaimKeys: ["age_over_18", "nationality"],
   thingsToKnow: [
-    "You usually need a biometric passport, NFC national ID, or another supported document.",
-    "It does not support as many countries and documents as a broad web KYC provider.",
-    "Humanify still needs a server-side proof check before release can happen.",
+    "You usually need a biometric passport, NFC national ID, or another attestation Self can read.",
+    "Coverage is narrower than a broad first-time capture provider such as Didit.",
+    "Privado remains Humanify's primary reusable-proof backend for the current architecture.",
   ],
   title: "Self.xyz",
-  whatYouNeed: "A supported biometric passport, NFC national ID, or another attestation Self can read.",
+  whatYouNeed: "A supported biometric passport, NFC national ID, or another credential Self can turn into a reusable proof.",
 });

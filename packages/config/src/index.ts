@@ -63,6 +63,14 @@ export type DiscordOAuthConfig = {
   scopes: string[];
 };
 
+export type DiditConfig = {
+  apiKey: string;
+  verificationApiBaseUrl: string;
+  verifierBaseUrl: string;
+  webhookSecret: string;
+  workflowId: string;
+};
+
 export type DataPlaneConfig = {
   postgresUrl: string;
   redisUrl: string;
@@ -86,6 +94,13 @@ export type ObservabilityConfig = {
 
 export type AdvisoryServiceConfig = {
   learningServiceUrl: string;
+};
+
+export type PrivadoVerifierConfig = {
+  chainId: string;
+  enabled: boolean;
+  verifierBaseUrl?: string;
+  trustedIssuers: string[];
 };
 
 const humanifyEnvironmentValues = ["development", "test", "production"] as const;
@@ -294,6 +309,74 @@ export function loadDiscordOAuthConfig(source: EnvSource = process.env): Discord
   return finalizeIssues(issues, { clientId, clientSecret, redirectUri, scopes });
 }
 
+export function loadDiditConfig(source: EnvSource = process.env): DiditConfig | undefined {
+  const issues: ConfigIssue[] = [];
+  const apiKey = readOptionalString(source, "HUMANIFY_DIDIT_API_KEY");
+  const webhookSecret = readOptionalString(source, "HUMANIFY_DIDIT_WEBHOOK_SECRET");
+  const workflowId = readOptionalString(source, "HUMANIFY_DIDIT_WORKFLOW_ID");
+  const verifierBaseUrl = readOptionalString(source, "HUMANIFY_VERIFIER_BASE_URL");
+  const verificationApiBaseUrl = readOptionalString(source, "HUMANIFY_DIDIT_API_BASE_URL") ?? "https://verification.didit.me";
+
+  const anyDiditConfigPresent = Boolean(apiKey || webhookSecret || workflowId || verifierBaseUrl || source.HUMANIFY_DIDIT_API_BASE_URL);
+  if (!anyDiditConfigPresent) {
+    return undefined;
+  }
+
+  if (!apiKey) {
+    issues.push({ key: "HUMANIFY_DIDIT_API_KEY", message: "HUMANIFY_DIDIT_API_KEY is required when Didit is enabled." });
+  }
+
+  if (!webhookSecret) {
+    issues.push({
+      key: "HUMANIFY_DIDIT_WEBHOOK_SECRET",
+      message: "HUMANIFY_DIDIT_WEBHOOK_SECRET is required when Didit is enabled.",
+    });
+  }
+
+  if (!workflowId) {
+    issues.push({
+      key: "HUMANIFY_DIDIT_WORKFLOW_ID",
+      message: "HUMANIFY_DIDIT_WORKFLOW_ID is required when Didit is enabled.",
+    });
+  }
+
+  if (!verifierBaseUrl) {
+    issues.push({
+      key: "HUMANIFY_VERIFIER_BASE_URL",
+      message: "HUMANIFY_VERIFIER_BASE_URL is required when Didit is enabled.",
+    });
+  }
+
+  let normalizedVerifierBaseUrl = verifierBaseUrl ?? "";
+  let normalizedVerificationApiBaseUrl = verificationApiBaseUrl;
+
+  try {
+    normalizedVerifierBaseUrl = new URL(normalizedVerifierBaseUrl).toString().replace(/\/$/u, "");
+  } catch {
+    issues.push({
+      key: "HUMANIFY_VERIFIER_BASE_URL",
+      message: "HUMANIFY_VERIFIER_BASE_URL must be a valid absolute URL.",
+    });
+  }
+
+  try {
+    normalizedVerificationApiBaseUrl = new URL(normalizedVerificationApiBaseUrl).toString().replace(/\/$/u, "");
+  } catch {
+    issues.push({
+      key: "HUMANIFY_DIDIT_API_BASE_URL",
+      message: "HUMANIFY_DIDIT_API_BASE_URL must be a valid absolute URL.",
+    });
+  }
+
+  return finalizeIssues(issues, {
+    apiKey: apiKey ?? "",
+    verificationApiBaseUrl: normalizedVerificationApiBaseUrl,
+    verifierBaseUrl: normalizedVerifierBaseUrl,
+    webhookSecret: webhookSecret ?? "",
+    workflowId: workflowId ?? "",
+  });
+}
+
 export function loadDataPlaneConfig(source: EnvSource = process.env): DataPlaneConfig {
   const issues: ConfigIssue[] = [];
   const postgresUrl = readUrl(source, "HUMANIFY_POSTGRES_URL", issues);
@@ -371,6 +454,56 @@ export function loadAdvisoryServiceConfig(source: EnvSource = process.env): Advi
       learningServiceUrl,
     });
   }
+}
+
+export function loadPrivadoVerifierConfig(source: EnvSource = process.env): PrivadoVerifierConfig {
+  const issues: ConfigIssue[] = [];
+  const verifierBaseUrl = readOptionalString(source, "HUMANIFY_PRIVADO_VERIFIER_BASE_URL");
+  const chainId = readOptionalString(source, "HUMANIFY_PRIVADO_CHAIN_ID") ?? "80002";
+  const trustedIssuers = (
+    readOptionalString(source, "HUMANIFY_PRIVADO_ALLOWED_ISSUERS")
+      ?.split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean) ?? []
+  );
+
+  if (!verifierBaseUrl) {
+    return {
+      chainId,
+      enabled: false,
+      trustedIssuers: [],
+    };
+  }
+
+  try {
+    new URL(verifierBaseUrl);
+  } catch {
+    issues.push({
+      key: "HUMANIFY_PRIVADO_VERIFIER_BASE_URL",
+      message: "HUMANIFY_PRIVADO_VERIFIER_BASE_URL must be a valid absolute URL.",
+    });
+  }
+
+  if (trustedIssuers.length === 0) {
+    issues.push({
+      key: "HUMANIFY_PRIVADO_ALLOWED_ISSUERS",
+      message: "HUMANIFY_PRIVADO_ALLOWED_ISSUERS must include at least one trusted issuer DID when Privado is enabled.",
+    });
+  }
+
+  if (trustedIssuers.includes("*")) {
+    issues.push({
+      key: "HUMANIFY_PRIVADO_ALLOWED_ISSUERS",
+      message: 'HUMANIFY_PRIVADO_ALLOWED_ISSUERS must list explicit trusted issuer DIDs; "*" is not allowed.',
+    });
+  }
+
+  return finalizeIssues(issues, {
+    chainId,
+    enabled: true,
+    trustedIssuers,
+    verifierBaseUrl: verifierBaseUrl.replace(/\/$/u, ""),
+  });
 }
 
 export function summarizeConfigForLogs<T extends Record<string, unknown>>(config: T): Record<string, unknown> {

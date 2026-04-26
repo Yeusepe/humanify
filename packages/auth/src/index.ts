@@ -48,7 +48,21 @@ export type VerifierChallengePayload = {
   userId: string;
 };
 
-type SignedTokenType = "discord-oauth-state" | "verifier-challenge";
+export type ReusableProofStartPayload = {
+  challengeId: string;
+  guildId: string;
+  providerId: string;
+  requiredCapabilities: string[];
+  requestedClaims: string[];
+  sessionId: string;
+  userId: string;
+};
+
+export type ReusableProofSessionPayload = ReusableProofStartPayload & {
+  providerSessionId: string;
+};
+
+type SignedTokenType = "discord-oauth-state" | "verifier-challenge" | "reusable-proof-start" | "reusable-proof-session";
 
 type SignedTokenPayload = Record<string, unknown> & {
   exp: number;
@@ -158,6 +172,32 @@ export function issueVerifierChallengeToken(
 
 export function verifyVerifierChallengeToken(token: string, secret: string, now = Date.now()) {
   return verifySignedToken<VerifierChallengePayload & SignedTokenPayload>(token, secret, "verifier-challenge", now);
+}
+
+export function issueReusableProofStartToken(
+  payload: ReusableProofStartPayload,
+  secret: string,
+  ttlSeconds = 900,
+  now = Date.now(),
+): string {
+  return issueSignedToken("reusable-proof-start", payload, secret, ttlSeconds, now);
+}
+
+export function verifyReusableProofStartToken(token: string, secret: string, now = Date.now()) {
+  return verifySignedToken<ReusableProofStartPayload & SignedTokenPayload>(token, secret, "reusable-proof-start", now);
+}
+
+export function issueReusableProofSessionToken(
+  payload: ReusableProofSessionPayload,
+  secret: string,
+  ttlSeconds = 900,
+  now = Date.now(),
+): string {
+  return issueSignedToken("reusable-proof-session", payload, secret, ttlSeconds, now);
+}
+
+export function verifyReusableProofSessionToken(token: string, secret: string, now = Date.now()) {
+  return verifySignedToken<ReusableProofSessionPayload & SignedTokenPayload>(token, secret, "reusable-proof-session", now);
 }
 
 export function createSessionCookieOptions(input: {

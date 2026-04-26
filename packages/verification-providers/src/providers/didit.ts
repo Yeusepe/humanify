@@ -1,5 +1,5 @@
 /**
- * Purpose: Registers the Didit verification provider manifest behind the shared provider template.
+ * Purpose: Registers the Didit capture-provider strategy manifest behind the shared strategy template.
  * Governing docs:
  * - AGENTS.md
  * - Implementation Plan.txt
@@ -13,34 +13,35 @@
  * - packages/verification-providers/src/index.test.ts
  */
 
-import { defineVerificationProvider } from "../template";
+import { defineVerificationStrategy } from "../template";
 
-export const diditVerificationProvider = defineVerificationProvider({
+export const diditVerificationProvider = defineVerificationStrategy({
   benefits: [
-    "Usually the fastest browser flow.",
+    "Default first-time capture lane for users who need a fresh browser-based document flow.",
     "Supports the broadest range of common IDs and countries.",
-    "Best fallback if the more private options do not support your documents.",
+    "Practical fallback when reusable-proof backends do not yet cover the user's credential.",
   ],
-  defaultRank: 3,
+  defaultRank: 1,
   deletionPolicy:
     "Humanify deletes the Didit session via DELETE /v3/session/{session_id}/ immediately after normalizing the verification result.",
-  goodFor: "People who want speed and broad document support, even if it is less private.",
+  goodFor: "People who need a fresh capture flow with broad document support, even if the provider sees the raw document during capture.",
   id: "didit",
   integration: {
     completionMode: "provider_verification_required",
     handoffKind: "signed_webhook",
     serverEndpointPath: "/callbacks/providers/didit",
-    serverVerificationNote: "Humanify must verify Didit's signed webhook or server-side status result before trusting the verification.",
+    serverVerificationNote: "Humanify must verify Didit's signed webhook or server-side status result before trusting the capture result.",
   },
-  privacyDetails: "Didit sees the underlying identity data during verification, so it is less private than Self.xyz or World ID.",
-  privacySummary: "Fastest, but less private",
-  summary: "Choose Didit if you want the quickest web flow or the other providers do not support your document or country.",
-  supportedClaimKeys: ["age_over_18", "nationality"],
+  privacyDetails: "Didit sees the underlying identity data during first-time capture, so this lane is less private than reusable-proof verification.",
+  privacySummary: "Default first-time capture",
+  role: "capture_provider",
+  summary: "Use Didit when you need Humanify's default first-time capture flow for document and liveness verification.",
+  supportedClaimKeys: ["age_over_18", "nationality", "document_identity", "liveness"],
   thingsToKnow: [
-    "It is the least private option because the provider processes your document data.",
-    "Humanify keeps only the minimum attestation and deletes the Didit session afterward.",
-    "It is a practical fallback, not the best base for a private reusable identity.",
+    "Browser completion is only a UX step; Humanify still waits for a verified server receipt before release stays possible.",
+    "Humanify keeps only normalized attestation facts and deletes the Didit session afterward.",
+    "Didit is a capture provider, not Humanify's reusable-proof backend.",
   ],
   title: "Didit",
-  whatYouNeed: "A common government ID or other document that Didit supports in its browser flow.",
+  whatYouNeed: "A supported government ID or other document that Didit can verify in its hosted browser flow.",
 });

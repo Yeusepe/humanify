@@ -22,6 +22,8 @@ import type {
   PersistedCaseReviewResult,
   RiskQueueItem,
   ReportCasesRepository,
+  VerificationSessionRecord,
+  VerificationSessionsRepository,
 } from "@humanify/db";
 
 function normalizeSignalText(value: string) {
@@ -683,6 +685,100 @@ export function createInMemoryReportCasesRepository(): ReportCasesRepository {
 
     async close() {
       return;
+    },
+  };
+}
+
+export function createInMemoryVerificationSessionsRepository(): VerificationSessionsRepository {
+  const sessions = new Map<string, VerificationSessionRecord>();
+
+  return {
+    async createSession(input) {
+      const record: VerificationSessionRecord = {
+        challengeExpiresAt: input.challengeExpiresAt,
+        challengeId: input.challengeId,
+        guildId: input.guildId,
+        initiatedBy: input.initiatedBy,
+        providerStatus: {},
+        requiredCapabilities: [...input.requiredCapabilities],
+        resultSummary: {},
+        sessionId: input.sessionId,
+        state: "challenge_issued",
+        userId: input.userId,
+      };
+      sessions.set(input.sessionId, record);
+      return {
+        ...record,
+        providerStatus: { ...record.providerStatus },
+        requiredCapabilities: [...record.requiredCapabilities],
+        resultSummary: { ...record.resultSummary },
+      };
+    },
+
+    async getSession(sessionId) {
+      const current = sessions.get(sessionId);
+      if (!current) {
+        return undefined;
+      }
+
+      return {
+        ...current,
+        providerStatus: { ...current.providerStatus },
+        requiredCapabilities: [...current.requiredCapabilities],
+        resultSummary: { ...current.resultSummary },
+      };
+    },
+
+    async markDiditSessionCreated(input) {
+      const current = sessions.get(input.sessionId);
+      if (!current) {
+        return undefined;
+      }
+
+      current.providerStatus = {
+        callbackUrl: input.callbackUrl,
+        launch: {
+          mode: "didit_sdk",
+          packageName: "@didit-protocol/sdk-web",
+          providerId: "didit",
+          providerSessionId: input.providerSessionId,
+          providerStatus: input.providerSessionStatus,
+          url: input.verificationUrl,
+        },
+        requestedClaims: [...input.requestedClaims],
+        selectedProvider: "didit",
+        status: "didit_session_created",
+        workflowId: input.workflowId,
+      };
+      current.state = "provider_pending";
+      sessions.set(input.sessionId, current);
+      return await this.getSession(input.sessionId);
+    },
+
+    async recordDiditResult(input) {
+      const current = sessions.get(input.sessionId);
+      if (!current) {
+        return undefined;
+      }
+
+      current.providerStatus = {
+        ...current.providerStatus,
+        purge: input.purge,
+        requestedClaims: input.requestedClaims ?? current.providerStatus.requestedClaims ?? [],
+        selectedProvider: "didit",
+        status: input.state === "passed" ? "provider_webhook_verified" : "provider_webhook_recorded",
+        verifiedWebhook: input.webhook,
+      };
+      current.resultSummary = {
+        ...input.resultSummary,
+      };
+      current.state = input.state;
+      sessions.set(input.sessionId, current);
+      return await this.getSession(input.sessionId);
+    },
+
+    async close() {
+      sessions.clear();
     },
   };
 }

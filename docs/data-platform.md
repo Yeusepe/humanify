@@ -15,6 +15,13 @@ Upstream docs:
 - SQLite: https://www.sqlite.org/docs.html
 - libSQL: https://docs.turso.tech/libsql
 - sqlite-vec: https://alexgarcia.xyz/sqlite-vec/
+- Didit API full flow: https://docs.didit.me/integration/api-full-flow
+- Didit webhooks: https://docs.didit.me/integration/webhooks
+- Privado verifier overview: https://docs.privado.id/docs/verifier/verifier-overview/
+- Privado request API: https://docs.privado.id/docs/verifier/verification-library/request-api/
+- Privado verification API: https://docs.privado.id/docs/verifier/verification-library/verification-api/
+- Privado verifier backend: https://docs.privado.id/docs/verifier/verifier-backend/
+- W3C VC Data Model: https://www.w3.org/TR/vc-data-model/
 - Electric Postgres Sync: https://electric-sql.com/docs/intro
 - Electric Postgres Sync primitives: https://electric-sql.com/primitives/postgres-sync
 - Redis Streams: https://redis.io/docs/latest/develop/data-types/streams/
@@ -31,6 +38,7 @@ Upstream docs:
 5. Redis Streams is the default cross-service queue and event transport. A stream message means work is pending, not that business state is committed.
 6. Cloudflare R2 stores large blobs only. Blob metadata, hashes, retention state, and access decisions stay in Postgres.
 7. Qdrant is optional and projection-only. If enabled, it is fed from Postgres-owned embeddings and can be rebuilt from Postgres plus R2 metadata.
+8. Verification storage is minimal-custody only. Humanify stores proof receipts, attestation references, nullifiers/replay guards, and audit evidence, not raw identity documents, full reusable credential payloads, or direct Didit full-session imports.
 
 ### 1.1 Concrete migration ownership in the repo
 
@@ -50,13 +58,13 @@ The first migration now creates the canonical table families for:
 - learning + vectors: `learned_signals`, `signal_examples`, `signal_embeddings`, `reputation_views`
 - durability + replay: `outbox_events`, `idempotency_receipts`, `action_execution_receipts`, `audit_records`, `stream_consumer_checkpoints`, `projection_failures`
 
-Implementation choice: policy, verification, moderation, and evidence payload details are initially carried in constrained `jsonb` documents plus explicit foreign keys, enum-backed states, and uniqueness constraints. This keeps the canonical boundaries stable without overfitting the first migration to UI-specific fields.
+Implementation choice: policy, verification, moderation, and evidence payload details are initially carried in constrained `jsonb` documents plus explicit foreign keys, enum-backed states, and uniqueness constraints. For verification, those payloads are limited to role-based strategy configuration and minimal receipts/refs rather than full provider payloads, so the canonical boundary stays stable without turning Humanify into a provider artifact store.
 
 ## 2. Storage ownership matrix
 
 | Concern | Canonical owner | Secondary copy or cache | Notes |
 | --- | --- | --- | --- |
-| Guild, member, policy, verification, cases, outcomes, audit trails | Postgres | Electric client sync views | Canonical transactional state |
+| Guild, member, policy, verification sessions, minimal proof receipts, cases, outcomes, audit trails | Postgres | Electric client sync views | Canonical transactional state with minimal-custody verification metadata only |
 | Durable embeddings for cases, evidence, learned signals, domains, invites | Postgres + `pgvector` | Optional Qdrant projection; local SQLite caches | Postgres owns vector identity and lifecycle |
 | Hot local similarity caches and feature snapshots | SQLite or libSQL + `sqlite-vec` | Rebuildable from Postgres streams | Worker-local, evictable |
 | Queue backlogs, fan-out work, retries, consumer ownership | Redis Streams | Postgres outbox and receipts | Streams transport work; Postgres records business completion |
@@ -86,19 +94,21 @@ Notes:
 | Entity | Stored in | Core fields |
 | --- | --- | --- |
 | `guild_policy_versions` | Postgres | thresholds, action ladder, quarantine role/channel config, trust-network settings, effective timestamps |
-| `verification_requirements` | Postgres | provider requirements, challenge rules, fallback paths, retention rules |
-| `verification_sessions` | Postgres | `session_id`, `guild_id`, `user_id`, required checks, challenge state, expiry, result summary |
-| `verification_artifacts` | Postgres | provider reference IDs, redacted provider result metadata, attestation status, expiry |
+| `verification_requirements` | Postgres | role-based verification strategy requirements, challenge rules, fallback paths, retention rules |
+| `verification_sessions` | Postgres | `session_id`, `guild_id`, `user_id`, required checks, selected strategy refs, challenge state, expiry, result summary |
+| `verification_artifacts` | Postgres | capture session refs, reusable-proof receipt refs, verified claim predicates, nullifier/replay guard refs, attestation status, expiry |
 
 Notes:
-- Electric sync exposes policy and verification summaries needed by the dashboard and verifier, not raw provider payloads.
-- Raw or sensitive provider artifacts should be minimized, redacted, or kept as R2 blobs only when operationally necessary.
+- Didit is the default first-time capture provider when a workflow needs live capture, and Privado is the primary reusable-ID / reusable-proof backend for reusable verification.
+- Humanify does not become the reusable-ID store; it persists only minimal proof receipts, attestation references, nullifiers/replay guards, and audit evidence needed for policy and replay safety.
+- Electric sync exposes policy and verification summaries needed by the dashboard and verifier, not raw provider payloads, raw document captures, or reusable credential bodies.
+- Direct Didit full-session import into Postgres or R2 is out of scope for this architecture.
 
 ### 3.3 Observation and scoring
 
 | Entity | Stored in | Core fields |
 | --- | --- | --- |
-| `risk_inputs` | Postgres | source kind (`join`, `message`, `report`, `provider_callback`), source IDs, timestamps, normalized hashes, feature references |
+| `risk_inputs` | Postgres | source kind (`join`, `message`, `report`, `verification_ingress`), source IDs, timestamps, normalized hashes, feature references |
 | `risk_feature_snapshots` | Postgres | deterministic features used for scoring, versioned by scorer/rule set |
 | `risk_decisions` | Postgres | score, confidence, reason codes, recommended action, expiry, scorer version, linked input fingerprint |
 | `action_recommendations` | Postgres | recommended moderation action, policy rule that mapped score to action, review requirements |
@@ -127,7 +137,7 @@ Notes:
 | --- | --- | --- |
 | `evidence_records` | Postgres | `evidence_id`, `case_id`, evidence type, capture source, actor, created timestamp |
 | `blob_objects` | Postgres | `blob_id`, bucket, object key, byte length, media type, `sha256`, `blake3`, optional perceptual hash |
-| `blob_derivatives` | Postgres | parent blob, derivative type (`thumbnail`, `redacted`, `ocr_text`, `provider_export`), processing status |
+| `blob_derivatives` | Postgres | parent blob, derivative type (`thumbnail`, `redacted`, `ocr_text`), processing status |
 | `evidence_links` | Postgres | mapping from evidence to blob, Discord message URL, redacted text snapshot, retention/legal hold state |
 
 Notes:
@@ -163,14 +173,14 @@ Postgres should own:
 2. Every final or intermediate moderation decision that must be explainable later.
 3. Durable embeddings and their ownership metadata.
 4. Outbox events, idempotency receipts, and projection state that lets other systems be rebuilt.
-5. Blob metadata, hash identity, retention metadata, redaction state, and provider-result summaries.
+5. Blob metadata, hash identity, retention metadata, redaction state, and minimal verification proof receipts/attestation summaries.
 
 Recommended supporting table families:
 
 | Table family | Why it stays in Postgres |
 | --- | --- |
 | `outbox_events` | Reliable handoff from committed business state to Redis, Electric projections, and optional Qdrant indexing |
-| `idempotency_receipts` | Prevent duplicate processing across Discord events, provider callbacks, and action execution |
+| `idempotency_receipts` | Prevent duplicate processing across Discord events, verification callbacks/proof submissions, and action execution |
 | `stream_consumer_checkpoints` | Durable recovery if a worker loses local state |
 | `projection_failures` | Operator visibility for stale Electric/Qdrant/SQLite projections |
 
@@ -206,7 +216,11 @@ R2 should hold only byte-heavy or export-heavy payloads:
 - uploaded evidence files
 - redacted derivatives
 - OCR/intermediate artifacts when they are too large for Postgres
-- provider exports that must be retained as files
+
+Verification-specific boundary:
+
+- R2 is not a sink for raw identity documents, reusable credential bodies, or direct Didit session exports.
+- If a future reviewed verification flow needs temporary processing bytes, that processing must stay short-lived, non-canonical, and outside the reusable proof receipt model above.
 
 Blob policy:
 
@@ -228,7 +242,7 @@ Recommended stream families:
 | Stream | Producer | Primary consumers | Payload summary |
 | --- | --- | --- | --- |
 | `risk.ingest` | bot/api | inference, learning preprocessor | normalized source refs and feature pointers |
-| `verification.events` | api/verifier | trust/inference/policy workers | session transitions and provider callback refs |
+| `verification.events` | api/verifier | trust/inference/policy workers | session transitions, capture callback refs, and reusable-proof verification refs |
 | `evidence.ingest` | bot/api | evidence service | blob refs, capture metadata, redaction/extraction requests |
 | `policy.actions` | api/policy engine | bot executor | approved moderation actions only |
 | `learning.feedback` | dashboard/api | learning service | moderator-confirmed outcomes and corrections |
@@ -260,7 +274,7 @@ Do not sync:
 - raw R2 blobs
 - unredacted private content
 - worker-local SQLite caches
-- provider secrets or raw attestation payloads
+- provider secrets, raw attestation payloads, raw identity documents, or reusable credential bodies
 - projection internals like stream pending entries
 
 Rules:
@@ -276,12 +290,12 @@ Each boundary needs its own idempotency key because the retry model differs by s
 
 | Boundary | Idempotency key | Durable receipt location |
 | --- | --- | --- |
-| Discord ingress | provider event ID, message ID, interaction ID, or derived join fingerprint | Postgres `idempotency_receipts` |
-| Verification provider callbacks | provider request/callback ID + provider name | Postgres `idempotency_receipts` |
+| Discord ingress | message ID, interaction ID, or derived join fingerprint | Postgres `idempotency_receipts` |
+| Verification strategy callbacks and proof submissions | provider request/callback ID, proof scope/nullifier, or backend request ID + strategy role | Postgres `idempotency_receipts` |
 | Risk decision calculation | input fingerprint + scorer version | Postgres `risk_decisions` unique constraint |
 | Case open/create | guild + subject + opening trigger fingerprint | Postgres `cases` / `case_events` |
 | Evidence ingest | blob hash + capture source + case/evidence reference | Postgres `blob_objects` and `evidence_links` |
-| Moderation execution | provider action key + case/action ID | Postgres `action_execution_receipts` |
+| Moderation execution | Discord action key + case/action ID | Postgres `action_execution_receipts` |
 | Stream consumer work | stream name + group + message ID + handler version | Postgres `stream_consumer_checkpoints` |
 | Optional Qdrant projection | owning entity ID + embedding version | Postgres projection receipt |
 
@@ -320,7 +334,7 @@ Even then:
 ## 11. End-to-end write flow
 
 ```txt
-Discord event / report / verification callback
+Discord event / report / verification ingress
   -> normalize and validate
   -> write canonical Postgres rows
   -> append outbox event in same Postgres transaction

@@ -1,5 +1,5 @@
 /**
- * Purpose: Proves the verification-provider registry stays generic, filterable, and safe to extend without app-level provider conditionals.
+ * Purpose: Proves the verification strategy registry stays role-based, filterable, and safe to extend without app-level provider conditionals.
  * Governing docs:
  * - AGENTS.md
  * - Implementation Plan.txt
@@ -12,52 +12,57 @@
 import { expect, test } from "bun:test";
 
 import {
-  createVerificationProviderCatalog,
-  defineVerificationProvider,
-  getDefaultHumanifyIdClaimBundle,
-  getHumanifyIdClaimBundles,
-  getSupportedHumanifyClaimIds,
-  humanifyVerificationProviderCatalog,
-  parseVerificationProviderSelection,
-  resolveVerificationProviderConfiguration,
-  resolveVerificationProviderCatalog,
-  verificationProviderSupportsClaims,
+  createVerificationStrategyCatalog,
+  defineVerificationStrategy,
+  getDefaultVerificationClaimBundle,
+  getVerificationClaimBundles,
+  getSupportedVerificationClaimIds,
+  humanifyVerificationStrategyCatalog,
+  humanifyVerificationStrategyPipelineCatalog,
+  parseVerificationStrategySelection,
+  resolveVerificationStrategyCatalog,
+  resolveVerificationStrategyConfiguration,
+  verificationStrategySupportsClaims,
 } from "./index";
 
-test("provider catalogs sort by rank and can be filtered without touching app code", () => {
-  const catalog = resolveVerificationProviderCatalog({
-    enabledProviderIds: ["didit", "self"],
+test("strategy catalogs sort by role and expose default capture + reusable backends without app-local branching", () => {
+  const catalog = resolveVerificationStrategyCatalog({
+    enabledStrategyIds: ["didit", "privado", "world_id"],
   });
 
-  expect(catalog.ids()).toEqual(["self", "didit"]);
-  expect(catalog.defaultProvider().id).toBe("self");
+  expect(catalog.selectableIds()).toEqual(["didit", "privado", "world_id"]);
+  expect(catalog.defaultForRole("capture_provider").id).toBe("didit");
+  expect(catalog.defaultForRole("reusable_proof_backend").id).toBe("privado");
   expect(catalog.require("didit").integration.handoffKind).toBe("signed_webhook");
+  expect(catalog.require("privado").role).toBe("reusable_proof_backend");
+  expect(catalog.defaultForRole("policy_consumer").id).toBe("humanify");
 });
 
-test("provider selection parsing trims, deduplicates, and ignores blanks", () => {
-  expect(parseVerificationProviderSelection(" didit, self , didit ,, world_id ")).toEqual([
+test("strategy selection parsing trims, deduplicates, and ignores blanks", () => {
+  expect(parseVerificationStrategySelection(" didit, privado , didit ,, world_id ")).toEqual([
     "didit",
-    "self",
+    "privado",
     "world_id",
   ]);
-  expect(parseVerificationProviderSelection("   ")).toBeUndefined();
+  expect(parseVerificationStrategySelection("   ")).toBeUndefined();
 });
 
-test("the shared provider template rejects unsupported claims and duplicate provider ids", () => {
+test("the shared strategy template rejects unsupported claims and duplicate strategy ids", () => {
   expect(() =>
-    defineVerificationProvider({
+    defineVerificationStrategy({
       benefits: ["broken"],
       defaultRank: 9,
       goodFor: "broken",
-      id: "broken-provider",
+      id: "broken-strategy",
       integration: {
         completionMode: "provider_verification_required",
         handoffKind: "signed_webhook",
-        serverEndpointPath: "/callbacks/providers/broken-provider",
+        serverEndpointPath: "/callbacks/providers/broken-strategy",
         serverVerificationNote: "broken",
       },
       privacyDetails: "broken",
       privacySummary: "broken",
+      role: "capture_provider",
       summary: "broken",
       supportedClaimKeys: ["unknown-claim" as never],
       thingsToKnow: ["broken"],
@@ -67,19 +72,25 @@ test("the shared provider template rejects unsupported claims and duplicate prov
   ).toThrow('unsupported Humanify claim "unknown-claim"');
 
   expect(() =>
-    createVerificationProviderCatalog([
-      humanifyVerificationProviderCatalog.require("self"),
-      humanifyVerificationProviderCatalog.require("self"),
+    createVerificationStrategyCatalog([
+      humanifyVerificationStrategyCatalog.require("didit"),
+      humanifyVerificationStrategyCatalog.require("didit"),
     ]),
-  ).toThrow('Duplicate id: "self"');
+  ).toThrow('Duplicate id: "didit"');
 });
 
-test("default Humanify ID bundle stays age + nationality and stores proof receipts instead of raw identity data", () => {
-  const bundle = getDefaultHumanifyIdClaimBundle();
-  const bundles = getHumanifyIdClaimBundles();
+test("default claim bundle stays age + nationality while the shared claim catalog covers capture, reusable, and uniqueness predicates", () => {
+  const bundle = getDefaultVerificationClaimBundle();
+  const bundles = getVerificationClaimBundles();
   const storageContract = bundle.operatorStorageGuarantees.join(" ");
 
-  expect(getSupportedHumanifyClaimIds()).toEqual(["age_over_18", "nationality"]);
+  expect(getSupportedVerificationClaimIds()).toEqual([
+    "age_over_18",
+    "nationality",
+    "document_identity",
+    "liveness",
+    "unique_person",
+  ]);
   expect(bundles.map((entry) => entry.bundleId)).toEqual([
     "humanify_id_age_over_18_v1",
     "humanify_id_nationality_v1",
@@ -91,38 +102,68 @@ test("default Humanify ID bundle stays age + nationality and stores proof receip
   expect(storageContract).toContain("birthdates");
 });
 
-test("provider capability checks stay generic and claim-based", () => {
+test("strategy capability checks stay generic and role-based", () => {
   expect(
-    verificationProviderSupportsClaims(humanifyVerificationProviderCatalog.require("self"), ["age_over_18", "nationality"]),
+    verificationStrategySupportsClaims(humanifyVerificationStrategyCatalog.require("didit"), [
+      "document_identity",
+      "liveness",
+    ]),
   ).toBe(true);
   expect(
-    verificationProviderSupportsClaims(humanifyVerificationProviderCatalog.require("didit"), ["age_over_18"]),
+    verificationStrategySupportsClaims(humanifyVerificationStrategyCatalog.require("privado"), ["age_over_18"]),
   ).toBe(true);
+  expect(
+    verificationStrategySupportsClaims(humanifyVerificationStrategyCatalog.require("world_id"), ["unique_person"]),
+  ).toBe(true);
+  expect(
+    verificationStrategySupportsClaims(humanifyVerificationStrategyCatalog.require("world_id"), ["age_over_18"]),
+  ).toBe(false);
 });
 
-test("server-owner provider configuration resolves enabled and default providers from the shared catalog", () => {
+test("pipeline catalogs describe first-time capture, reusable proof, and uniqueness lanes against the same policy consumer", () => {
+  expect(humanifyVerificationStrategyPipelineCatalog.defaultForPathway("first_time_capture").id).toBe(
+    "humanify_didit_capture_v1",
+  );
+  expect(humanifyVerificationStrategyPipelineCatalog.defaultForPathway("reusable_proof").id).toBe(
+    "humanify_privado_reusable_v1",
+  );
+  expect(humanifyVerificationStrategyPipelineCatalog.defaultForPathway("proof_of_personhood").id).toBe(
+    "humanify_world_id_uniqueness_v1",
+  );
+  expect(humanifyVerificationStrategyPipelineCatalog.withEnabledStrategyIds(["didit", "privado"]).ids()).toEqual([
+    "humanify_didit_capture_v1",
+    "humanify_privado_reusable_v1",
+  ]);
+});
+
+test("strategy configuration resolves enabled strategies, role defaults, and enabled pipelines from the shared catalogs", () => {
   expect(
-    resolveVerificationProviderConfiguration({
-      availableCatalog: resolveVerificationProviderCatalog({ enabledProviderIds: ["self", "didit"] }),
-      defaultProviderId: "didit",
-      enabledProviderIds: ["didit"],
+    resolveVerificationStrategyConfiguration({
+      availableCatalog: resolveVerificationStrategyCatalog({ enabledStrategyIds: ["didit", "privado", "self"] }),
+      defaultCaptureProviderId: "didit",
+      defaultReusableProofBackendId: "privado",
+      enabledStrategyIds: ["didit", "privado"],
     }),
   ).toEqual({
-    availableProviderIds: ["self", "didit"],
-    defaultProviderId: "didit",
-    enabledProviderIds: ["didit"],
+    availablePipelineIds: ["humanify_didit_capture_v1", "humanify_privado_reusable_v1", "humanify_self_reusable_v1"],
+    availableStrategyIds: ["didit", "privado", "self"],
+    defaultCaptureProviderId: "didit",
+    defaultReusableProofBackendId: "privado",
+    enabledPipelineIds: ["humanify_didit_capture_v1", "humanify_privado_reusable_v1"],
+    enabledStrategyIds: ["didit", "privado"],
+    policyConsumerId: "humanify",
   });
 
   expect(() =>
-    resolveVerificationProviderConfiguration({
-      defaultProviderId: "world_id",
-      enabledProviderIds: ["self"],
+    resolveVerificationStrategyConfiguration({
+      defaultCaptureProviderId: "world_id",
+      enabledStrategyIds: ["didit", "self", "world_id"],
     }),
-  ).toThrow('Default verification provider "world_id" must be enabled for the guild.');
+  ).toThrow('Default capture provider "world_id" must use the capture_provider role.');
 
   expect(() =>
-    resolveVerificationProviderConfiguration({
-      enabledProviderIds: [],
+    resolveVerificationStrategyConfiguration({
+      enabledStrategyIds: [],
     }),
-  ).toThrow("At least one verification provider must remain enabled for the guild.");
+  ).toThrow("At least one verification strategy must remain enabled for the guild.");
 });

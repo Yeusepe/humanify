@@ -20,6 +20,7 @@ import {
   completeVerificationChallenge,
   fetchVerificationSession,
   getDefaultHumanifyIdClaimBundle,
+  getDiditLaunchContract,
   getHumanifyIdClaimBundles,
   getDefaultVerificationProviderId,
   getVerifierApiBaseUrl,
@@ -27,6 +28,9 @@ import {
   getVerificationProviderOptions,
   hasVerificationLink,
   parseVerificationSearch,
+  startReusableProofFlow,
+  startDiditVerification,
+  verifyReusableProofResult,
 } from "./verification-flow";
 
 test("verification search parsing only keeps meaningful signed-link fields", () => {
@@ -185,6 +189,269 @@ test("completeVerificationChallenge posts the signed session identity back to th
   expect(result.providerBoundary.handoffKind).toBe("server_verified_proof");
 });
 
+test("startReusableProofFlow posts a signed reusable-proof start token and returns a wallet launch", async () => {
+  const requests: Request[] = [];
+  const fetchImpl = async (input: URL | RequestInfo, init?: RequestInit) => {
+    requests.push(new Request(input, init));
+    return new Response(
+      JSON.stringify({
+        contractVersion: "0.1.0",
+        data: {
+          flow: {
+            providerId: "privado",
+            providerSessionId: "backend_123",
+            providerSessionToken: "proof.session.token",
+            qrCodeValue: "iden3comm://?request_uri=https%3A%2F%2Fverifier-backend.privado.id%2Fqr-store%3Fid%3Dabc123",
+            request: {
+              chainID: "80002",
+              reason: "Humanify reusable proof request for age_over_18, nationality.",
+              scope: [],
+            },
+            requestUri: "https://verifier-backend.privado.id/qr-store?id=abc123",
+            universalLink: "https://wallet.privado.id/#request_uri=https%3A%2F%2Fverifier-backend.privado.id%2Fqr-store%3Fid%3Dabc123",
+          },
+          persistence: "provider_request_created",
+          providerBoundary: {
+            nextStep: "provider_verification_required",
+            providerFlowConfigured: true,
+            providerSessionToken: "proof.session.token",
+            releaseEligible: false,
+            status: "proof_request_created",
+          },
+          session: {
+            challengeExpiresAt: "2026-01-01T00:15:00.000Z",
+            challengeId: "challenge_123",
+            guildId: "guild_123",
+            releaseEligible: false,
+            requiredCapabilities: ["captcha"],
+            sessionId: "session_123",
+            source: "signed_reusable_proof_start_token",
+            state: "provider_pending",
+            userId: "user_123",
+          },
+        },
+        requestId: "request_789",
+      }),
+      {
+        headers: {
+          "content-type": "application/json",
+        },
+        status: 202,
+      },
+    );
+  };
+
+  const result = await startReusableProofFlow(fetchImpl, {
+    apiBaseUrl: "http://127.0.0.1:3211",
+    backUrl: "https://verifier.humanify.test/verify?sessionId=session_123",
+    finishUrl: "https://verifier.humanify.test/verify?sessionId=session_123",
+    providerId: "privado",
+    providerStartEndpoint: "/verification/sessions/session_123/providers/privado/start",
+    providerStartToken: "start.token",
+  });
+
+  expect(requests).toHaveLength(1);
+  expect(requests[0]?.url).toBe("http://127.0.0.1:3211/verification/sessions/session_123/providers/privado/start");
+  expect(await requests[0]?.json()).toEqual({
+    backUrl: "https://verifier.humanify.test/verify?sessionId=session_123",
+    finishUrl: "https://verifier.humanify.test/verify?sessionId=session_123",
+    providerStartToken: "start.token",
+  });
+  expect(result.flow.providerSessionToken).toBe("proof.session.token");
+  expect(result.flow.universalLink).toContain("https://wallet.privado.id/#request_uri=");
+});
+
+test("verifyReusableProofResult posts the provider session token and returns minimal proof evidence", async () => {
+  const requests: Request[] = [];
+  const fetchImpl = async (input: URL | RequestInfo, init?: RequestInit) => {
+    requests.push(new Request(input, init));
+    return new Response(
+      JSON.stringify({
+        contractVersion: "0.1.0",
+        data: {
+          persistence: "planned_not_persisted",
+          providerBoundary: {
+            nextStep: "release_available",
+            providerFlowConfigured: true,
+            releaseEligible: true,
+            status: "provider_proof_verified",
+          },
+          session: {
+            challengeExpiresAt: "2026-01-01T00:15:00.000Z",
+            challengeId: "challenge_123",
+            guildId: "guild_123",
+            releaseEligible: true,
+            requiredCapabilities: ["captcha"],
+            sessionId: "session_123",
+            source: "signed_reusable_proof_session_token",
+            state: "provider_pending",
+            userId: "user_123",
+          },
+          verification: {
+            message: "Privado verified 2 reusable proof predicate(s) for the current Humanify session.",
+            proofReceipt: {
+              nullifiers: [
+                {
+                  claimKey: "age_over_18",
+                  nullifier: "nullifier_age",
+                  nullifierSessionId: "session_123",
+                  scopeId: 1,
+                },
+              ],
+              proofReceiptHash: "sha256:abc123",
+              proofReceiptRef: "privado:session:backend_123",
+              trustedIssuerScopes: ["did:issuer:age"],
+              verifiablePresentationCount: 2,
+            },
+            providerId: "privado",
+            providerSessionId: "backend_123",
+            satisfiedClaims: ["age_over_18", "nationality"],
+            status: "verified",
+          },
+        },
+        requestId: "request_790",
+      }),
+      {
+        headers: {
+          "content-type": "application/json",
+        },
+        status: 202,
+      },
+    );
+  };
+
+  const result = await verifyReusableProofResult(fetchImpl, {
+    apiBaseUrl: "http://127.0.0.1:3211",
+    providerId: "privado",
+    providerSessionToken: "proof.session.token",
+  });
+
+  expect(requests).toHaveLength(1);
+  expect(requests[0]?.url).toBe("http://127.0.0.1:3211/verification/providers/privado/proof");
+  expect(await requests[0]?.json()).toEqual({
+    providerSessionToken: "proof.session.token",
+  });
+  expect(result.providerBoundary.releaseEligible).toBe(true);
+  expect(result.verification.proofReceipt.proofReceiptRef).toBe("privado:session:backend_123");
+  expect(result.verification.satisfiedClaims).toEqual(["age_over_18", "nationality"]);
+});
+
+test("didit launch contracts are read from the generic provider boundary", () => {
+  expect(
+    getDiditLaunchContract({
+      handoffKind: "signed_webhook",
+      launch: {
+        mode: "didit_sdk",
+        packageName: "@didit-protocol/sdk-web",
+        providerId: "didit",
+        providerSessionId: "didit_session_123",
+        providerStatus: "Not Started",
+        url: "https://verify.didit.me/session/didit_session_123",
+      },
+      nextStep: "provider_verification_required",
+      providerFlowConfigured: true,
+      providerServerEndpoint: "/callbacks/providers/didit",
+      releaseEligible: false,
+      selectedProvider: "didit",
+      status: "didit_session_created",
+    }),
+  ).toEqual({
+    mode: "didit_sdk",
+    packageName: "@didit-protocol/sdk-web",
+    providerId: "didit",
+    providerSessionId: "didit_session_123",
+    providerStatus: "Not Started",
+    url: "https://verify.didit.me/session/didit_session_123",
+  });
+});
+
+test("startDiditVerification launches the SDK and reports completed, cancelled, and failed outcomes honestly", async () => {
+  const completedStates: Array<{ kind: string; message: string; refreshStatus: boolean }> = [];
+  const startCalls: Array<{ configuration?: Record<string, unknown>; url: string }> = [];
+  const sdk = {
+    async startVerification(input: { configuration?: Record<string, unknown>; url: string }) {
+      startCalls.push(input);
+      this.onComplete?.({
+        session: {
+          sessionId: "didit_session_123",
+          status: "Approved",
+        },
+        type: "completed",
+      });
+      this.onComplete?.({
+        session: {
+          sessionId: "didit_session_123",
+          status: "Pending",
+        },
+        type: "cancelled",
+      });
+      this.onComplete?.({
+        error: {
+          message: "Camera access denied.",
+          type: "cameraAccessDenied",
+        },
+        type: "failed",
+      });
+    },
+    onComplete: undefined as
+      | ((result: {
+          error?: {
+            message: string;
+            type: string;
+          };
+          session?: {
+            sessionId: string;
+            status: string;
+          };
+          type: string;
+        }) => void)
+      | undefined,
+    onEvent: undefined as undefined,
+    onStateChange: undefined as undefined | ((state: string, error?: string) => void),
+  };
+
+  await startDiditVerification(sdk, {
+    launch: {
+      mode: "didit_sdk",
+      packageName: "@didit-protocol/sdk-web",
+      providerId: "didit",
+      providerSessionId: "didit_session_123",
+      providerStatus: "Not Started",
+      url: "https://verify.didit.me/session/didit_session_123",
+    },
+    onBrowserResult(result) {
+      completedStates.push(result);
+    },
+  });
+
+  expect(startCalls).toEqual([
+    {
+      configuration: {
+        closeModalOnComplete: true,
+        showExitConfirmation: true,
+      },
+      url: "https://verify.didit.me/session/didit_session_123",
+    },
+  ]);
+  expect(completedStates).toEqual([
+    expect.objectContaining({
+      kind: "completed",
+      message: expect.stringContaining("Didit finished in your browser"),
+      refreshStatus: true,
+    }),
+    expect.objectContaining({
+      kind: "cancelled",
+      message: expect.stringContaining("closed Didit"),
+      refreshStatus: false,
+    }),
+    expect.objectContaining({
+      kind: "failed",
+      message: expect.stringContaining("Camera access denied."),
+      refreshStatus: false,
+    }),
+  ]);
+});
+
 test("buildVerificationChecklist keeps provider verification and release explicitly blocked", () => {
   expect(
     buildVerificationChecklist({
@@ -203,14 +470,15 @@ test("buildVerificationChecklist keeps provider verification and release explici
 test("provider options rank Self first and keep Didit as the process-and-purge fallback", () => {
   const providers = getVerificationProviderOptions();
 
-  expect(providers.map((provider) => provider.id)).toEqual(["self", "world_id", "didit"]);
-  expect(providers[0]?.privacySummary).toContain("Most private");
-  expect(providers[0]?.integration.handoffKind).toBe("server_verified_proof");
-  expect(providers[2]?.deletionPolicy).toContain("DELETE /v3/session/{session_id}/");
+  expect(providers.map((provider) => provider.id)).toEqual(["didit", "privado", "self", "world_id"]);
+  expect(providers[0]?.role).toBe("capture_provider");
+  expect(providers[0]?.deletionPolicy).toContain("DELETE /v3/session/{session_id}/");
+  expect(providers[1]?.id).toBe("privado");
+  expect(providers[1]?.integration.handoffKind).toBe("server_verified_proof");
 });
 
 test("provider defaults and enablement come from the shared provider catalog", () => {
-  expect(getDefaultVerificationProviderId()).toBe("self");
+  expect(getDefaultVerificationProviderId()).toBe("didit");
   expect(getDefaultVerificationProviderId({ VITE_HUMANIFY_ENABLED_VERIFICATION_PROVIDERS: "didit" })).toBe("didit");
 });
 

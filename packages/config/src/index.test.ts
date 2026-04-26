@@ -22,9 +22,11 @@ import {
   loadAdvisoryServiceConfig,
   loadApiBindingConfig,
   loadBotApiConfig,
+  loadDiditConfig,
   loadDiscordOAuthConfig,
   loadObservabilityConfig,
   loadPolicyClampConfig,
+  loadPrivadoVerifierConfig,
   loadSessionConfig,
   summarizeConfigForLogs,
 } from "./index";
@@ -41,6 +43,30 @@ test("discord oauth config requires a full server-side callback bundle", () => {
     loadDiscordOAuthConfig({
       DISCORD_CLIENT_ID: "client",
       DISCORD_REDIRECT_URI: "https://humanify.test/callback",
+    }),
+  ).toThrow(ConfigError);
+});
+
+test("didit config validates the minimum API, webhook, workflow, and verifier return URL bundle", () => {
+  expect(
+    loadDiditConfig({
+      HUMANIFY_DIDIT_API_KEY: "didit_api_key",
+      HUMANIFY_DIDIT_WEBHOOK_SECRET: "didit_webhook_secret",
+      HUMANIFY_DIDIT_WORKFLOW_ID: "11111111-2222-3333-4444-555555555555",
+      HUMANIFY_VERIFIER_BASE_URL: "https://verifier.humanify.test/",
+    }),
+  ).toEqual({
+    apiKey: "didit_api_key",
+    verificationApiBaseUrl: "https://verification.didit.me",
+    verifierBaseUrl: "https://verifier.humanify.test",
+    webhookSecret: "didit_webhook_secret",
+    workflowId: "11111111-2222-3333-4444-555555555555",
+  });
+
+  expect(() =>
+    loadDiditConfig({
+      HUMANIFY_DIDIT_API_KEY: "didit_api_key",
+      HUMANIFY_VERIFIER_BASE_URL: "https://verifier.humanify.test",
     }),
   ).toThrow(ConfigError);
 });
@@ -103,6 +129,34 @@ test("advisory service config defaults learning-rs to the documented loopback en
   expect(() =>
     loadAdvisoryServiceConfig({
       HUMANIFY_LEARNING_SERVICE_URL: "not-a-url",
+    }),
+  ).toThrow(ConfigError);
+});
+
+test("Privado verifier config stays disabled by default and validates trusted issuers when enabled", () => {
+  expect(loadPrivadoVerifierConfig({})).toEqual({
+    chainId: "80002",
+    enabled: false,
+    trustedIssuers: [],
+  });
+
+  expect(
+    loadPrivadoVerifierConfig({
+      HUMANIFY_PRIVADO_ALLOWED_ISSUERS: "did:issuer:one,did:issuer:two",
+      HUMANIFY_PRIVADO_CHAIN_ID: "137",
+      HUMANIFY_PRIVADO_VERIFIER_BASE_URL: "https://verifier-backend.privado.id/",
+    }),
+  ).toEqual({
+    chainId: "137",
+    enabled: true,
+    trustedIssuers: ["did:issuer:one", "did:issuer:two"],
+    verifierBaseUrl: "https://verifier-backend.privado.id",
+  });
+
+  expect(() =>
+    loadPrivadoVerifierConfig({
+      HUMANIFY_PRIVADO_ALLOWED_ISSUERS: "*",
+      HUMANIFY_PRIVADO_VERIFIER_BASE_URL: "https://verifier-backend.privado.id",
     }),
   ).toThrow(ConfigError);
 });

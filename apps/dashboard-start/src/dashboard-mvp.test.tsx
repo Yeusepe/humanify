@@ -90,9 +90,22 @@ test("verification route renders lifecycle guidance", async () => {
 test("verification provider configuration keeps the default provider enabled", () => {
   const toggled = updateVerificationProviderConfiguration(
     {
-      availableProviderIds: ["self", "world_id", "didit"],
-      defaultProviderId: "self",
-      enabledProviderIds: ["self", "world_id", "didit"],
+      availablePipelineIds: [
+        "humanify_didit_capture_v1",
+        "humanify_privado_reusable_v1",
+        "humanify_self_reusable_v1",
+        "humanify_world_id_uniqueness_v1",
+      ],
+      availableProviderIds: ["didit", "privado", "self", "world_id"],
+      defaultProviderId: "didit",
+      enabledPipelineIds: [
+        "humanify_didit_capture_v1",
+        "humanify_privado_reusable_v1",
+        "humanify_self_reusable_v1",
+        "humanify_world_id_uniqueness_v1",
+      ],
+      enabledProviderIds: ["didit", "privado", "self", "world_id"],
+      policyConsumerId: "humanify",
     },
     {
       providerId: "self",
@@ -100,15 +113,15 @@ test("verification provider configuration keeps the default provider enabled", (
     },
   );
 
-  expect(toggled.enabledProviderIds).toEqual(["world_id", "didit"]);
-  expect(toggled.defaultProviderId).toBe("world_id");
+  expect(toggled.enabledProviderIds).toEqual(["didit", "privado", "world_id"]);
+  expect(toggled.defaultProviderId).toBe("didit");
 
   expect(() =>
     updateVerificationProviderConfiguration(toggled, {
       providerId: "self",
       type: "set-default",
     }),
-  ).toThrow('Default verification provider "self" must be enabled for the guild.');
+  ).toThrow('Unknown verification strategy "self".');
 });
 
 test("policy route renders Bun-side action clamps", async () => {

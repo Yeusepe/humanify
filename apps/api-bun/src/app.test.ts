@@ -16,13 +16,15 @@
  * - apps/api-bun/src/app.test.ts
  */
 
+import { createHmac } from "node:crypto";
+
 import { expect, test } from "bun:test";
 
 import { humanifyContractVersion } from "@humanify/contracts";
 import { extractTraceContext } from "@humanify/telemetry";
 
-import { createApiApp, type LearningServiceClient } from "./app";
-import { createInMemoryReportCasesRepository } from "./test-support";
+import { createApiApp, type DiditClient, type LearningServiceClient, type PrivadoVerifierBackendClient } from "./app";
+import { createInMemoryReportCasesRepository, createInMemoryVerificationSessionsRepository } from "./test-support";
 
 const fixedNow = Date.UTC(2026, 0, 1, 0, 0, 0);
 
@@ -32,15 +34,27 @@ const testEnv = {
   DISCORD_REDIRECT_URI: "https://humanify.test/auth/discord/callback",
   HUMANIFY_ENVIRONMENT: "test",
   HUMANIFY_MAX_AUTOMATIC_ACTION: "quarantine",
+  HUMANIFY_DIDIT_API_KEY: "didit_api_key",
+  HUMANIFY_DIDIT_WEBHOOK_SECRET: "didit_webhook_secret",
+  HUMANIFY_DIDIT_WORKFLOW_ID: "11111111-2222-3333-4444-555555555555",
   HUMANIFY_POSTGRES_URL: "postgres://humanify:secret@localhost:5432/humanify",
   HUMANIFY_REDIST_URL: undefined,
   HUMANIFY_REDIS_URL: "redis://localhost:6379",
   HUMANIFY_RELEASE: "test-suite",
+  HUMANIFY_PRIVADO_ALLOWED_ISSUERS: undefined,
+  HUMANIFY_PRIVADO_VERIFIER_BASE_URL: undefined,
   HUMANIFY_SECURE_COOKIES: "false",
   HUMANIFY_SERVICE_NAME: "api-bun",
   HUMANIFY_SESSION_COOKIE_NAME: "humanify_session",
   HUMANIFY_SESSION_SECRET: "session-secret",
   HUMANIFY_SESSION_TTL_SECONDS: "3600",
+  HUMANIFY_VERIFIER_BASE_URL: "https://verifier.humanify.test",
+} satisfies Record<string, string | undefined>;
+
+const privadoEnabledTestEnv = {
+  ...testEnv,
+  HUMANIFY_PRIVADO_ALLOWED_ISSUERS: "did:issuer:age,did:issuer:nationality",
+  HUMANIFY_PRIVADO_VERIFIER_BASE_URL: "https://verifier-backend.privado.id",
 } satisfies Record<string, string | undefined>;
 
 function createFakeLearningServiceClient(): LearningServiceClient {
@@ -72,15 +86,130 @@ function createFakeLearningServiceClient(): LearningServiceClient {
   };
 }
 
-function createTestApp(
-  reportCasesRepository = createInMemoryReportCasesRepository(),
-  learningServiceClient = createFakeLearningServiceClient(),
-) {
+function createFakeDiditClient(): DiditClient {
+  let lastVendorData = "session_vendor_pending";
+
+  return {
+    async createSession(input) {
+      lastVendorData = input.vendorData;
+      return {
+        callback: input.callbackUrl,
+        sessionId: "didit_session_123",
+        sessionStatus: "Not Started",
+        verificationUrl: "https://verify.didit.me/session/didit_session_123",
+        workflowId: input.workflowId,
+      };
+    },
+    async deleteSession() {
+      return {
+        outcome: "deleted",
+      };
+    },
+    async retrieveDecision(sessionId) {
+      expect(sessionId).toBe("didit_session_123");
+      return {
+        decision: {
+          idVerifications: [
+            {
+              nationality: "ESP",
+              status: "Approved",
+            },
+          ],
+          livenessChecks: [
+            {
+              status: "Approved",
+            },
+          ],
+          sessionId: "didit_session_123",
+          status: "Approved",
+        },
+        metadata: {},
+        sessionId: "didit_session_123",
+        status: "Approved",
+        vendorData: lastVendorData,
+        workflowId: "11111111-2222-3333-4444-555555555555",
+      };
+    },
+    verifyWebhookSignature(input) {
+      const expected = createHmac("sha256", testEnv.HUMANIFY_DIDIT_WEBHOOK_SECRET!)
+        .update(input.rawBody)
+        .digest("hex");
+      return input.signature === expected && input.timestamp === "1735689600";
+    },
+  };
+}
+
+function createFakePrivadoVerifierBackendClient(input: {
+  createProofRequestResponse?: {
+    qrCode: string;
+    sessionID: string;
+  };
+  readProofStatusResponse?: {
+    jwz?: string;
+    jwzMetadata?: {
+      nullifiers?: Array<{
+        nullifier: string;
+        nullifierSessionID: string;
+        scopeID: number;
+      }>;
+      userDID: string;
+      verifiablePresentations: Array<Record<string, unknown>>;
+    };
+    message?: string;
+    status: "error" | "pending" | "success";
+  };
+} = {}): PrivadoVerifierBackendClient {
+  let lastNullifierSessionId: string | undefined;
+
+  return {
+    async createProofRequest(request) {
+      expect(request.scope.length).toBeGreaterThan(0);
+      lastNullifierSessionId = request.scope[0]?.params?.nullifierSessionId;
+      return input.createProofRequestResponse ?? {
+        qrCode: "iden3comm://?request_uri=https%3A%2F%2Fverifier-backend.privado.id%2Fqr-store%3Fid%3Dproof_123",
+        sessionID: "privado_backend_session_123",
+      };
+    },
+    async readProofStatus(sessionId) {
+      expect(sessionId).toBe("privado_backend_session_123");
+      const response = input.readProofStatusResponse ?? {
+        status: "pending",
+      };
+
+      if (response.jwzMetadata?.nullifiers) {
+        return {
+          ...response,
+          jwzMetadata: {
+            ...response.jwzMetadata,
+            nullifiers: response.jwzMetadata.nullifiers.map((entry) => ({
+              ...entry,
+              nullifierSessionID: lastNullifierSessionId ?? entry.nullifierSessionID,
+            })),
+          },
+        };
+      }
+
+      return response;
+    },
+  };
+}
+
+function createTestApp(input: {
+  diditClient?: DiditClient;
+  env?: Record<string, string | undefined>;
+  learningServiceClient?: LearningServiceClient;
+  privadoVerifierBackendClient?: PrivadoVerifierBackendClient;
+  reportCasesRepository?: ReturnType<typeof createInMemoryReportCasesRepository>;
+  verificationSessionsRepository?: ReturnType<typeof createInMemoryVerificationSessionsRepository>;
+} = {}) {
   return createApiApp({
-    env: testEnv,
-    learningServiceClient,
+    diditClient: input.diditClient ?? createFakeDiditClient(),
+    env: input.env ?? testEnv,
+    learningServiceClient: input.learningServiceClient ?? createFakeLearningServiceClient(),
     now: () => fixedNow,
-    reportCasesRepository,
+    privadoVerifierBackendClient: input.privadoVerifierBackendClient,
+    reportCasesRepository: input.reportCasesRepository ?? createInMemoryReportCasesRepository(),
+    verificationSessionsRepository: input.verificationSessionsRepository ?? createInMemoryVerificationSessionsRepository(),
   });
 }
 
@@ -229,7 +358,7 @@ test("verification config lets a server owner choose enabled providers and a def
       body: JSON.stringify({
         actorUserId: "mod_123",
         defaultProviderId: "didit",
-        enabledProviderIds: ["self", "didit"],
+        enabledProviderIds: ["didit", "privado", "self"],
         suspiciousRoleIds: ["role_suspicious"],
         trustedRoleIds: ["role_verified"],
       }),
@@ -258,8 +387,8 @@ test("verification config lets a server owner choose enabled providers and a def
   };
 
   expect(response.status).toBe(202);
-  expect(json.data.verificationConfig.availableProviderIds).toEqual(["self", "world_id", "didit"]);
-  expect(json.data.verificationConfig.enabledProviderIds).toEqual(["self", "didit"]);
+  expect(json.data.verificationConfig.availableProviderIds).toEqual(["didit", "privado", "self", "world_id"]);
+  expect(json.data.verificationConfig.enabledProviderIds).toEqual(["didit", "privado", "self"]);
   expect(json.data.verificationConfig.defaultProviderId).toBe("didit");
   expect(json.data.verificationConfig.suspiciousRoleIds).toEqual(["role_suspicious"]);
   expect(json.data.verificationConfig.fallbackRoles).toEqual(["role_verified"]);
@@ -278,7 +407,7 @@ test("verification config rejects defaults that are not enabled for the guild", 
       body: JSON.stringify({
         actorUserId: "mod_123",
         defaultProviderId: "world_id",
-        enabledProviderIds: ["self"],
+        enabledProviderIds: ["didit", "self", "world_id"],
       }),
       headers: {
         "content-type": "application/json",
@@ -293,7 +422,7 @@ test("verification config rejects defaults that are not enabled for the guild", 
 
   expect(response.status).toBe(400);
   expect(json.errorCode).toBe("validation_failed");
-  expect(json.message).toContain('Default verification provider "world_id" must be enabled');
+  expect(json.message).toContain('Default capture provider "world_id" must use the capture_provider role.');
 });
 
 test("report intake validates request bodies and returns the documented error envelope", async () => {
@@ -323,7 +452,7 @@ test("report intake validates request bodies and returns the documented error en
 
 test("report intake persists a canonical case backbone that case reads can return honestly", async () => {
   const repository = createInMemoryReportCasesRepository();
-  const app = createTestApp(repository);
+  const app = createTestApp({ reportCasesRepository: repository });
   const createResponse = await app.handle(
     new Request("http://humanify.local/guilds/guild_123/reports", {
       body: JSON.stringify({
@@ -411,7 +540,7 @@ test("report intake persists a canonical case backbone that case reads can retur
 
 test("case review persists canonical outcomes and applies learned candidates from moderator-confirmed evidence", async () => {
   const repository = createInMemoryReportCasesRepository();
-  const app = createTestApp(repository);
+  const app = createTestApp({ reportCasesRepository: repository });
   const createResponse = await app.handle(
     new Request("http://humanify.local/guilds/guild_123/reports", {
       body: JSON.stringify({
@@ -514,7 +643,7 @@ test("case review persists canonical outcomes and applies learned candidates fro
 
 test("risk queue returns canonical trust and anomaly enrichments without turning them into enforcement", async () => {
   const repository = createInMemoryReportCasesRepository();
-  const app = createTestApp(repository);
+  const app = createTestApp({ reportCasesRepository: repository });
 
   const seedResponse = await app.handle(
     new Request("http://humanify.local/guilds/guild_123/reports", {
@@ -635,10 +764,13 @@ test("risk queue returns canonical trust and anomaly enrichments without turning
 
 test("case review keeps canonical outcomes durable when learning-rs is unavailable", async () => {
   const repository = createInMemoryReportCasesRepository();
-  const app = createTestApp(repository, {
-    async ingestCaseOutcome() {
-      throw new Error("service unavailable");
+  const app = createTestApp({
+    learningServiceClient: {
+      async ingestCaseOutcome() {
+        throw new Error("service unavailable");
+      },
     },
+    reportCasesRepository: repository,
   });
   const createResponse = await app.handle(
     new Request("http://humanify.local/guilds/guild_123/reports", {
@@ -698,7 +830,7 @@ test("case review keeps canonical outcomes durable when learning-rs is unavailab
   expect(reviewed.data.learning.notes[0]).toContain("pending retry");
 });
 
-test("verification session creation returns an honest planned write plus challenge token", async () => {
+test("verification session creation persists a challenge token and canonical verification session", async () => {
   const app = createTestApp();
   const response = await app.handle(
     new Request("http://humanify.local/guilds/guild_123/verification/sessions", {
@@ -727,7 +859,7 @@ test("verification session creation returns an honest planned write plus challen
     };
   };
 
-  expect(response.status).toBe(202);
+  expect(response.status).toBe(201);
   expect(json.data.session).toMatchObject({
     guildId: "guild_123",
     state: "challenge_issued",
@@ -779,7 +911,7 @@ test("verification session reads derive honest context from the signed challenge
   };
 
   expect(response.status).toBe(200);
-  expect(json.data.persistence).toBe("derived_from_signed_challenge");
+  expect(json.data.persistence).toBe("persisted");
   expect(json.data.session.state).toBe("challenge_issued");
   expect(json.data.session.requiredCapabilities).toEqual(["captcha", "human_presence"]);
   expect(json.data.providerBoundary.providerFlowConfigured).toBe(false);
@@ -899,6 +1031,202 @@ test("challenge completion carries provider choice and Humanify ID claims throug
   expect(json.data.session.state).toBe("provider_pending");
 });
 
+test("didit challenge completion creates a backend Didit session and returns SDK launch data", async () => {
+  const app = createTestApp();
+  const createResponse = await app.handle(
+    new Request("http://humanify.local/guilds/guild_123/verification/sessions", {
+      body: JSON.stringify({
+        requiredCapabilities: ["captcha", "document_identity"],
+        userId: "user_123",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    }),
+  );
+  const created = (await createResponse.json()) as {
+    data: {
+      challengeToken: string;
+      session: {
+        challengeId: string;
+        sessionId: string;
+      };
+    };
+  };
+
+  const response = await app.handle(
+    new Request(`http://humanify.local/verification/challenges/${created.data.session.challengeId}/complete`, {
+      body: JSON.stringify({
+        guildId: "guild_123",
+        providerId: "didit",
+        requestedClaims: ["age_over_18", "nationality"],
+        sessionId: created.data.session.sessionId,
+        token: created.data.challengeToken,
+        userId: "user_123",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    }),
+  );
+  const json = (await response.json()) as {
+    data: {
+      persistence: string;
+      providerBoundary: {
+        launch: {
+          mode: string;
+          packageName: string;
+          providerId: string;
+          providerSessionId: string;
+          providerStatus: string;
+          url: string;
+        };
+        providerFlowConfigured: boolean;
+        selectedProvider: string;
+        status: string;
+      };
+      session: {
+        state: string;
+      };
+    };
+  };
+
+  expect(response.status).toBe(201);
+  expect(json.data.persistence).toBe("persisted");
+  expect(json.data.providerBoundary.selectedProvider).toBe("didit");
+  expect(json.data.providerBoundary.providerFlowConfigured).toBe(true);
+  expect(json.data.providerBoundary.status).toBe("didit_session_created");
+  expect(json.data.providerBoundary.launch).toEqual({
+    mode: "didit_sdk",
+    packageName: "@didit-protocol/sdk-web",
+    providerId: "didit",
+    providerSessionId: "didit_session_123",
+    providerStatus: "Not Started",
+    url: "https://verify.didit.me/session/didit_session_123",
+  });
+  expect(json.data.session.state).toBe("provider_pending");
+});
+
+test("didit callbacks verify the signature, reconcile the decision server-side, and mark the session passed", async () => {
+  const verificationSessionsRepository = createInMemoryVerificationSessionsRepository();
+  const diditClient = createFakeDiditClient();
+  const app = createApiApp({
+    diditClient,
+    env: testEnv,
+    learningServiceClient: createFakeLearningServiceClient(),
+    now: () => fixedNow,
+    reportCasesRepository: createInMemoryReportCasesRepository(),
+    verificationSessionsRepository,
+  });
+  const createResponse = await app.handle(
+    new Request("http://humanify.local/guilds/guild_123/verification/sessions", {
+      body: JSON.stringify({
+        requiredCapabilities: ["captcha", "document_identity"],
+        userId: "user_123",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    }),
+  );
+  const created = (await createResponse.json()) as {
+    data: {
+      challengeToken: string;
+      session: {
+        challengeId: string;
+        sessionId: string;
+      };
+    };
+  };
+  await app.handle(
+    new Request(`http://humanify.local/verification/challenges/${created.data.session.challengeId}/complete`, {
+      body: JSON.stringify({
+        guildId: "guild_123",
+        providerId: "didit",
+        requestedClaims: ["age_over_18", "nationality"],
+        sessionId: created.data.session.sessionId,
+        token: created.data.challengeToken,
+        userId: "user_123",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    }),
+  );
+
+  const webhookBody = JSON.stringify({
+    session_id: "didit_session_123",
+    status: "Approved",
+    timestamp: 1735689600,
+    vendor_data: created.data.session.sessionId,
+    webhook_type: "status.updated",
+    workflow_id: testEnv.HUMANIFY_DIDIT_WORKFLOW_ID,
+  });
+  const webhookSignature = createHmac("sha256", testEnv.HUMANIFY_DIDIT_WEBHOOK_SECRET!)
+    .update(webhookBody)
+    .digest("hex");
+
+  const webhookResponse = await app.handle(
+    new Request("http://humanify.local/callbacks/providers/didit", {
+      body: webhookBody,
+      headers: {
+        "content-type": "application/json",
+        "x-signature-v2": webhookSignature,
+        "x-timestamp": "1735689600",
+      },
+      method: "POST",
+    }),
+  );
+  const webhookJson = (await webhookResponse.json()) as {
+    data: {
+      persistence: string;
+      providerBoundary: {
+        releaseEligible: boolean;
+        status: string;
+      };
+      session: {
+        state: string;
+      };
+      verification: {
+        faceVerificationPassed: boolean;
+        faceVerificationPerformed: boolean;
+      };
+    };
+  };
+
+  expect(webhookResponse.status).toBe(200);
+  expect(webhookJson.data.persistence).toBe("persisted");
+  expect(webhookJson.data.session.state).toBe("passed");
+  expect(webhookJson.data.providerBoundary.releaseEligible).toBe(true);
+  expect(webhookJson.data.providerBoundary.status).toBe("provider_webhook_verified");
+  expect(webhookJson.data.verification.faceVerificationPerformed).toBe(true);
+  expect(webhookJson.data.verification.faceVerificationPassed).toBe(true);
+
+  const statusResponse = await app.handle(
+    new Request(
+      `http://humanify.local/verification/sessions/${created.data.session.sessionId}?token=${encodeURIComponent(created.data.challengeToken)}`,
+    ),
+  );
+  const statusJson = (await statusResponse.json()) as {
+    data: {
+      providerBoundary: {
+        releaseEligible: boolean;
+      };
+      session: {
+        state: string;
+      };
+    };
+  };
+
+  expect(statusResponse.status).toBe(200);
+  expect(statusJson.data.session.state).toBe("passed");
+  expect(statusJson.data.providerBoundary.releaseEligible).toBe(true);
+});
+
 test("challenge completion accepts a consumer-selected age-only proof bundle", async () => {
   const app = createTestApp();
   const createResponse = await app.handle(
@@ -949,6 +1277,328 @@ test("challenge completion accepts a consumer-selected age-only proof bundle", a
 
   expect(response.status).toBe(202);
   expect(json.data.providerBoundary.requestedClaims).toEqual(["age_over_18"]);
+});
+
+test("challenge completion exposes a reusable-proof start contract when Privado is configured", async () => {
+  const app = createTestApp({
+    env: privadoEnabledTestEnv,
+    privadoVerifierBackendClient: createFakePrivadoVerifierBackendClient(),
+  });
+  const createResponse = await app.handle(
+    new Request("http://humanify.local/guilds/guild_123/verification/sessions", {
+      body: JSON.stringify({
+        requiredCapabilities: ["captcha", "age_over_18"],
+        userId: "user_123",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    }),
+  );
+  const created = await createResponse.json() as {
+    data: {
+      challengeToken: string;
+      session: {
+        challengeId: string;
+        sessionId: string;
+      };
+    };
+  };
+
+  const response = await app.handle(
+    new Request(`http://humanify.local/verification/challenges/${created.data.session.challengeId}/complete`, {
+      body: JSON.stringify({
+        guildId: "guild_123",
+        providerId: "privado",
+        requestedClaims: ["age_over_18", "nationality"],
+        sessionId: created.data.session.sessionId,
+        token: created.data.challengeToken,
+        userId: "user_123",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    }),
+  );
+  const json = await response.json() as {
+    data: {
+      providerBoundary: {
+        providerFlowConfigured: boolean;
+        providerStartEndpoint?: string;
+        providerStartToken?: string;
+        selectedProvider: string;
+      };
+    };
+  };
+
+  expect(response.status).toBe(202);
+  expect(json.data.providerBoundary.selectedProvider).toBe("privado");
+  expect(json.data.providerBoundary.providerFlowConfigured).toBe(true);
+  expect(json.data.providerBoundary.providerStartEndpoint).toBe(
+    `/verification/sessions/${created.data.session.sessionId}/providers/privado/start`,
+  );
+  expect(json.data.providerBoundary.providerStartToken).toContain(".");
+});
+
+test("Privado reusable-proof start returns a wallet launch and signed provider session token", async () => {
+  const app = createTestApp({
+    env: privadoEnabledTestEnv,
+    privadoVerifierBackendClient: createFakePrivadoVerifierBackendClient(),
+  });
+  const createResponse = await app.handle(
+    new Request("http://humanify.local/guilds/guild_123/verification/sessions", {
+      body: JSON.stringify({
+        requiredCapabilities: ["captcha", "age_over_18"],
+        userId: "user_123",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    }),
+  );
+  const created = await createResponse.json() as {
+    data: {
+      challengeToken: string;
+      session: {
+        challengeId: string;
+        sessionId: string;
+      };
+    };
+  };
+  const completeResponse = await app.handle(
+    new Request(`http://humanify.local/verification/challenges/${created.data.session.challengeId}/complete`, {
+      body: JSON.stringify({
+        guildId: "guild_123",
+        providerId: "privado",
+        requestedClaims: ["age_over_18", "nationality"],
+        sessionId: created.data.session.sessionId,
+        token: created.data.challengeToken,
+        userId: "user_123",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    }),
+  );
+  const completed = await completeResponse.json() as {
+    data: {
+      providerBoundary: {
+        providerStartToken: string;
+      };
+    };
+  };
+
+  const response = await app.handle(
+    new Request(
+      `http://humanify.local/verification/sessions/${created.data.session.sessionId}/providers/privado/start`,
+      {
+        body: JSON.stringify({
+          backUrl: "https://verifier.humanify.test/verify?sessionId=session_123",
+          finishUrl: "https://verifier.humanify.test/verify?sessionId=session_123",
+          providerStartToken: completed.data.providerBoundary.providerStartToken,
+        }),
+        headers: {
+          "content-type": "application/json",
+        },
+        method: "POST",
+      },
+    ),
+  );
+  const json = await response.json() as {
+    data: {
+      flow: {
+        providerSessionId: string;
+        providerSessionToken: string;
+        request: {
+          scope: Array<{
+            query: {
+              type: string;
+            };
+          }>;
+        };
+        universalLink: string;
+      };
+      providerBoundary: {
+        status: string;
+      };
+    };
+  };
+
+  expect(response.status).toBe(202);
+  expect(json.data.flow.providerSessionId).toBe("privado_backend_session_123");
+  expect(json.data.flow.providerSessionToken).toContain(".");
+  expect(json.data.flow.universalLink).toContain("https://wallet.privado.id/#request_uri=");
+  expect(json.data.flow.request.scope.map((entry) => entry.query.type)).toEqual([
+    "KYCAgeCredential",
+    "KYCCountryOfResidenceCredential",
+  ]);
+  expect(json.data.providerBoundary.status).toBe("proof_request_created");
+});
+
+test("Privado proof verification reduces backend status to predicates, nullifiers, and minimal receipt refs", async () => {
+  let expectedNullifierSessionId = "";
+  const app = createTestApp({
+    env: privadoEnabledTestEnv,
+    privadoVerifierBackendClient: {
+      async createProofRequest(request) {
+        expect(request.scope.length).toBeGreaterThan(0);
+        return {
+          qrCode: "iden3comm://?request_uri=https%3A%2F%2Fverifier-backend.privado.id%2Fqr-store%3Fid%3Dproof_123",
+          sessionID: "privado_backend_session_123",
+        };
+      },
+      async readProofStatus(sessionId) {
+        expect(sessionId).toBe("privado_backend_session_123");
+        return {
+          jwz: "proof-token",
+          jwzMetadata: {
+            nullifiers: [
+              {
+                nullifier: "nullifier_age",
+                nullifierSessionID: expectedNullifierSessionId,
+                scopeID: 1,
+              },
+              {
+                nullifier: "nullifier_country",
+                nullifierSessionID: expectedNullifierSessionId,
+                scopeID: 2,
+              },
+            ],
+            userDID: "did:polygonid:polygon:amoy:2qExample",
+            verifiablePresentations: [
+              { credentialSubject: { birthday: 20000101 } },
+              { credentialSubject: { countryCode: 840 } },
+            ],
+          },
+          status: "success",
+        };
+      },
+    },
+  });
+  const createResponse = await app.handle(
+    new Request("http://humanify.local/guilds/guild_123/verification/sessions", {
+      body: JSON.stringify({
+        requiredCapabilities: ["captcha", "age_over_18"],
+        userId: "user_123",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    }),
+  );
+  const created = await createResponse.json() as {
+    data: {
+      challengeToken: string;
+      session: {
+        challengeId: string;
+        sessionId: string;
+      };
+    };
+  };
+  expectedNullifierSessionId = created.data.session.sessionId;
+  const completeResponse = await app.handle(
+    new Request(`http://humanify.local/verification/challenges/${created.data.session.challengeId}/complete`, {
+      body: JSON.stringify({
+        guildId: "guild_123",
+        providerId: "privado",
+        requestedClaims: ["age_over_18", "nationality"],
+        sessionId: created.data.session.sessionId,
+        token: created.data.challengeToken,
+        userId: "user_123",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    }),
+  );
+  const completed = await completeResponse.json() as {
+    data: {
+      providerBoundary: {
+        providerStartToken: string;
+      };
+    };
+  };
+  const startResponse = await app.handle(
+    new Request(
+      `http://humanify.local/verification/sessions/${created.data.session.sessionId}/providers/privado/start`,
+      {
+        body: JSON.stringify({
+          providerStartToken: completed.data.providerBoundary.providerStartToken,
+        }),
+        headers: {
+          "content-type": "application/json",
+        },
+        method: "POST",
+      },
+    ),
+  );
+  const started = await startResponse.json() as {
+    data: {
+      flow: {
+        providerSessionToken: string;
+      };
+    };
+  };
+
+  const response = await app.handle(
+    new Request("http://humanify.local/verification/providers/privado/proof", {
+      body: JSON.stringify({
+        providerSessionToken: started.data.flow.providerSessionToken,
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    }),
+  );
+  const json = await response.json() as {
+    data: {
+      persistence: string;
+      providerBoundary: {
+        releaseEligible: boolean;
+        status: string;
+      };
+      verification: {
+        proofReceipt: {
+          nullifiers: Array<{
+            nullifier: string;
+          }>;
+          proofReceiptHash?: string;
+          proofReceiptRef?: string;
+        };
+        satisfiedClaims: string[];
+        status: string;
+      };
+      writePlan: {
+        canonicalMutations: Array<{
+          table: string;
+        }>;
+      };
+    };
+  };
+
+  expect(response.status).toBe(202);
+  expect(json.data.persistence).toBe("planned_not_persisted");
+  expect(json.data.providerBoundary.releaseEligible).toBe(true);
+  expect(json.data.providerBoundary.status).toBe("provider_proof_verified");
+  expect(json.data.verification.status).toBe("verified");
+  expect(json.data.verification.satisfiedClaims).toEqual(["age_over_18", "nationality"]);
+  expect(json.data.verification.proofReceipt.proofReceiptRef).toBe("privado:session:privado_backend_session_123");
+  expect(json.data.verification.proofReceipt.proofReceiptHash).toContain("sha256:");
+  expect(json.data.verification.proofReceipt.nullifiers.map((entry) => entry.nullifier)).toEqual([
+    "nullifier_age",
+    "nullifier_country",
+  ]);
+  expect(json.data.writePlan.canonicalMutations).toEqual(expect.arrayContaining([
+    expect.objectContaining({ table: "verification_sessions" }),
+    expect.objectContaining({ table: "verification_artifacts" }),
+  ]));
 });
 
 test("verification release stays blocked until server-side provider verification can prove a passed session", async () => {

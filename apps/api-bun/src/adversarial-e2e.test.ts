@@ -26,7 +26,7 @@ import { parseComponentCustomId } from "@humanify/discord-core";
 import { createBotApiClient, createInteractionHandler, decideApprovedActionExecution } from "../../bot-bun/src/index";
 import { completeVerificationChallenge, fetchVerificationSession } from "../../verifier-start/src/verification-flow";
 import { createApiApp, type HumanifyApiApp, type LearningServiceClient } from "./app";
-import { createInMemoryReportCasesRepository } from "./test-support";
+import { createInMemoryReportCasesRepository, createInMemoryVerificationSessionsRepository } from "./test-support";
 
 const fixedNow = Date.UTC(2026, 0, 1, 0, 0, 0);
 
@@ -78,6 +78,7 @@ function createTestApp(
     learningServiceClient,
     now: () => fixedNow,
     reportCasesRepository: repository,
+    verificationSessionsRepository: createInMemoryVerificationSessionsRepository(),
   });
 }
 
@@ -176,7 +177,7 @@ test("message-context intake, verifier signed links, and moderation planning sta
     userId,
   });
 
-  expect(verification.persistence).toBe("planned_not_persisted");
+  expect(verification.persistence).toBe("persisted");
 
   const session = await fetchVerificationSession(fetchFn, {
     apiBaseUrl: "http://humanify.local",
@@ -184,7 +185,7 @@ test("message-context intake, verifier signed links, and moderation planning sta
     token: verification.challengeToken,
   });
 
-  expect(session.persistence).toBe("derived_from_signed_challenge");
+  expect(session.persistence).toBe("persisted");
   expect(session.session).toMatchObject({
     sessionId: verification.session.sessionId,
     state: "challenge_issued",

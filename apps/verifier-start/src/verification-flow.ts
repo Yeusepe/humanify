@@ -14,6 +14,14 @@
  * - apps/verifier-start/src/verification-flow.test.ts
  */
 
+import type {
+  DiditSdk as DiditSdkInstance,
+  EventCallback as DiditEventCallback,
+  StateChangeCallback as DiditStateChangeCallback,
+  VerificationCallback as DiditVerificationCallback,
+  VerificationResult as DiditVerificationResult,
+} from "@didit-protocol/sdk-web";
+
 import { createRequestTelemetryContext, injectRequestTelemetryHeaders } from "@humanify/telemetry";
 import {
   getDefaultHumanifyIdClaimBundle as getSharedDefaultHumanifyIdClaimBundle,
@@ -45,15 +53,30 @@ export type VerificationSessionSnapshot = {
   requiredCapabilities: string[];
   sessionId: string;
   source: string;
-  state: "challenge_issued" | "provider_pending";
+  state: "challenge_issued" | "provider_pending" | "passed" | "failed" | "expired" | "cancelled";
   userId: string;
 };
 
+export type DiditProviderLaunch = {
+  mode: "didit_sdk";
+  packageName: "@didit-protocol/sdk-web";
+  providerId: "didit";
+  providerSessionId: string;
+  providerStatus: string;
+  url: string;
+};
+
+export type VerificationProviderLaunch = DiditProviderLaunch;
+
 export type VerificationProviderBoundary = {
   handoffKind?: VerificationProviderHandoffKind;
+  launch?: VerificationProviderLaunch;
   nextStep: string;
   providerFlowConfigured: boolean;
   providerServerEndpoint?: string;
+  providerSessionToken?: string;
+  providerStartEndpoint?: string;
+  providerStartToken?: string;
   releaseEligible: boolean;
   requestedClaims?: HumanifyClaimKey[];
   requiredCapabilities?: string[];
@@ -81,11 +104,76 @@ export type VerificationChallengeData = {
   session: VerificationSessionSnapshot;
 };
 
+export type ReusableProofStartData = {
+  flow: {
+    providerId: VerificationProviderId;
+    providerSessionId: string;
+    providerSessionToken: string;
+    qrCodeValue: string;
+    request: {
+      chainID: string;
+      reason: string;
+      scope: Array<{
+        circuitId: string;
+        id: number;
+        query: {
+          allowedIssuers: string[];
+          context: string;
+          credentialSubject: Record<string, unknown>;
+          type: string;
+        };
+      }>;
+    };
+    requestUri?: string;
+    universalLink: string;
+  };
+  persistence: string;
+  providerBoundary: VerificationProviderBoundary;
+  session: VerificationSessionSnapshot;
+};
+
+export type ReusableProofVerificationData = {
+  persistence: string;
+  providerBoundary: VerificationProviderBoundary;
+  session: VerificationSessionSnapshot;
+  verification: {
+    message: string;
+    proofReceipt: {
+      nullifiers: Array<{
+        claimKey?: HumanifyClaimKey;
+        nullifier: string;
+        nullifierSessionId: string;
+        scopeId: number;
+      }>;
+      proofReceiptHash?: string;
+      proofReceiptRef?: string;
+      trustedIssuerScopes: string[];
+      verifiablePresentationCount: number;
+    };
+    providerId: VerificationProviderId;
+    providerSessionId: string;
+    satisfiedClaims: HumanifyClaimKey[];
+    status: "failed" | "pending" | "verified";
+  };
+};
+
 export type VerificationChecklistItem = {
   detail: string;
   status: "blocked" | "complete" | "pending";
   title: string;
 };
+
+export type DiditBrowserResult = {
+  kind: "cancelled" | "completed" | "failed";
+  message: string;
+  refreshStatus: boolean;
+};
+
+export type DiditSdkLike = {
+  onComplete?: DiditVerificationCallback;
+  onEvent?: DiditEventCallback;
+  onStateChange?: DiditStateChangeCallback;
+} & Pick<DiditSdkInstance, "startVerification">;
 
 type ApiEnvelope<TData> = {
   contractVersion: string;
@@ -157,6 +245,18 @@ export function getVerificationProviderClaimCompatibility(
   requestedClaims: readonly HumanifyClaimKey[],
 ): boolean {
   return verificationProviderSupportsClaims(provider, requestedClaims);
+}
+
+export function getDiditLaunchContract(boundary: VerificationProviderBoundary): DiditProviderLaunch | null {
+  if (
+    boundary.launch?.mode === "didit_sdk"
+    && boundary.launch.providerId === "didit"
+    && typeof boundary.launch.url === "string"
+  ) {
+    return boundary.launch;
+  }
+
+  return null;
 }
 
 export function parseVerificationSearch(search: Record<string, unknown>): VerificationRouteSearch {
@@ -261,6 +361,65 @@ export async function completeVerificationChallenge(
   return readApiEnvelope<VerificationChallengeData>(response);
 }
 
+export async function startReusableProofFlow(
+  fetchImpl: FetchLike,
+  input: {
+    apiBaseUrl: string;
+    backUrl?: string;
+    finishUrl?: string;
+    providerId: VerificationProviderId;
+    providerStartEndpoint: string;
+    providerStartToken: string;
+  },
+) {
+  const requestTelemetry = createRequestTelemetryContext();
+  const response = await fetchImpl(
+    buildApiUrl(input.apiBaseUrl, input.providerStartEndpoint),
+    {
+      body: JSON.stringify({
+        backUrl: input.backUrl,
+        finishUrl: input.finishUrl,
+        providerStartToken: input.providerStartToken,
+      }),
+      credentials: "include",
+      headers: injectRequestTelemetryHeaders({
+        accept: "application/json",
+        "content-type": "application/json",
+      }, requestTelemetry),
+      method: "POST",
+    },
+  );
+
+  return readApiEnvelope<ReusableProofStartData>(response);
+}
+
+export async function verifyReusableProofResult(
+  fetchImpl: FetchLike,
+  input: {
+    apiBaseUrl: string;
+    providerId: VerificationProviderId;
+    providerSessionToken: string;
+  },
+) {
+  const requestTelemetry = createRequestTelemetryContext();
+  const response = await fetchImpl(
+    buildApiUrl(input.apiBaseUrl, `/verification/providers/${encodeURIComponent(input.providerId)}/proof`),
+    {
+      body: JSON.stringify({
+        providerSessionToken: input.providerSessionToken,
+      }),
+      credentials: "include",
+      headers: injectRequestTelemetryHeaders({
+        accept: "application/json",
+        "content-type": "application/json",
+      }, requestTelemetry),
+      method: "POST",
+    },
+  );
+
+  return readApiEnvelope<ReusableProofVerificationData>(response);
+}
+
 export function buildVerificationChecklist(input: {
   challengeCompleted: boolean;
   providerFlowConfigured: boolean;
@@ -281,7 +440,7 @@ export function buildVerificationChecklist(input: {
     },
     {
       detail: input.providerFlowConfigured
-        ? "The selected provider's server verification flow is configured and can advance the session."
+        ? "The selected provider's server verification flow is configured; start the wallet handoff and wait for Humanify's server verification result."
         : "Provider verification remains disabled until Humanify wires the selected provider's server-side proof or webhook contract.",
       status: input.providerFlowConfigured ? "pending" : "blocked",
       title: "Provider verification",
@@ -296,4 +455,49 @@ export function buildVerificationChecklist(input: {
   ];
 
   return items;
+}
+
+function summarizeDiditBrowserResult(result: DiditVerificationResult): DiditBrowserResult {
+  switch (result.type) {
+    case "completed":
+      return {
+        kind: "completed",
+        message: `Didit finished in your browser with status "${result.session?.status ?? "Unknown"}". Humanify is now checking the server-confirmed result.`,
+        refreshStatus: true,
+      };
+    case "cancelled":
+      return {
+        kind: "cancelled",
+        message: "You closed Didit before Humanify received a finished result. Your verification is still pending.",
+        refreshStatus: false,
+      };
+    case "failed":
+      return {
+        kind: "failed",
+        message: result.error?.message
+          ? `Didit could not continue: ${result.error.message}`
+          : "Didit could not continue. Please try again or choose another proof path.",
+        refreshStatus: false,
+      };
+  }
+}
+
+export async function startDiditVerification(
+  sdk: DiditSdkLike,
+  input: {
+    launch: DiditProviderLaunch;
+    onBrowserResult: (result: DiditBrowserResult) => void;
+  },
+) {
+  sdk.onComplete = (result) => {
+    input.onBrowserResult(summarizeDiditBrowserResult(result));
+  };
+
+  await sdk.startVerification({
+    configuration: {
+      closeModalOnComplete: true,
+      showExitConfirmation: true,
+    },
+    url: input.launch.url,
+  });
 }

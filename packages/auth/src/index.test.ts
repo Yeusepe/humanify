@@ -20,8 +20,12 @@ import {
   buildDiscordOAuthAuthorizeUrl,
   createSessionCookieOptions,
   issueDiscordOAuthState,
+  issueReusableProofSessionToken,
+  issueReusableProofStartToken,
   issueVerifierChallengeToken,
   verifyDiscordOAuthState,
+  verifyReusableProofSessionToken,
+  verifyReusableProofStartToken,
   verifyVerifierChallengeToken,
 } from "./index";
 
@@ -83,4 +87,50 @@ test("session cookie helpers default to httpOnly lax cookies", () => {
     sameSite: "lax",
     secure: true,
   });
+});
+
+test("reusable proof tokens stay provider, session, and claim scoped", () => {
+  const now = Date.UTC(2026, 0, 1, 0, 0, 0);
+  const startToken = issueReusableProofStartToken(
+    {
+      challengeId: "challenge_123",
+      guildId: "guild_123",
+      providerId: "privado",
+      requiredCapabilities: ["captcha"],
+      requestedClaims: ["age_over_18", "nationality"],
+      sessionId: "session_123",
+      userId: "user_123",
+    },
+    "proof-secret",
+    120,
+    now,
+  );
+  const sessionToken = issueReusableProofSessionToken(
+    {
+      challengeId: "challenge_123",
+      guildId: "guild_123",
+      providerId: "privado",
+      providerSessionId: "backend_123",
+      requiredCapabilities: ["captcha"],
+      requestedClaims: ["age_over_18", "nationality"],
+      sessionId: "session_123",
+      userId: "user_123",
+    },
+    "proof-secret",
+    120,
+    now,
+  );
+
+  expect(verifyReusableProofStartToken(startToken, "proof-secret", now + 1_000)).toMatchObject({
+    providerId: "privado",
+    requiredCapabilities: ["captcha"],
+    requestedClaims: ["age_over_18", "nationality"],
+    sessionId: "session_123",
+  });
+  expect(verifyReusableProofSessionToken(sessionToken, "proof-secret", now + 1_000)).toMatchObject({
+    providerId: "privado",
+    providerSessionId: "backend_123",
+    sessionId: "session_123",
+  });
+  expect(() => verifyReusableProofStartToken(startToken, "wrong-secret", now + 1_000)).toThrow();
 });

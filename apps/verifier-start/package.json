@@ -11,14 +11,15 @@
     "preview": "vite preview",
     "typecheck": "tsc --project tsconfig.json --noEmit"
   },
-    "dependencies": {
-        "@heroui/react": "^3.0.3",
-        "@heroui/styles": "^3.0.3",
-       "@humanify/contracts": "workspace:*",
-       "@humanify/telemetry": "workspace:*",
-       "@humanify/ui": "workspace:*",
-       "@humanify/verification-providers": "workspace:*",
-     "@tanstack/react-router": "^1.168.24",
+  "dependencies": {
+    "@didit-protocol/sdk-web": "^0.1.9",
+    "@heroui/react": "^3.0.3",
+    "@heroui/styles": "^3.0.3",
+    "@humanify/contracts": "workspace:*",
+    "@humanify/telemetry": "workspace:*",
+    "@humanify/ui": "workspace:*",
+    "@humanify/verification-providers": "workspace:*",
+    "@tanstack/react-router": "^1.168.24",
     "@tanstack/react-start": "^1.167.49",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",

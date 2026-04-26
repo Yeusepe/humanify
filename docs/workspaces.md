@@ -23,6 +23,14 @@ This document governs the repo-level monorepo bootstrap created for `bootstrap-w
 - TanStack Start React overview: https://tanstack.com/start/latest/docs/framework/react/overview
 - TanStack Start build from scratch: https://tanstack.dev/start/latest/docs/framework/react/build-from-scratch
 - TanStack Start Tailwind integration: https://tanstack.dev/start/latest/docs/framework/react/guide/tailwind-integration
+- Didit JavaScript SDK: https://docs.didit.me/integration/web-sdks/javascript-sdk
+- Didit API full flow: https://docs.didit.me/integration/api-full-flow
+- Didit webhooks: https://docs.didit.me/integration/webhooks
+- Privado verifier overview: https://docs.privado.id/docs/verifier/verifier-overview/
+- Privado request API: https://docs.privado.id/docs/verifier/verification-library/request-api/
+- Privado verification API: https://docs.privado.id/docs/verifier/verification-library/verification-api/
+- Privado verifier backend: https://docs.privado.id/docs/verifier/verifier-backend/
+- W3C VC Data Model: https://www.w3.org/TR/vc-data-model/
 - HeroUI React getting started: https://www.heroui.com/docs/react/getting-started
 - HeroUI theming: https://www.heroui.com/docs/react/getting-started/theming
 - HeroUI styling: https://www.heroui.com/docs/react/getting-started/styling
@@ -84,8 +92,15 @@ Current boundaries:
 | `packages\policy-engine` | Shared Bun policy package | Converts advisory risk + guild policy into clamped allowed actions |
 | `packages\queue` | Shared Redis Streams package | Owns queue envelopes, trace propagation, and recovery plan helpers |
 | `packages\telemetry` | Shared observability package | Owns traceparent helpers, safe log fields, and redaction boundaries |
-| `packages\verification-providers` | Shared verification provider registry | Owns provider template definitions, Humanify ID claim helpers, and runtime provider catalog filtering |
+| `packages\verification-providers` | Shared verification strategy/pipeline package | Owns role-based strategy manifests, capture-provider adapters, reusable-proof backend adapters, Humanify claim predicate helpers, and runtime strategy filtering |
 | `packages\ui` | Shared HeroUI shell components | Provides minimal shared layout components for Start apps |
+
+Verification workspace rule:
+
+- `packages\verification-providers` is not an app-level provider registry that leaks provider semantics into `apps\api-bun` or `apps\verifier-start`.
+- It defines generic capture-provider, reusable-proof-backend, and policy-consumer strategy boundaries so the Bun apps stay orchestration-first.
+- The approved default strategy mapping is Didit for first-time capture and Privado for reusable-proof verification, but the workspace contract stays role-based so later providers can be swapped without rewriting app logic.
+- Humanify claim helpers and proof normalization in this package must preserve the repo's no-custody rule: only minimal proof receipts, attestation references, nullifiers or replay guards, and audit evidence may leave the strategy layer.
 
 ### Local dev stack command
 

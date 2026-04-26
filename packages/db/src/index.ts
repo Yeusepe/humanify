@@ -52,6 +52,12 @@ export type {
   RiskQueueItem,
   ReportCasesRepository,
 } from "./reports-cases";
+export { createPostgresVerificationSessionsRepository } from "./verification-sessions";
+export type {
+  VerificationSessionRecord,
+  VerificationSessionState,
+  VerificationSessionsRepository,
+} from "./verification-sessions";
 
 export type CanonicalMutation = {
   dataRef: string;
