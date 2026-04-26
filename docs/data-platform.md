@@ -134,6 +134,7 @@ Notes:
 - R2 stores bytes; Postgres stores blob identity and policy metadata.
 - Object keys should be content-addressed or hash-prefixed to make dedupe and immutable addressing straightforward.
 - Retention, redaction, legal hold, and deletion eligibility are all metadata decisions in Postgres, never inferred from R2 alone.
+- The first real durable evidence path is Discord `message_link` metadata only: `evidence_records` plus `evidence_links.discord_message_url` and optional `redacted_text_snapshot` are canonical, while blob-backed evidence kinds remain deferred until upload + hashing + redaction are wired.
 
 ### 3.6 Learning and similarity
 
@@ -284,6 +285,10 @@ Guidance:
 1. Write the canonical Postgres mutation before acknowledging cross-service work as complete.
 2. Retries may repeat transport effects; they must not create duplicate business records or duplicate Discord moderation actions.
 3. Prefer immutable append-only events plus terminal status transitions over in-place mutation without history.
+4. The first canonical report/evidence slice now uses:
+   - `report:{guildId}:{triggerFingerprint}:{reporterUserId}` for report intake retries
+   - `report-evidence:{reportId}:message_link:{messageId}` for message-link evidence retries
+   - `cases.opening_fingerprint` reuse for the initial case-collapse path behind repeated report triggers
 
 ## 10. Vector ownership and optional Qdrant
 

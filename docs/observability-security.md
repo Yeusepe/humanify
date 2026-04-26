@@ -96,6 +96,13 @@ OpenTelemetry trace context is the default propagation model.
 3. Preserve correlation through Postgres outbox rows so retries and replays keep lineage.
 4. Use baggage only for low-cardinality, non-secret routing context; never place secrets, tokens, raw evidence, or provider payloads in trace metadata.
 
+Current first-slice wiring:
+
+- `apps\bot-bun` now creates a request correlation bundle per interaction and forwards both `traceparent` and `x-request-id` to `apps\api-bun`.
+- `apps\verifier-start` now forwards the same correlation headers on signed-link session fetch and challenge-complete requests so verifier-originated API work joins the same trace/log lineage model as Bun services.
+- `packages\queue` continues the same `traceparent` through Redis Streams envelopes.
+- Rust HTTP services now log incoming `traceparent` and `x-request-id` on their request spans so Bun-originated work remains correlated at the advisory boundary even before full OpenTelemetry SDK exporters land.
+
 ### 4.3 Span expectations
 
 Every meaningful span should describe:
@@ -113,6 +120,12 @@ Do not attach raw message content, full evidence bodies, OAuth codes, webhook si
 2. Bun apps and Rust services should converge on the same core fields: timestamp, level, service, environment, release, requestId, traceId, spanId, event name, and bounded correlation IDs.
 3. Logs are for operational diagnosis, not durable business truth.
 4. Security-sensitive logs must record the decision that something was rejected or allowed without dumping the sensitive payload itself.
+
+Current first-slice logging posture:
+
+- `apps\api-bun` now emits structured request-complete and request-failed logs with `requestId`, `traceId`, `spanId`, method, path, and status, while redacting sensitive headers before they reach logs.
+- Internal API errors now return a stable generic `internal_error` message to clients while detailed diagnostics stay in structured logs.
+- `apps\bot-bun` boot logs now advertise both propagation headers and whether Sentry is enabled for that runtime.
 
 Required redaction defaults:
 
@@ -151,6 +164,12 @@ Rules:
 4. If request/user context is attached, scrub it first and prefer internal IDs or hashes.
 5. Treat Sentry event payloads as external data egress; never send secrets, raw evidence, or provider payloads.
 6. Ensure shutdown paths flush Sentry and telemetry exporters cleanly.
+
+Current first-slice Bun wiring:
+
+- `apps\api-bun` and `apps\bot-bun` now preload Bun-specific Sentry initialization before application code runs.
+- Sentry stays opt-in through environment configuration (`HUMANIFY_SENTRY_DSN`, optional `HUMANIFY_SENTRY_TRACES_SAMPLE_RATE`) and keeps `sendDefaultPii` disabled by default.
+- Humanify redacts nested event payloads before Sentry egress, so callback tokens, OAuth codes, cookies, DSNs, and signed URLs are scrubbed even if they appear in captured error metadata.
 
 Sentry is for actionable failures; audit records still belong in canonical application state.
 

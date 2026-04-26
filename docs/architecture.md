@@ -73,7 +73,7 @@ flowchart TD
 | --- | --- | --- | --- |
 | Discord ingress and moderation execution | `apps\bot-bun` + `packages\discord-core` | `apps\api-bun`, `packages\policy-engine` | slash/context commands, event normalization, permission-aware action execution |
 | HTTP product boundary | `apps\api-bun` | shared Bun packages, Rust services | auth/session routes, guild config, case/report APIs, verification routes, provider callbacks, action approval |
-| Moderator UI | `apps\dashboard-start` | Electric, TanStack DB, HeroUI | live queue, cases, policy builder, trust views, audit views |
+| Moderator UI | `apps\dashboard-start` | Electric, TanStack DB, HeroUI | overview, risk-queue/case boundary visibility, verification state, action-policy boundary visibility, later live queue/cases/audit views |
 | Verifier UI | `apps\verifier-start` | API, Electric, shared UI/auth | Discord-bound verification session UX and release results |
 | Shared product kernel | `packages\policy-engine`, `packages\db`, `packages\queue`, `packages\auth`, `packages\telemetry`, `packages\config`, `packages\contracts`, `packages\ui` | Postgres, Redis Streams, OpenTelemetry | reusable policy, persistence, queue, auth, validation, telemetry, and UI primitives |
 | Advisory intelligence | `services\inference-rs`, `services\learning-rs`, `services\evidence-rs`, `services\trust-rs` | `crates\humanify-*`, Postgres, Redis Streams | scoring, similarity, embeddings, evidence transforms, learning updates, trust calculations |
@@ -176,7 +176,18 @@ The docs created in this phase unlock the next dependencies in order: canonical 
 5. Queue consumers must be replay-safe and re-check canonical state before destructive work.
 6. Verification providers, trust-network feeds, and evidence transforms remain replaceable adapters behind Bun-owned orchestration.
 
-## 8. What follow-on work depends on this doc
+## 8. Dashboard MVP information architecture
+
+The first real moderator dashboard in `apps\dashboard-start` now uses four operator routes:
+
+- `/` for overview and system-state visibility
+- `/cases` for honest risk-queue and case-read boundary visibility
+- `/verification` for verification lifecycle and release-gate visibility
+- `/policy` for action ladder and Bun-side policy clamp visibility
+
+These routes are intentionally read-honest. They may show `pending_postgres_projection`, `dependency_unavailable`, `env_default_policy`, or other explicit boundary states, but they must not fabricate live case rows, moderation history, or verification outcomes before Postgres-backed read models and Electric sync exist.
+
+## 9. What follow-on work depends on this doc
 
 - `define-shared-contracts` must keep the Bun ↔ Rust boundary aligned with the ownership matrix above.
 - `wire-observability-security` must attach traces, audit, and redaction to the canonical write path, not as sidecars.

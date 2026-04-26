@@ -34,8 +34,10 @@ import {
   verifyVerifierChallengeToken,
 } from "@humanify/auth";
 import {
+  loadAdvisoryServiceConfig,
   loadDataPlaneConfig,
   loadDiscordOAuthConfig,
+  loadObservabilityConfig,
   loadPolicyClampConfig,
   loadServiceIdentityConfig,
   loadSessionConfig,
@@ -52,11 +54,15 @@ import {
 } from "@humanify/contracts";
 import { createDiscordAuditReason, createBotGatewayIntents, resolveDiscordExecutionPlan } from "@humanify/discord-core";
 import {
+  createPostgresReportCasesRepository,
   createIdempotencyReceipt,
   createOutboxEvent,
   parsePostgresConnectionString,
   planCanonicalWrite,
   redactPostgresConnectionString,
+  type LearningFeedbackSummary,
+  type CaseOutcomeKind,
+  type ReportCasesRepository,
 } from "@humanify/db";
 import {
   evaluatePolicy,
@@ -67,11 +73,16 @@ import {
 } from "@humanify/policy-engine";
 import { createQueueEnvelope } from "@humanify/queue";
 import {
+  createRequestTelemetryContext,
+  createStructuredErrorFields,
   createStructuredLogFields,
   createTelemetryBootstrap,
-  createTraceContext,
   extractTraceContext,
   formatTraceParent,
+  injectRequestTelemetryHeaders,
+  redactSensitiveHeaders,
+  requestIdHeaderName,
+  type RequestTelemetryContext,
   type TraceContext,
 } from "@humanify/telemetry";
 
@@ -123,9 +134,38 @@ type RequestContext = {
   traceContext: TraceContext;
 };
 
+type LoggerLike = Pick<Console, "error" | "info">;
+
+type LearningServiceCaseOutcome = {
+  caseId: string;
+  confidence: number;
+  decidedAt: string;
+  decidedBy: string;
+  evidenceRefs: string[];
+  guildId: string;
+  outcome: CaseOutcomeKind;
+  reasonCodes: string[];
+  subjectUserIdHash: string;
+};
+
+type LearningServiceSummary = LearningFeedbackSummary & {
+  caseId: string;
+  contractVersion: string;
+};
+
+export type LearningServiceClient = {
+  ingestCaseOutcome(
+    outcome: LearningServiceCaseOutcome,
+    requestTelemetry?: RequestTelemetryContext,
+  ): Promise<LearningServiceSummary>;
+};
+
 export type ApiAppOptions = {
   env?: EnvSource;
+  learningServiceClient?: LearningServiceClient;
+  logger?: LoggerLike;
   now?: () => number;
+  reportCasesRepository?: ReportCasesRepository;
 };
 
 class ApiRouteError extends Error {
@@ -172,6 +212,23 @@ function buildEnvelope<TData>(requestId: string, data: TData): ApiEnvelope<TData
   };
 }
 
+function buildDerivedVerificationSession(
+  verified: ReturnType<typeof verifyVerifierChallengeToken>,
+  state: "challenge_issued" | "provider_pending",
+) {
+  return {
+    challengeId: verified.challengeId,
+    challengeExpiresAt: new Date(verified.exp * 1_000).toISOString(),
+    guildId: verified.guildId,
+    releaseEligible: false,
+    requiredCapabilities: verified.requiredCapabilities,
+    sessionId: verified.sessionId,
+    source: "signed_challenge_token",
+    state,
+    userId: verified.userId,
+  };
+}
+
 function buildErrorEnvelope(requestId: string, errorCode: ApiErrorCode, message: string, retryable: boolean) {
   return {
     errorCode,
@@ -199,16 +256,18 @@ function getHeaderRecordValue(headers: unknown, key: string): string | undefined
 }
 
 function ensureResponseContext(request: Request, set: { headers: ResponseHeadersMap }): RequestContext {
-  const requestId = getHeaderRecordValue(set.headers, "x-request-id") ?? request.headers.get("x-request-id") ?? crypto.randomUUID();
-  const incomingTrace = extractTraceContext(request.headers);
-  const traceContext = incomingTrace ?? createTraceContext();
+  const requestTelemetry = createRequestTelemetryContext({
+    headers: request.headers,
+    requestId: getHeaderRecordValue(set.headers, requestIdHeaderName),
+    traceContext: extractTraceContext(request.headers),
+  });
 
-  set.headers["x-request-id"] = requestId;
-  set.headers.traceparent = formatTraceParent(traceContext);
+  set.headers[requestIdHeaderName] = requestTelemetry.requestId;
+  set.headers.traceparent = formatTraceParent(requestTelemetry.traceContext);
 
   return {
-    requestId,
-    traceContext,
+    requestId: requestTelemetry.requestId,
+    traceContext: requestTelemetry.traceContext,
   };
 }
 
@@ -312,11 +371,198 @@ function buildReadModelPendingEnvelope(requestContext: RequestContext, entity: s
   });
 }
 
+async function hashSubjectUserId(userId: string) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(userId.trim()));
+  const hash = Array.from(new Uint8Array(digest), (entry) => entry.toString(16).padStart(2, "0")).join("");
+  return `sha256:${hash}`;
+}
+
+function createLearningServiceClient(input: {
+  baseUrl: string;
+  fetchFn?: typeof fetch;
+}): LearningServiceClient {
+  const fetchFn = input.fetchFn ?? fetch;
+
+  return {
+    async ingestCaseOutcome(outcome, requestTelemetry = createRequestTelemetryContext()) {
+      const response = await fetchFn(`${input.baseUrl}/internal/learning/case-outcomes`, {
+        body: JSON.stringify(outcome),
+        headers: injectRequestTelemetryHeaders({
+          accept: "application/json",
+          "content-type": "application/json",
+        }, requestTelemetry),
+        method: "POST",
+      });
+
+      if (!response.ok) {
+        throw new Error(`learning_service_unavailable:${response.status}`);
+      }
+
+      return await response.json() as LearningServiceSummary;
+    },
+  };
+}
+
+function requireMessageLinkEvidence(body: {
+  channelId?: string;
+  evidenceType: string;
+  externalRef?: string;
+  guildId: string;
+  messageId?: string;
+  subjectUserId?: string;
+}) {
+  if (body.evidenceType !== "message_link") {
+    throw new ApiRouteError(
+      503,
+      "dependency_unavailable",
+      "Only canonical Discord message-link evidence is durably supported until blob upload and redaction wiring lands.",
+      true,
+    );
+  }
+
+  if (!body.channelId || !body.externalRef || !body.messageId || !body.subjectUserId) {
+    throw new ApiRouteError(
+      400,
+      "validation_failed",
+      "message_link evidence requires channelId, externalRef, messageId, and subjectUserId.",
+    );
+  }
+
+  let parsedExternalRef: URL;
+  try {
+    parsedExternalRef = new URL(body.externalRef);
+  } catch {
+    throw new ApiRouteError(400, "validation_failed", "message_link externalRef must be a valid absolute URL.");
+  }
+
+  if (parsedExternalRef.origin !== "https://discord.com") {
+    throw new ApiRouteError(
+      400,
+      "validation_failed",
+      "message_link externalRef must use the canonical https://discord.com/channels/{guildId}/{channelId}/{messageId} form.",
+    );
+  }
+
+  const [, channelsLiteral, guildId, channelId, messageId] = parsedExternalRef.pathname.split("/");
+  if (
+    channelsLiteral !== "channels"
+    || guildId !== body.guildId
+    || channelId !== body.channelId
+    || messageId !== body.messageId
+  ) {
+    throw new ApiRouteError(
+      400,
+      "validation_failed",
+      "message_link externalRef must match the submitted guildId, channelId, and messageId.",
+    );
+  }
+
+  return {
+    channelId: body.channelId,
+    externalRef: body.externalRef,
+    messageId: body.messageId,
+    subjectUserId: body.subjectUserId,
+  };
+}
+
+function resolveResponseStatus(set: { status?: unknown }, response: unknown) {
+  if (response instanceof Response) {
+    return response.status;
+  }
+
+  if (typeof set.status === "number") {
+    return set.status;
+  }
+
+  if (typeof set.status === "string") {
+    const parsed = Number.parseInt(set.status, 10);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+
+  return 200;
+}
+
+function logApiRequest(
+  logger: LoggerLike,
+  context: {
+    identity: ReturnType<typeof loadServiceIdentityConfig>;
+    request: Request;
+    requestContext: RequestContext;
+  },
+  details: {
+    error?: unknown;
+    event: "http.request.completed" | "http.request.failed";
+    responseStatus: number;
+  },
+) {
+  const path = new URL(context.request.url).pathname;
+  const logFields = details.error
+    ? createStructuredErrorFields(
+        {
+          environment: context.identity.environment,
+          release: context.identity.release,
+          requestId: context.requestContext.requestId,
+          serviceName: context.identity.serviceName,
+          traceContext: context.requestContext.traceContext,
+        },
+        details.error,
+        {
+          event: details.event,
+          method: context.request.method,
+          path,
+          requestHeaders: redactSensitiveHeaders(context.request.headers),
+          responseStatus: details.responseStatus,
+        },
+      )
+    : createStructuredLogFields(
+        {
+          environment: context.identity.environment,
+          release: context.identity.release,
+          requestId: context.requestContext.requestId,
+          serviceName: context.identity.serviceName,
+          traceContext: context.requestContext.traceContext,
+        },
+        {
+          event: details.event,
+          method: context.request.method,
+          path,
+          responseStatus: details.responseStatus,
+        },
+      );
+
+  const output = JSON.stringify(logFields);
+  if (details.error || details.responseStatus >= 500) {
+    logger.error(output);
+    return;
+  }
+
+  logger.info(output);
+}
+
 export function createApiApp(options: ApiAppOptions = {}) {
   const env = options.env ?? process.env;
+  const logger = options.logger ?? console;
   const now = options.now ?? Date.now;
   const identity = loadServiceIdentityConfig(env, { serviceName: "@humanify/api-bun" });
-  const telemetry = createTelemetryBootstrap(identity);
+  const advisoryServices = loadAdvisoryServiceConfig(env);
+  const dataPlaneConfig = loadDataPlaneConfig(env);
+  const discordOAuthConfig = loadDiscordOAuthConfig(env);
+  const observability = loadObservabilityConfig(env);
+  const policyClampConfig = loadPolicyClampConfig(env);
+  const learningServiceClient = options.learningServiceClient ?? createLearningServiceClient({
+    baseUrl: advisoryServices.learningServiceUrl,
+  });
+  const reportCasesRepository = options.reportCasesRepository ?? createPostgresReportCasesRepository({
+    connectionString: dataPlaneConfig.postgresUrl,
+  });
+  const sessionConfig = loadSessionConfig(env);
+  const telemetry = createTelemetryBootstrap({
+    ...identity,
+    sentryDsn: observability.sentryDsn,
+    sentryTracesSampleRate: observability.sentryTracesSampleRate,
+  });
 
   const policyBodySchema = t.Object({
     actorUserId: t.String({ minLength: 1 }),
@@ -379,6 +625,7 @@ export function createApiApp(options: ApiAppOptions = {}) {
   });
 
   const verificationSessionSchema = t.Object({
+    caseId: t.Optional(t.String({ minLength: 1 })),
     initiatedBy: t.Optional(t.String({ minLength: 1 })),
     requiredCapabilities: t.Array(t.String({ minLength: 1 })),
     userId: t.String({ minLength: 1 }),
@@ -387,7 +634,12 @@ export function createApiApp(options: ApiAppOptions = {}) {
   const evidenceSchema = t.Object({
     actorUserId: t.String({ minLength: 1 }),
     captureSource: t.String({ minLength: 1 }),
+    channelId: t.Optional(t.String({ minLength: 1 })),
     evidenceType: t.String({ minLength: 1 }),
+    externalRef: t.Optional(t.String({ minLength: 1 })),
+    messageId: t.Optional(t.String({ minLength: 1 })),
+    messagePreview: t.Optional(t.String()),
+    subjectUserId: t.Optional(t.String({ minLength: 1 })),
   });
 
   const caseReviewSchema = t.Object({
@@ -404,11 +656,30 @@ export function createApiApp(options: ApiAppOptions = {}) {
   });
 
   return new Elysia({ name: "@humanify/api-bun" })
-    .derive(({ request, set }) => ({
-      requestContext: ensureResponseContext(request, set),
-    }))
+    .derive(({ request, set }) => {
+      set.headers["cache-control"] = "no-store";
+      set.headers.pragma = "no-cache";
+      set.headers["referrer-policy"] = "no-referrer";
+      set.headers["x-content-type-options"] = "nosniff";
+
+      return {
+        requestContext: ensureResponseContext(request, set),
+      };
+    })
     .onError(({ code, error, request, set }) => {
       const requestContext = ensureResponseContext(request, set);
+      const responseStatus =
+        error instanceof ApiRouteError
+          ? error.status
+          : code === "VALIDATION"
+            ? 400
+            : 500;
+
+      logApiRequest(logger, { identity, request, requestContext }, {
+        error,
+        event: "http.request.failed",
+        responseStatus,
+      });
 
       if (error instanceof ApiRouteError) {
         set.status = error.status;
@@ -429,9 +700,15 @@ export function createApiApp(options: ApiAppOptions = {}) {
       return buildErrorEnvelope(
         requestContext.requestId,
         "internal_error",
-        identity.environment === "production" ? "Internal API error." : (error instanceof Error ? error.message : String(error)),
+        "Internal API error.",
         false,
       );
+    })
+    .onAfterResponse((context: any) => {
+      logApiRequest(logger, { identity, request: context.request, requestContext: context.requestContext }, {
+        event: "http.request.completed",
+        responseStatus: resolveResponseStatus(context.set, undefined),
+      });
     })
     .get("/", ({ requestContext }) =>
       buildEnvelope(requestContext.requestId, {
@@ -452,31 +729,7 @@ export function createApiApp(options: ApiAppOptions = {}) {
     .get("/contracts/summary", () => getHumanifyContractSummary())
     .get("/contracts/schema", ({ requestContext }) => buildEnvelope(requestContext.requestId, humanifyContractsSchema))
     .get("/service-info", ({ requestContext }) => {
-      let dataPlaneSummary: Record<string, unknown>;
-
-      try {
-        const dataPlane = loadDataPlaneConfig(env);
-        const postgres = parsePostgresConnectionString(dataPlane.postgresUrl);
-
-        dataPlaneSummary = {
-          configured: true,
-          postgres: {
-            database: postgres.database,
-            hostname: postgres.hostname,
-            redactedUrl: redactPostgresConnectionString(dataPlane.postgresUrl),
-          },
-          redis: redactUrlSecret(dataPlane.redisUrl),
-        };
-      } catch {
-        dataPlaneSummary = { configured: false };
-      }
-
-      let oauthSummary: Record<string, unknown>;
-      try {
-        oauthSummary = summarizeConfigForLogs(loadDiscordOAuthConfig(env));
-      } catch {
-        oauthSummary = { configured: false };
-      }
+      const postgres = parsePostgresConnectionString(dataPlaneConfig.postgresUrl);
 
       return buildEnvelope(requestContext.requestId, {
         authorityModel: {
@@ -491,8 +744,17 @@ export function createApiApp(options: ApiAppOptions = {}) {
             includeMessageSignals: true,
           }),
         },
-        dataPlane: dataPlaneSummary,
-        oauth: oauthSummary,
+        dataPlane: {
+          configured: true,
+          postgres: {
+            database: postgres.database,
+            hostname: postgres.hostname,
+            redactedUrl: redactPostgresConnectionString(dataPlaneConfig.postgresUrl),
+          },
+          redis: redactUrlSecret(dataPlaneConfig.redisUrl),
+        },
+        oauth: summarizeConfigForLogs(discordOAuthConfig),
+        observability: summarizeConfigForLogs(observability),
         routeGroups,
         sharedPackages: [
           "@humanify/auth",
@@ -512,8 +774,6 @@ export function createApiApp(options: ApiAppOptions = {}) {
         .post(
           "/discord/start",
           ({ body, requestContext }) => {
-            const oauth = loadDiscordOAuthConfig(env);
-            const session = loadSessionConfig(env);
             const state = issueDiscordOAuthState(
               {
                 guildId: body.guildId,
@@ -521,25 +781,25 @@ export function createApiApp(options: ApiAppOptions = {}) {
                 stateId: crypto.randomUUID(),
                 userId: body.userId,
               },
-              session.sessionSecret,
+              sessionConfig.sessionSecret,
               600,
               now(),
             );
 
             return buildEnvelope(requestContext.requestId, {
               authUrl: buildDiscordOAuthAuthorizeUrl({
-                clientId: oauth.clientId,
+                clientId: discordOAuthConfig.clientId,
                 prompt: body.prompt,
-                redirectUri: oauth.redirectUri,
-                scopes: oauth.scopes,
+                redirectUri: discordOAuthConfig.redirectUri,
+                scopes: discordOAuthConfig.scopes,
                 state,
               }),
               cookie: {
-                name: session.cookieName,
+                name: sessionConfig.cookieName,
                 options: createSessionCookieOptions({
                   sameSite: "lax",
-                  secure: session.secureCookies,
-                  ttlSeconds: session.sessionTtlSeconds,
+                  secure: sessionConfig.secureCookies,
+                  ttlSeconds: sessionConfig.sessionTtlSeconds,
                 }),
               },
               flowStatus: "oauth_state_issued",
@@ -558,18 +818,17 @@ export function createApiApp(options: ApiAppOptions = {}) {
         .get(
           "/discord/callback",
           ({ query, requestContext, set }) => {
-            const session = loadSessionConfig(env);
-            const state = verifyDiscordOAuthState(query.state, session.sessionSecret, now());
+            const state = verifyDiscordOAuthState(query.state, sessionConfig.sessionSecret, now());
             set.status = 202;
 
             return buildEnvelope(requestContext.requestId, {
               callbackStatus: "state_verified_code_exchange_pending",
               cookie: {
-                name: session.cookieName,
+                name: sessionConfig.cookieName,
                 options: createSessionCookieOptions({
                   sameSite: "lax",
-                  secure: session.secureCookies,
-                  ttlSeconds: session.sessionTtlSeconds,
+                  secure: sessionConfig.secureCookies,
+                  ttlSeconds: sessionConfig.sessionTtlSeconds,
                 }),
               },
               state: {
@@ -616,7 +875,7 @@ export function createApiApp(options: ApiAppOptions = {}) {
           const requestContext = ensureResponseContext(request, set);
           const maxAutomaticAction = body.maxAutomaticAction
             ? requireKnownAction(body.maxAutomaticAction, "maxAutomaticAction")
-            : loadPolicyClampConfig(env).maxAutomaticAction;
+            : policyClampConfig.maxAutomaticAction;
 
           const artifacts = buildWriteArtifacts({
             aggregateId: params.guildId,
@@ -721,21 +980,40 @@ export function createApiApp(options: ApiAppOptions = {}) {
             true,
           );
         })
-        .get("/cases", ({ params, request, set }) =>
-          buildReadModelPendingEnvelope(ensureResponseContext(request, set), "cases", { guildId: params.guildId }),
-        )
-        .get("/cases/:caseId", ({ request, set }) => {
-          ensureResponseContext(request, set);
-          throw new ApiRouteError(
-            503,
-            "dependency_unavailable",
-            "Case detail reads will land once Postgres-backed projections are materialized.",
-            true,
-          );
+        .get("/cases", async ({ params, request, set }) => {
+          const requestContext = ensureResponseContext(request, set);
+          const items = await reportCasesRepository.listCases({
+            guildId: params.guildId,
+          });
+
+          return buildEnvelope(requestContext.requestId, {
+            items,
+            readModelStatus: "canonical_postgres",
+            scope: { guildId: params.guildId },
+            source: "canonical_postgres_cases",
+          });
+        })
+        .get("/cases/:caseId", async ({ params, request, set }) => {
+          const requestContext = ensureResponseContext(request, set);
+          const caseDetail = await reportCasesRepository.getCaseDetail({
+            caseId: params.caseId,
+            guildId: params.guildId,
+          });
+
+          if (!caseDetail) {
+            throw new ApiRouteError(404, "not_found", `Case ${params.caseId} was not found in guild ${params.guildId}.`);
+          }
+
+          return buildEnvelope(requestContext.requestId, {
+            ...caseDetail,
+            readModelStatus: "canonical_postgres",
+            scope: { caseId: params.caseId, guildId: params.guildId },
+            source: "canonical_postgres_case_detail",
+          });
         })
         .post(
           "/cases/:caseId/review",
-          ({ body, params, request, set }) => {
+          async ({ body, params, request, set }) => {
             const requestContext = ensureResponseContext(request, set);
             if (!isKnownValue(body.outcome, caseOutcomeKinds)) {
               throw new ApiRouteError(
@@ -777,16 +1055,108 @@ export function createApiApp(options: ApiAppOptions = {}) {
               transactionName: "case_review_record",
             });
 
-            set.status = 202;
-            return buildEnvelope(requestContext.requestId, {
-              persistence: "planned_not_persisted",
-              queueEnvelope: artifacts.queueEnvelope,
-              review: {
-                ...body,
+            let persisted: Awaited<ReturnType<typeof reportCasesRepository.recordCaseReview>>;
+            try {
+              persisted = await reportCasesRepository.recordCaseReview({
+                artifacts: {
+                  idempotency: {
+                    key: artifacts.idempotency.key,
+                    requestId: artifacts.idempotency.requestId,
+                    scope: artifacts.idempotency.scope,
+                  },
+                  queueEnvelope: {
+                    canonicalRef: artifacts.queueEnvelope.canonicalRef,
+                    kind: artifacts.queueEnvelope.kind,
+                    messageId: artifacts.queueEnvelope.messageId,
+                    occurredAt: artifacts.queueEnvelope.occurredAt,
+                    payload: artifacts.queueEnvelope.payload as Record<string, unknown>,
+                    producer: {
+                      serviceName: artifacts.queueEnvelope.producer.serviceName,
+                    },
+                    requestId: artifacts.queueEnvelope.requestId,
+                    schemaVersion: artifacts.queueEnvelope.schemaVersion,
+                    stream: artifacts.queueEnvelope.stream,
+                    traceparent: artifacts.queueEnvelope.traceparent,
+                  },
+                },
+                body: {
+                  actorUserId: body.actorUserId,
+                  confidence: body.confidence,
+                  outcome: body.outcome,
+                  rationale: body.rationale,
+                  reasonCodes: body.reasonCodes,
+                },
                 caseId: params.caseId,
                 guildId: params.guildId,
-              },
-              writePlan: artifacts.writePlan,
+                traceId: requestContext.traceContext.traceId,
+              });
+            } catch (error) {
+              if (error instanceof Error && error.message.includes("was not found")) {
+                throw new ApiRouteError(404, "not_found", error.message);
+              }
+
+              throw error;
+            }
+
+            const learningCaseOutcome = {
+              caseId: persisted.review.caseId,
+              confidence: persisted.review.confidence,
+              decidedAt: new Date(now()).toISOString(),
+              decidedBy: persisted.review.actorUserId,
+              evidenceRefs: persisted.review.evidenceRefs,
+              guildId: persisted.review.guildId,
+              outcome: persisted.review.outcome,
+              reasonCodes: persisted.review.reasonCodes,
+              subjectUserIdHash: await hashSubjectUserId(persisted.review.subjectUserId),
+            } satisfies LearningServiceCaseOutcome;
+
+            let learning = {
+              accepted: false,
+              appliedSignalCount: 0,
+              candidateSignals: [],
+              notes: ["Learning ingestion is pending retry from the canonical learning.feedback outbox event."],
+              status: "no_reusable_signal",
+              suppressedSignalCount: 0,
+            } as Awaited<ReturnType<typeof reportCasesRepository.applyLearningOutcome>>;
+
+            try {
+              const learningSummary = await learningServiceClient.ingestCaseOutcome(
+                learningCaseOutcome,
+                requestContext,
+              );
+              learning = await reportCasesRepository.applyLearningOutcome({
+                caseId: params.caseId,
+                guildId: params.guildId,
+                learningSummary: {
+                  accepted: learningSummary.accepted,
+                  candidateSignals: learningSummary.candidateSignals,
+                  notes: learningSummary.notes,
+                },
+                outcome: body.outcome,
+                outcomeId: persisted.review.outcomeId,
+                reasonCodes: body.reasonCodes,
+              });
+            } catch (error) {
+              logger.error(JSON.stringify(createStructuredErrorFields({
+                environment: identity.environment,
+                release: identity.release,
+                requestId: requestContext.requestId,
+                serviceName: identity.serviceName,
+                traceContext: requestContext.traceContext,
+              }, error, {
+                caseId: params.caseId,
+                event: "learning.ingest.degraded",
+                guildId: params.guildId,
+              })));
+            }
+
+            set.status = 201;
+            return buildEnvelope(requestContext.requestId, {
+              learning,
+              persistence: persisted.persistence,
+              queueDelivery: persisted.queueDelivery,
+              queueEnvelope: artifacts.queueEnvelope,
+              review: persisted.review,
             });
           },
           { body: caseReviewSchema },
@@ -841,7 +1211,7 @@ export function createApiApp(options: ApiAppOptions = {}) {
           },
           { body: appealSchema },
         )
-        .post("/reports", ({ body, params, request, set }) => {
+        .post("/reports", async ({ body, params, request, set }) => {
           const requestContext = ensureResponseContext(request, set);
           if (!isKnownValue(body.intakeSource, reportIntakeSources)) {
             throw new ApiRouteError(
@@ -860,12 +1230,6 @@ export function createApiApp(options: ApiAppOptions = {}) {
               primaryKey: "report_id",
               table: "reports",
             },
-            {
-              dataRef: `${reportId}:event`,
-              operation: "insert" as const,
-              primaryKey: "case_event_id",
-              table: "case_events",
-            },
           ];
 
           if (caseId) {
@@ -874,6 +1238,12 @@ export function createApiApp(options: ApiAppOptions = {}) {
               operation: "insert",
               primaryKey: "case_id",
               table: "cases",
+            });
+            canonicalMutations.push({
+              dataRef: `${reportId}:event`,
+              operation: "insert",
+              primaryKey: "case_event_id",
+              table: "case_events",
             });
           }
 
@@ -898,22 +1268,33 @@ export function createApiApp(options: ApiAppOptions = {}) {
             transactionName: "report_intake",
           });
 
-          set.status = 202;
-          return buildEnvelope(requestContext.requestId, {
-            persistence: "planned_not_persisted",
-            queueEnvelope: artifacts.queueEnvelope,
-            report: {
-              ...body,
-              caseId,
-              guildId: params.guildId,
-              reportId,
+          const persisted = await reportCasesRepository.createReport({
+            artifacts,
+            body: {
+              intakeSource: body.intakeSource,
+              openCase: body.openCase !== false,
+              reportReason: body.reportReason,
+              reporterNotes: body.reporterNotes,
+              reporterUserId: body.reporterUserId,
+              subjectUserId: body.subjectUserId,
+              triggerFingerprint: body.triggerFingerprint,
             },
+            guildId: params.guildId,
+            proposedCaseId: caseId,
+            reportId,
+            traceId: requestContext.traceContext.traceId,
+          });
+
+          set.status = 201;
+          return buildEnvelope(requestContext.requestId, {
+            ...persisted,
+            queueEnvelope: artifacts.queueEnvelope,
             writePlan: artifacts.writePlan,
           });
         }, { body: reportBodySchema })
         .post(
           "/reports/:reportId/evidence",
-          ({ body, params, request, set }) => {
+          async ({ body, params, request, set }) => {
             const requestContext = ensureResponseContext(request, set);
             if (!isKnownValue(body.evidenceType, evidenceKinds)) {
               throw new ApiRouteError(
@@ -922,6 +1303,10 @@ export function createApiApp(options: ApiAppOptions = {}) {
                 `evidenceType must be one of: ${evidenceKinds.join(", ")}.`,
               );
             }
+            const canonicalEvidence = requireMessageLinkEvidence({
+              ...body,
+              guildId: params.guildId,
+            });
 
             const evidenceId = crypto.randomUUID();
             const artifacts = buildWriteArtifacts({
@@ -943,7 +1328,8 @@ export function createApiApp(options: ApiAppOptions = {}) {
                 },
               ],
               idempotencyKey:
-                request.headers.get("x-idempotency-key") ?? `report-evidence:${params.reportId}:${requestContext.requestId}`,
+                request.headers.get("x-idempotency-key")
+                  ?? `report-evidence:${params.reportId}:${body.evidenceType}:${canonicalEvidence.messageId}`,
               kind: "report.evidence.attached",
               payload: {
                 evidenceId,
@@ -956,15 +1342,36 @@ export function createApiApp(options: ApiAppOptions = {}) {
               transactionName: "report_evidence_attach",
             });
 
-            set.status = 202;
-            return buildEnvelope(requestContext.requestId, {
-              evidence: {
-                ...body,
+            let persisted;
+            try {
+              persisted = await reportCasesRepository.attachMessageEvidence({
+                artifacts,
+                body: {
+                  actorUserId: body.actorUserId,
+                  captureSource: body.captureSource,
+                  channelId: canonicalEvidence.channelId,
+                  externalRef: canonicalEvidence.externalRef,
+                  messageId: canonicalEvidence.messageId,
+                  messagePreview: body.messagePreview,
+                  subjectUserId: canonicalEvidence.subjectUserId,
+                },
                 evidenceId,
                 guildId: params.guildId,
                 reportId: params.reportId,
-              },
-              persistence: "planned_not_persisted",
+                requestFingerprint: canonicalEvidence.messageId,
+                traceId: requestContext.traceContext.traceId,
+              });
+            } catch (error) {
+              if (error instanceof Error && error.message.includes("was not found")) {
+                throw new ApiRouteError(404, "not_found", error.message);
+              }
+
+              throw error;
+            }
+
+            set.status = 201;
+            return buildEnvelope(requestContext.requestId, {
+              ...persisted,
               queueEnvelope: artifacts.queueEnvelope,
               writePlan: artifacts.writePlan,
             });
@@ -1036,17 +1443,17 @@ export function createApiApp(options: ApiAppOptions = {}) {
         )
         .post("/verification/sessions", ({ body, params, request, set }) => {
           const requestContext = ensureResponseContext(request, set);
-          const session = loadSessionConfig(env);
           const sessionId = crypto.randomUUID();
           const challengeId = crypto.randomUUID();
           const challengeToken = issueVerifierChallengeToken(
             {
               challengeId,
               guildId: params.guildId,
+              requiredCapabilities: body.requiredCapabilities,
               sessionId,
               userId: body.userId,
             },
-            session.sessionSecret,
+            sessionConfig.sessionSecret,
             300,
             now(),
           );
@@ -1073,6 +1480,7 @@ export function createApiApp(options: ApiAppOptions = {}) {
             kind: "verification.session.created",
             payload: {
               guildId: params.guildId,
+              caseId: body.caseId,
               requiredCapabilities: body.requiredCapabilities,
               sessionId,
               userId: body.userId,
@@ -1088,11 +1496,12 @@ export function createApiApp(options: ApiAppOptions = {}) {
             challengeToken,
             persistence: "planned_not_persisted",
             queueEnvelope: artifacts.queueEnvelope,
-            session: {
-              challengeId,
-              guildId: params.guildId,
-              initiatedBy: body.initiatedBy ?? "system",
-              requiredCapabilities: body.requiredCapabilities,
+              session: {
+                caseId: body.caseId,
+                challengeId,
+                guildId: params.guildId,
+                initiatedBy: body.initiatedBy ?? "system",
+                requiredCapabilities: body.requiredCapabilities,
               sessionId,
               state: "challenge_issued",
               userId: body.userId,
@@ -1198,8 +1607,11 @@ export function createApiApp(options: ApiAppOptions = {}) {
               set.status = 202;
               return buildEnvelope(requestContext.requestId, {
                 auditReason,
+                durability: "planned_not_persisted",
                 executionPlan,
-                persistence: executionPlan.executable ? "approved_for_executor_queue" : "policy_approved_but_not_executable",
+                executorState: executionPlan.executable
+                  ? "approved_but_backend_commit_pending"
+                  : "approved_but_execution_blocked",
                 policyDecision,
                 queueEnvelope: artifacts.queueEnvelope,
                 writePlan: artifacts.writePlan,
@@ -1217,11 +1629,22 @@ export function createApiApp(options: ApiAppOptions = {}) {
     .post(
       "/verification/challenges/:challengeId/complete",
       ({ body, params, request, requestContext, set }) => {
-        const session = loadSessionConfig(env);
-        const verified = verifyVerifierChallengeToken(body.token, session.sessionSecret, now());
+        const verified = verifyVerifierChallengeToken(body.token, sessionConfig.sessionSecret, now());
 
         if (verified.challengeId !== params.challengeId) {
           throw new ApiRouteError(400, "validation_failed", "Challenge token does not match the requested challengeId.");
+        }
+
+        if (verified.sessionId !== body.sessionId) {
+          throw new ApiRouteError(400, "validation_failed", "Challenge token does not match the requested sessionId.");
+        }
+
+        if (verified.guildId !== body.guildId) {
+          throw new ApiRouteError(400, "validation_failed", "Challenge token does not match the requested guildId.");
+        }
+
+        if (verified.userId !== body.userId) {
+          throw new ApiRouteError(400, "validation_failed", "Challenge token does not match the requested userId.");
         }
 
         const artifacts = buildWriteArtifacts({
@@ -1261,7 +1684,15 @@ export function createApiApp(options: ApiAppOptions = {}) {
             verified: true,
           },
           persistence: "planned_not_persisted",
+          providerBoundary: {
+            nextStep: "provider_callback_required",
+            providerCallbacksConfigured: false,
+            releaseEligible: false,
+            requiredCapabilities: verified.requiredCapabilities,
+            status: "pending_provider_callback",
+          },
           queueEnvelope: artifacts.queueEnvelope,
+          session: buildDerivedVerificationSession(verified, "provider_pending"),
           writePlan: artifacts.writePlan,
         });
       },
@@ -1274,64 +1705,51 @@ export function createApiApp(options: ApiAppOptions = {}) {
         }),
       },
     )
-    .get("/verification/sessions/:sessionId", () => {
-      throw new ApiRouteError(
-        503,
-        "dependency_unavailable",
-        "Verification session reads need canonical persistence before lookup is honest.",
-        true,
-      );
-    })
+    .get(
+      "/verification/sessions/:sessionId",
+      ({ params, query, requestContext }) => {
+        const verified = verifyVerifierChallengeToken(query.token, sessionConfig.sessionSecret, now());
+
+        if (verified.sessionId !== params.sessionId) {
+          throw new ApiRouteError(400, "validation_failed", "Challenge token does not match the requested sessionId.");
+        }
+
+        return buildEnvelope(requestContext.requestId, {
+          callbackBoundary: {
+            nextStep: "complete_challenge",
+            providerCallbacksConfigured: false,
+            releaseEligible: false,
+            status: "challenge_link_verified",
+          },
+          persistence: "derived_from_signed_challenge",
+          session: buildDerivedVerificationSession(verified, "challenge_issued"),
+        });
+      },
+      {
+        query: t.Object({
+          token: t.String({ minLength: 1 }),
+        }),
+      },
+    )
     .post(
       "/verification/sessions/:sessionId/release",
-      ({ body, params, request, requestContext, set }) => {
-        const artifacts = buildWriteArtifacts({
-          aggregateId: params.sessionId,
-          aggregateType: "verification_session",
-          auditRefs: [createAuditRef(requestContext.requestId, "verification_session", "release")],
-          canonicalMutations: [
-            {
-              dataRef: `${params.sessionId}:session`,
-              operation: "update",
-              primaryKey: "session_id",
-              table: "verification_sessions",
-            },
-            {
-              dataRef: `${params.sessionId}:audit`,
-              operation: "insert",
-              primaryKey: "audit_record_id",
-              table: "audit_records",
-            },
-          ],
-          idempotencyKey:
-            request.headers.get("x-idempotency-key") ?? `verification-release:${params.sessionId}:${requestContext.requestId}`,
-          kind: "verification.session.release_requested",
-          payload: {
-            guildId: body.guildId,
-            sessionId: params.sessionId,
-            userId: body.userId,
-          },
-          requestContext,
-          scope: `verification-release:${params.sessionId}`,
-          stream: "policy.actions",
-          transactionName: "verification_session_release",
-        });
+      ({ body, params }) => {
+        const verified = verifyVerifierChallengeToken(body.token, sessionConfig.sessionSecret, now());
 
-        set.status = 202;
-        return buildEnvelope(requestContext.requestId, {
-          persistence: "planned_not_persisted",
-          queueEnvelope: artifacts.queueEnvelope,
-          release: {
-            guildId: body.guildId,
-            sessionId: params.sessionId,
-            userId: body.userId,
-          },
-          writePlan: artifacts.writePlan,
-        });
+        if (verified.sessionId !== params.sessionId || verified.guildId !== body.guildId || verified.userId !== body.userId) {
+          throw new ApiRouteError(400, "validation_failed", "Release request must match the signed verification challenge.");
+        }
+
+        throw new ApiRouteError(
+          409,
+          "conflict",
+          "Verification release stays blocked until a server-verified provider callback marks the session as passed in canonical state.",
+        );
       },
       {
         body: t.Object({
           guildId: t.String({ minLength: 1 }),
+          token: t.String({ minLength: 1 }),
           userId: t.String({ minLength: 1 }),
         }),
       },

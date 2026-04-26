@@ -19,8 +19,11 @@ import { expect, test } from "bun:test";
 
 import {
   ConfigError,
+  loadAdvisoryServiceConfig,
   loadApiBindingConfig,
+  loadBotApiConfig,
   loadDiscordOAuthConfig,
+  loadObservabilityConfig,
   loadPolicyClampConfig,
   loadSessionConfig,
   summarizeConfigForLogs,
@@ -56,13 +59,60 @@ test("session config validates secrets and safe cookie defaults", () => {
   });
 });
 
+test("bot api config falls back to the local api port and can opt into guild-scoped command sync", () => {
+  expect(
+    loadBotApiConfig({
+      HUMANIFY_API_PORT: "4321",
+      HUMANIFY_BOT_COMMAND_GUILD_ID: "guild_123",
+      HUMANIFY_BOT_REGISTER_COMMANDS: "true",
+    }),
+  ).toEqual({
+    apiBaseUrl: "http://127.0.0.1:4321",
+    commandGuildId: "guild_123",
+    registerCommandsOnStart: true,
+  });
+});
+
 test("policy clamp config rejects actions outside the canonical ladder", () => {
   expect(() => loadPolicyClampConfig({ HUMANIFY_MAX_AUTOMATIC_ACTION: "delete" })).toThrow(ConfigError);
+});
+
+test("observability config validates optional Sentry inputs safely", () => {
+  expect(
+    loadObservabilityConfig({
+      HUMANIFY_SENTRY_DSN: "https://public@example.ingest.sentry.io/123",
+      HUMANIFY_SENTRY_TRACES_SAMPLE_RATE: "0.25",
+    }),
+  ).toEqual({
+    sentryDsn: "https://public@example.ingest.sentry.io/123",
+    sentryTracesSampleRate: 0.25,
+  });
+
+  expect(() =>
+    loadObservabilityConfig({
+      HUMANIFY_SENTRY_DSN: "not-a-dsn",
+    }),
+  ).toThrow(ConfigError);
+});
+
+test("advisory service config defaults learning-rs to the documented loopback endpoint", () => {
+  expect(loadAdvisoryServiceConfig({})).toEqual({
+    learningServiceUrl: "http://127.0.0.1:4102",
+  });
+
+  expect(() =>
+    loadAdvisoryServiceConfig({
+      HUMANIFY_LEARNING_SERVICE_URL: "not-a-url",
+    }),
+  ).toThrow(ConfigError);
 });
 
 test("config summaries redact secrets and tokens recursively", () => {
   expect(
     summarizeConfigForLogs({
+      observability: {
+        sentryDsn: "https://public@example.ingest.sentry.io/123",
+      },
       nested: {
         sessionSecret: "secret",
       },
@@ -70,6 +120,9 @@ test("config summaries redact secrets and tokens recursively", () => {
       token: "abc",
     }),
   ).toEqual({
+    observability: {
+      sentryDsn: "[redacted]",
+    },
     nested: {
       sessionSecret: "[redacted]",
     },

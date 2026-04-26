@@ -18,7 +18,7 @@
  */
 
 import { createApiApp } from "./app";
-import { loadApiBindingConfig, loadServiceIdentityConfig, type EnvSource } from "@humanify/config";
+import { loadApiBindingConfig, loadObservabilityConfig, loadServiceIdentityConfig, type EnvSource } from "@humanify/config";
 import { createTelemetryBootstrap } from "@humanify/telemetry";
 
 export const defaultApiPort = 3211;
@@ -29,11 +29,16 @@ export function resolveApiPort(source: EnvSource = process.env) {
 
 export function getApiRuntimeSummary(source: EnvSource = process.env) {
   const identity = loadServiceIdentityConfig(source, { serviceName: "api-bun" });
+  const observability = loadObservabilityConfig(source);
 
   return {
     binding: loadApiBindingConfig(source),
     identity,
-    telemetry: createTelemetryBootstrap(identity),
+    telemetry: createTelemetryBootstrap({
+      ...identity,
+      sentryDsn: observability.sentryDsn,
+      sentryTracesSampleRate: observability.sentryTracesSampleRate,
+    }),
   };
 }
 
@@ -46,6 +51,6 @@ if (import.meta.main) {
   const server = startApi(runtime.binding.port);
 
   console.log(
-    `@humanify/api-bun listening on http://localhost:${server.server?.port ?? runtime.binding.port} (${runtime.telemetry.propagationHeader}).`,
+    `@humanify/api-bun listening on http://localhost:${server.server?.port ?? runtime.binding.port} (${runtime.telemetry.propagationHeader}, ${runtime.telemetry.requestIdHeader}, sentry=${runtime.telemetry.sentryEnabled}).`,
   );
 }

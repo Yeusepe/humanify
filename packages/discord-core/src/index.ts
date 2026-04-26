@@ -15,7 +15,13 @@
  * - packages/discord-core/src/index.test.ts
  */
 
-import { GatewayIntentBits, type GuildMember } from "discord.js";
+import {
+  ApplicationCommandOptionType,
+  ApplicationCommandType,
+  GatewayIntentBits,
+  type ApplicationCommandDataResolvable,
+  type GuildMember,
+} from "discord.js";
 
 import type { HumanifyAction } from "@humanify/contracts";
 
@@ -31,6 +37,103 @@ export type DiscordExecutionPlan = {
   reason?: string;
   resolvedAction: HumanifyAction;
 };
+
+export const humanifyBotCommandNames = {
+  case: "case",
+  report: "report",
+  reportMessage: "Report message to Humanify",
+  verify: "verify",
+} as const;
+
+export function createHumanifyApplicationCommands(): readonly ApplicationCommandDataResolvable[] {
+  return [
+    {
+      description: "Open a Humanify report for a member.",
+      name: humanifyBotCommandNames.report,
+      options: [
+        {
+          description: "Member to report.",
+          name: "user",
+          required: true,
+          type: ApplicationCommandOptionType.User,
+        },
+        {
+          description: "Short reason for the report.",
+          name: "reason",
+          required: true,
+          type: ApplicationCommandOptionType.String,
+        },
+        {
+          description: "Optional moderator notes for the intake record.",
+          name: "notes",
+          required: false,
+          type: ApplicationCommandOptionType.String,
+        },
+      ],
+      type: ApplicationCommandType.ChatInput,
+    },
+    {
+      description: "Open a Humanify case from Discord.",
+      name: humanifyBotCommandNames.case,
+      options: [
+        {
+          description: "Open a new case for a member.",
+          name: "open",
+          options: [
+            {
+              description: "Member to open a case for.",
+              name: "user",
+              required: true,
+              type: ApplicationCommandOptionType.User,
+            },
+            {
+              description: "Short case reason.",
+              name: "reason",
+              required: true,
+              type: ApplicationCommandOptionType.String,
+            },
+            {
+              description: "Optional moderator notes.",
+              name: "notes",
+              required: false,
+              type: ApplicationCommandOptionType.String,
+            },
+          ],
+          type: ApplicationCommandOptionType.Subcommand,
+        },
+      ],
+      type: ApplicationCommandType.ChatInput,
+    },
+    {
+      description: "Start a Humanify verification session for a member.",
+      name: humanifyBotCommandNames.verify,
+      options: [
+        {
+          description: "Member to verify.",
+          name: "user",
+          required: true,
+          type: ApplicationCommandOptionType.User,
+        },
+        {
+          choices: [
+            { name: "captcha", value: "captcha" },
+            { name: "human_presence", value: "human_presence" },
+            { name: "unique_person", value: "unique_person" },
+          ],
+          description: "Verification capability to require.",
+          name: "capability",
+          required: false,
+          type: ApplicationCommandOptionType.String,
+        },
+      ],
+      type: ApplicationCommandType.ChatInput,
+    },
+    {
+      name: humanifyBotCommandNames.reportMessage,
+      type: ApplicationCommandType.Message,
+    },
+  ];
+}
 
 export function createBotGatewayIntents(options: {
   includeInviteTracking?: boolean;
@@ -98,18 +201,21 @@ export function resolveDiscordExecutionPlan(
 ): DiscordExecutionPlan {
   switch (action) {
     case "ban":
-      if (capabilities.canBan) return { executable: true, resolvedAction: "ban" };
-      return resolveDiscordExecutionPlan("kick", capabilities);
+      return capabilities.canBan
+        ? { executable: true, resolvedAction: "ban" }
+        : { executable: false, reason: "ban_missing", resolvedAction: "ban" };
     case "kick":
-      if (capabilities.canKick) return { executable: true, resolvedAction: "kick" };
-      return resolveDiscordExecutionPlan("timeout", capabilities);
+      return capabilities.canKick
+        ? { executable: true, resolvedAction: "kick" }
+        : { executable: false, reason: "kick_missing", resolvedAction: "kick" };
     case "timeout":
-      if (capabilities.canTimeout) return { executable: true, resolvedAction: "timeout" };
-      return resolveDiscordExecutionPlan("quarantine", capabilities);
+      return capabilities.canTimeout
+        ? { executable: true, resolvedAction: "timeout" }
+        : { executable: false, reason: "timeout_missing", resolvedAction: "timeout" };
     case "quarantine":
       return capabilities.canManageRoles
         ? { executable: true, resolvedAction: "quarantine" }
-        : { executable: false, reason: "manage_roles_missing", resolvedAction: "verify" };
+        : { executable: false, reason: "manage_roles_missing", resolvedAction: "quarantine" };
     default:
       return { executable: true, resolvedAction: action };
   }

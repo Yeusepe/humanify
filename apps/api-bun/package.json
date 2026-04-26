@@ -5,9 +5,9 @@
   "type": "module",
   "scripts": {
     "build": "bun run typecheck",
-    "dev": "bun --watch src/index.ts",
+    "dev": "bun --preload ./src/instrument.ts --watch src/index.ts",
     "lint": "bun run typecheck",
-    "start": "bun run src/index.ts",
+    "start": "bun --preload ./src/instrument.ts src/index.ts",
     "typecheck": "tsc --project tsconfig.json --noEmit"
   },
   "dependencies": {

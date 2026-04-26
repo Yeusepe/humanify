@@ -11,6 +11,7 @@
 - `docs\local-development.md` — full local-stack orchestration for Docker-managed infrastructure plus Bun and Rust processes behind the root `bun run dev` command.
 - `docs\observability-security.md` — day-one observability, auditability, secret/config, callback verification, evidence access, and moderation authority boundaries for Bun apps and Rust services.
 - `docs\operations.md` — deployment, queue, secrets, migration, and failure-handling expectations plus future runbook anchors.
+- `docs\release-runbooks.md` — concrete CI, release-readiness, migration, rollout, rollback, and incident procedures for the current GitHub Actions backbone.
 - `docs\reference-baseline.md` — governing implementation reference baseline for the planned Bun, Rust, data, queue, storage, and observability stack. Future coding work should cite this doc plus the exact upstream official docs listed inside it.
 - `docs\testing.md` — test layers, fixture strategy, adversarial regression expectations, and change-specific check bundles.
 - `docs\verification.md` — verification session lifecycle, Discord-bound challenge flow, provider abstraction, callback rules, and release-to-role semantics.

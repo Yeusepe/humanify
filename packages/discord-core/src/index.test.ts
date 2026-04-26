@@ -19,6 +19,7 @@ import { GatewayIntentBits } from "discord.js";
 
 import {
   buildComponentCustomId,
+  createHumanifyApplicationCommands,
   createBotGatewayIntents,
   createDiscordAuditReason,
   parseComponentCustomId,
@@ -50,7 +51,21 @@ test("component IDs round-trip through the shared discord-core format", () => {
   });
 });
 
-test("execution plans fall back to reversible containment when harder actions are unavailable", () => {
+test("humanify application commands expose the first real intake surface", () => {
+  const commands = createHumanifyApplicationCommands();
+  const names = commands.map((command) => ("toJSON" in command ? command.toJSON().name : command.name));
+
+  expect(names).toEqual(
+    expect.arrayContaining([
+      "report",
+      "case",
+      "verify",
+      "Report message to Humanify",
+    ]),
+  );
+});
+
+test("execution plans refuse exact moderation actions when the current Discord capability is missing", () => {
   const capabilities = snapshotExecutionCapabilities({
     bannable: false,
     kickable: false,
@@ -59,8 +74,9 @@ test("execution plans fall back to reversible containment when harder actions ar
   });
 
   expect(resolveDiscordExecutionPlan("kick", capabilities)).toEqual({
-    executable: true,
-    resolvedAction: "quarantine",
+    executable: false,
+    reason: "kick_missing",
+    resolvedAction: "kick",
   });
   expect(createDiscordAuditReason({ action: "quarantine", caseId: "case_123", reasonCodes: ["first_message_link"], requestId: "req_123" })).toContain("case:case_123");
 });

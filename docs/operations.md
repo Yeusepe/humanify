@@ -12,6 +12,7 @@ Governing docs:
 - `docs\local-development.md`
 - `docs\architecture.md`
 - `docs\operations.md`
+- `docs\release-runbooks.md`
 
 Upstream docs:
 - Docker Compose: https://docs.docker.com/compose/
@@ -28,6 +29,12 @@ Upstream docs:
 - OpenTelemetry signals: https://opentelemetry.io/docs/concepts/signals/
 - Bun subprocesses: https://bun.sh/docs/api/spawn
 - Cargo run: https://doc.rust-lang.org/cargo/commands/cargo-run.html
+- GitHub Actions workflow syntax: https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax
+- GitHub Actions artifacts: https://docs.github.com/en/actions/how-tos/writing-workflows/choosing-what-your-workflow-does/storing-and-sharing-data-from-a-workflow
+- Bun CI guide: https://bun.sh/guides/runtime/cicd
+- `setup-bun` action: https://github.com/oven-sh/setup-bun
+- Rust toolchain action: https://github.com/actions-rust-lang/setup-rust-toolchain
+- Cargo test: https://doc.rust-lang.org/cargo/commands/cargo-test.html
 
 ## 1. Operational model
 
@@ -54,6 +61,12 @@ Humanify runs as a Bun-first product shell with Rust intelligence services and s
 | observability secrets | Sentry DSNs, exporter endpoints | scrub payloads before egress |
 
 Startup rule: each runtime validates required config for its role through shared `packages\config` loaders and aborts before accepting traffic if critical config is missing.
+
+Concrete first-slice note:
+
+- `apps\api-bun` now validates data-plane, session, Discord OAuth, policy-clamp, and observability config during app bootstrap instead of waiting for the first request to fail.
+- `apps\bot-bun` continues to fail closed on missing bot/API config and now also reads optional observability config during preload.
+- Bun runtimes can opt into Sentry with `HUMANIFY_SENTRY_DSN` and `HUMANIFY_SENTRY_TRACES_SAMPLE_RATE`; unset values keep Sentry disabled rather than pretending egress exists.
 
 ## 3. Queue and outbox operations
 
@@ -98,6 +111,11 @@ This document inherits the detailed rules in `docs\observability-security.md`. O
 - durable audit rows for moderation, verification, evidence, and config changes
 - Sentry events scrubbed of secrets, raw evidence, and provider payloads
 
+Current concrete runtime behavior:
+
+- API responses now default to `Cache-Control: no-store`, `Pragma: no-cache`, `Referrer-Policy: no-referrer`, and `X-Content-Type-Options: nosniff` so request-correlated auth and verification flows are not cached loosely by default.
+- Rust advisory HTTP services now include incoming `x-request-id` and `traceparent` values in their request spans, which keeps Bun→Rust troubleshooting viable even before full Grafana/OTel exporters are wired.
+
 ## 6. Failure-handling principles
 
 | Failure type | Operational response |
@@ -109,18 +127,36 @@ This document inherits the detailed rules in `docs\observability-security.md`. O
 | provider callback invalid | reject, audit, and keep current verification state |
 | bot permission drift | refuse execution, alert moderators/operators, preserve action intent receipt |
 
-## 7. CI and release gates expected after scaffolding
+## 7. CI and release automation now real
 
-Later automation should require at least:
+The repository now carries two first real workflows under `.github\workflows\`:
 
-- workspace validation
-- Bun typecheck and tests
-- Rust test/build coverage appropriate to changed crates/services
-- migration validation against a clean Postgres instance
-- callback signature and idempotency tests for providers
-- evidence-storage and queue replay integration tests
+| Workflow | Current scope |
+| --- | --- |
+| `ci.yml` | pre-merge validation for Bun workspaces, Rust tests/formatting, and canonical Postgres migration idempotency |
+| `release-readiness.yml` | tag/manual validation plus artifact bundling for dashboard/verifier builds, Rust release binaries, migration SQL, and the operator runbook |
 
-## 8. Runbooks that should eventually exist as concrete procedures
+The automation is intentionally limited:
+
+- it validates the repo's current Bun + Rust monorepo state
+- it proves the canonical migration set applies cleanly to a fresh `pgvector` Postgres instance
+- it uploads release-readiness evidence
+- it does **not** deploy, publish releases, or invent environment management
+
+That honesty is required by the current platform state.
+
+## 8. Concrete release, migration, and rollback runbooks
+
+`docs\release-runbooks.md` is now the concrete procedure source for:
+
+1. CI gate interpretation
+2. release-readiness bundle usage
+3. target-agnostic migration order
+4. manual rollout sequence
+5. rollback decision-making once schema changes are involved
+6. release-adjacent incident handling
+
+## 9. Runbooks that still need future concrete procedures
 
 1. rotate Discord/provider/storage secrets
 2. recover a stuck Redis Streams consumer group
@@ -128,5 +164,3 @@ Later automation should require at least:
 4. rebuild Electric or local SQLite projections from Postgres
 5. pause verification or evidence ingest safely during provider/storage incidents
 6. restore Postgres and rehydrate rebuildable projections
-
-Until those concrete runbooks exist, future work should update this doc as the operational source of truth.

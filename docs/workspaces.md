@@ -14,6 +14,10 @@ This document governs the repo-level monorepo bootstrap created for `bootstrap-w
 - Bun workspaces: https://bun.sh/docs/install/workspaces
 - Bun test runner: https://bun.sh/docs/test
 - Bun TypeScript support: https://bun.sh/docs/typescript
+- GitHub Actions workflow syntax: https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax
+- Bun CI guide: https://bun.sh/guides/runtime/cicd
+- `setup-bun` action: https://github.com/oven-sh/setup-bun
+- Rust toolchain action: https://github.com/actions-rust-lang/setup-rust-toolchain
 - discord.js: https://discord.js.org/docs/packages/discord.js/main
 - Elysia: https://elysiajs.com/at-glance
 - TanStack Start React overview: https://tanstack.com/start/latest/docs/framework/react/overview
@@ -45,6 +49,7 @@ Current boundaries:
 
 - Root package manager/runtime: Bun
 - Root workspace globs: `apps/*`, `packages/*`
+- Repo automation entrypoints: `.github\workflows\ci.yml` and `.github\workflows\release-readiness.yml`
 - Repo-level scripts:
   - `bun run check`
   - `bun run build`
@@ -60,6 +65,8 @@ Current boundaries:
 - `packages\db` owns the canonical SQL migration set and the Bun-first migration/status commands used by local development and future deploy hooks.
 - `tooling\run-cargo-metadata.ts` skips Cargo metadata cleanly when a shared environment contains partial Rust scaffolding outside the Bun workstream.
 - `tooling\dev-stack.ts` owns root local-stack orchestration so developers can start the full Docker + Bun + Rust stack with one command.
+- `.github\workflows\ci.yml` mirrors the documented root scripts and adds Rust test coverage plus clean-database migration validation against the same `pgvector/pgvector:pg17` image used locally.
+- `.github\workflows\release-readiness.yml` reruns the validation bundle for tags/manual releases and uploads build artifacts without pretending deploy automation exists.
 
 ### Bun workspace ownership
 
@@ -67,7 +74,7 @@ Current boundaries:
 | --- | --- | --- |
 | `apps\bot-bun` | Bun + `discord.js` bot runtime shell | Starts a real Discord client only when `DISCORD_BOT_TOKEN` is provided |
 | `apps\api-bun` | Bun + Elysia HTTP surface | Exposes health and contract-summary endpoints |
-| `apps\dashboard-start` | TanStack Start + React 19 dashboard shell | Imports Tailwind v4 and HeroUI v3 styles |
+| `apps\dashboard-start` | TanStack Start + React 19 moderation dashboard MVP | Imports Tailwind v4 and HeroUI v3 styles and currently exposes `/`, `/cases`, `/verification`, and `/policy` operator routes with explicit read-boundary states |
 | `apps\verifier-start` | TanStack Start + React 19 verifier shell | Mirrors dashboard stack with verifier-specific content |
 | `packages\auth` | Shared auth/session package | Owns Discord OAuth state, verifier challenge tokens, and session cookie helpers |
 | `packages\config` | Shared Bun runtime config package | Validates service/env settings, Discord OAuth inputs, session secrets, and policy clamp defaults |
@@ -139,3 +146,4 @@ services/
 - `bun test` covers the repo-level workspace validator plus Bun-side package/app tests where available.
 - Shared Bun kernel packages must expose a real `src\index.ts` entrypoint plus package-level `build`, `lint`, and `typecheck` scripts so root workspace filters can treat them as first-class workspaces.
 - `bun run format:check` follows the current Rust workspace state owned outside this workstream.
+- CI must keep using the same root commands where they exist, plus `cargo test --workspace --all-targets` and `bun run db:migrate` / `bun run db:status` against a clean Postgres service so migration drift is caught before merge.

@@ -51,6 +51,18 @@ The bot does **not** own final policy decisions. It submits normalized events to
 
 All interaction handlers should be thin orchestration layers around `packages\discord-core` and API calls.
 
+### 2.1 Current first implemented slice
+
+The current bot spine makes the first real moderation intake surface concrete:
+
+| Surface | Current behavior | Safety posture |
+| --- | --- | --- |
+| `/report user reason [notes]` | opens a report via the API and plans a case when one does not already exist | replies honestly that persistence is still pending and offers a verification shortcut only as additional intake |
+| `/case open user reason [notes]` | opens a manual case via the report intake route | no moderation action is executed from the command response |
+| `/verify user [capability]` | creates a verification session tied to the Discord member | session creation is reported as planned, not durably completed |
+| message context `Report message to Humanify` | opens a report and then attaches canonical Discord message metadata (`messageId`, `channelId`, message URL, preview) as evidence | evidence is queued as planned canonical write work, not synthetic success |
+| button `Start verification` | creates a verification session bound to the case/user pair encoded in the shared Humanify custom ID | button handlers reject mismatched guild context and do not imply release or enforcement |
+
 ## 3. Event intake inventory
 
 | Event family | What the bot captures | What happens next |
@@ -83,6 +95,8 @@ Execution invariants:
 2. the bot never trusts stale permission assumptions from earlier API reads
 3. every execution attempt includes case correlation and reason-code context
 4. every failure path remains auditable
+
+Current executor rule for the first slice: if the API returns only `planned_not_persisted` durability, the bot must stop at planning and tell the moderator that no Discord-side enforcement or role release happened yet. The bot may only move from planning to execution once Bun approval is durable and the current Discord capability check still passes.
 
 ## 5. Required shared helpers
 
@@ -119,6 +133,12 @@ The bot must emit:
 - execution-attempt metrics and permission-denial metrics
 - spans for event handling, API calls, and Discord moderation actions
 - durable audit receipts for approved actions, denied actions, verification-role releases, and moderator shortcut actions
+
+Current concrete first-slice wiring:
+
+- each interaction now creates a request-correlation bundle that the bot forwards to the API as `x-request-id` plus W3C `traceparent`
+- boot logs now publish which propagation headers the runtime is using and whether Bun-side Sentry egress is enabled
+- message-context evidence intake stays constrained to canonical Discord message-link refs rather than arbitrary external URLs
 
 Alert messages shown to moderators should prefer canonical case IDs and reason codes over free-form summaries that cannot be replayed.
 

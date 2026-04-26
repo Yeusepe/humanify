@@ -16,6 +16,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 export const requiredDirectories = [
+  ".github",
+  ".github\\workflows",
   "apps",
   "apps\\api-bun",
   "apps\\bot-bun",
@@ -55,8 +57,11 @@ export const requiredFiles = [
   "Cargo.toml",
   "rustfmt.toml",
   "docker-compose.local.yml",
+  ".github\\workflows\\ci.yml",
+  ".github\\workflows\\release-readiness.yml",
   "docker\\postgres\\init\\001-humanify.sql",
   "docs\\local-development.md",
+  "docs\\release-runbooks.md",
   "docs\\workspaces.md",
   "packages\\auth\\package.json",
   "packages\\auth\\src\\index.ts",

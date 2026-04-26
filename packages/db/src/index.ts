@@ -35,6 +35,22 @@ export type {
   MigrationResult,
   MigrationStatus,
 } from "./migrator";
+export {
+  createPostgresReportCasesRepository,
+} from "./reports-cases";
+export type {
+  AppliedLearningResult,
+  CaseOutcomeKind,
+  CaseDetail,
+  CaseSummary,
+  LearnedSignalCandidateRecord,
+  LearnedSignalFamily,
+  LearningFeedbackSummary,
+  PersistedCaseReviewResult,
+  PersistedEvidenceResult,
+  PersistedReportResult,
+  ReportCasesRepository,
+} from "./reports-cases";
 
 export type CanonicalMutation = {
   dataRef: string;

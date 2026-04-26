@@ -40,3 +40,19 @@ test("root workspace scripts delegate Bun-side checks to workspaces", () => {
     '"check": "bun run check:workspace && bun run check:rust && bun run typecheck && bun test"',
   );
 });
+
+test("release automation backbone stays wired to docs and workflows", () => {
+  const docsIndex = readFileSync(join(process.cwd(), "docs", "README.md"), "utf8");
+  const ciWorkflow = readFileSync(join(process.cwd(), ".github", "workflows", "ci.yml"), "utf8");
+  const releaseWorkflow = readFileSync(
+    join(process.cwd(), ".github", "workflows", "release-readiness.yml"),
+    "utf8",
+  );
+
+  expect(docsIndex).toContain("docs\\release-runbooks.md");
+  expect(ciWorkflow).toContain("bun run check");
+  expect(ciWorkflow).toContain("cargo test --workspace --all-targets");
+  expect(ciWorkflow).toContain("bun run db:migrate");
+  expect(releaseWorkflow).toContain("actions/upload-artifact@v4");
+  expect(releaseWorkflow).toContain("No deployment or publish step is intentionally included.");
+});

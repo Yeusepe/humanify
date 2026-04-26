@@ -1,5 +1,5 @@
 /**
- * Purpose: Renders the minimal verifier shell aligned with verification-session, callback-security, and shared-contract planning.
+ * Purpose: Renders the verifier landing page and points operators or testers to the signed-link verification flow.
  * Governing docs:
  * - AGENTS.md
  * - Implementation Plan.txt
@@ -30,18 +30,18 @@ export const Route = createFileRoute("/")({
 function VerifierHome() {
   return (
     <ProductShell
-      description="A Bun-hosted verification shell reserved for challenge sessions, provider callback results, and release decisions that remain constrained by Bun-side policy and audit rules."
+      description="A Bun-hosted verification shell for signed challenge sessions, explicit provider callback boundaries, and release decisions that remain constrained by Bun-side policy and audit rules."
       eyebrow="HUMANIFY / VERIFIER"
       panels={[
         {
-          description: "Shared schema metadata available without copying Rust-owned contract definitions.",
-          title: "Contracts",
-          value: `v${contractSummary.contractVersion}`,
+          description: "The first concrete verifier route now accepts Bun-authored signed links and confirms the Discord-bound challenge.",
+          title: "Live route",
+          value: "/verify",
         },
         {
-          description: "Future verifier sessions should sync from Postgres read models before any user-visible release state is displayed.",
-          title: "Session sync",
-          value: "Postgres → Electric",
+          description: "Shared schema metadata is still available without copying Rust-owned contract definitions.",
+          title: "Contracts",
+          value: `v${contractSummary.contractVersion}`,
           variant: "secondary",
         },
         {
@@ -54,11 +54,15 @@ function VerifierHome() {
       title="Verification shell"
     >
       <div className="space-y-4">
-        <h2 className="text-xl font-semibold tracking-tight text-foreground">Operational guardrail</h2>
+        <h2 className="text-xl font-semibold tracking-tight text-foreground">Current concrete path</h2>
         <p className="max-w-3xl text-sm leading-7 text-muted">
-          Keep this app limited to verification-session UX until callback verification and audit
-          receipts are wired through the API. The shell exists so product-facing routes, styles, and
-          shared workspace packages validate today without inventing verification semantics early.
+          Open <code className="rounded bg-content2 px-2 py-1 text-xs">/verify?sessionId=&lt;...&gt;&amp;token=&lt;...&gt;</code>{" "}
+          with a Bun-issued challenge token to load signed session context, confirm the Discord-bound challenge, and stop
+          before any unsupported provider callback or release step.
+        </p>
+        <p className="max-w-3xl text-sm leading-7 text-muted">
+          This keeps the verifier honest: no fake provider completion, no synthetic release state, and no bypass around
+          signed challenge/session inputs while the canonical Postgres and callback layers are still being wired.
         </p>
       </div>
     </ProductShell>

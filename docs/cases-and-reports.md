@@ -88,6 +88,12 @@ flowchart LR
   J --> K
 ```
 
+First canonical slice now implemented:
+
+1. `POST /guilds/:guildId/reports` writes `reports`, opens or reuses a `cases` row by `opening_fingerprint` when `openCase !== false`, appends a `case_events` intake entry, and records matching `audit_records`, `idempotency_receipts`, and `outbox_events`.
+2. `POST /guilds/:guildId/reports/:reportId/evidence` durably supports Discord `message_link` evidence only. The API persists the evidence metadata plus canonical Discord URL and optional bounded preview, then appends the matching case/audit/outbox records.
+3. Binary/blob-backed evidence kinds (`attachment`, `screenshot`, provider exports, redaction derivatives) remain explicitly deferred until object-storage upload, hashing, and redaction work is real.
+
 ## 5. Intake surfaces
 
 | Intake surface | Expected behavior | Anti-abuse requirement |
@@ -106,6 +112,16 @@ flowchart LR
 4. Message links, hashes, timestamps, and actor IDs are the minimum durable integrity trail.
 5. Evidence access, export, redaction, legal hold, and deletion decisions are auditable events.
 
+For the current Discord bot intake slice, message-context evidence should include the canonical Discord message URL plus `messageId`, `channelId`, reporter actor ID, subject user ID, and an optional bounded message preview.
+
+For the first durable implementation slice:
+
+- report idempotency defaults to `report:{guildId}:{triggerFingerprint}:{reporterUserId}`
+- report-level case dedupe currently reuses an existing case by exact `opening_fingerprint`
+- message-link evidence idempotency defaults to `report-evidence:{reportId}:message_link:{messageId}`
+- message previews are stored only as bounded optional snapshots in `evidence_links.redacted_text_snapshot`; the raw Discord message remains an external reference, not a copied blob payload
+- evidence routes must fail closed for blob-backed kinds instead of pretending bytes were ingested
+
 ## 7. Report-abuse defenses
 
 | Abuse mode | Required defense |
@@ -117,6 +133,12 @@ flowchart LR
 | cross-server abuse | opt-in trust sharing only, never automatic global punishment |
 
 Reporter identity may be hidden from the accused in UI, but never from canonical audit records.
+
+The first canonical persistence slice now enforces three concrete abuse controls in storage:
+
+1. repeated retries reuse `idempotency_receipts` instead of duplicating report or evidence rows
+2. repeated case-open attempts for the same trigger collapse onto the same `cases.opening_fingerprint`
+3. message-context evidence requires the canonical Discord URL for the submitted guild/channel/message tuple, preventing ambiguous evidence refs
 
 ## 8. What later work depends on this doc
 

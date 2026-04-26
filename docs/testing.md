@@ -58,7 +58,7 @@ Upstream docs:
 | `packages\queue` | envelope serialization, trace propagation, consumer recovery helpers |
 | `apps\api-bun` | auth/session guards, validation, idempotency, Postgres-first writes, error envelopes |
 | `apps\bot-bun` | command routing, permission checks, refusal paths, approved-action execution receipts |
-| verification | OAuth/state binding, single-use challenge rules, callback signature/replay rejection, release-to-role flow |
+| verification | signed-link/session binding, single-use challenge rules, verifier route helpers, callback signature/replay rejection, release-to-role flow |
 | cases/evidence | dedupe, case-event append-only behavior, evidence hashing and derivative writeback, appeal transitions |
 | learning | feedback ingestion, suppressions, decay, calibration metrics, advisory-only reuse in inference |
 | operations | startup config validation, queue recovery helpers, outbox forwarding, observability wiring smoke tests |

@@ -16,10 +16,15 @@
 import { expect, test } from "bun:test";
 
 import {
+  createRequestTelemetryContext,
+  createStructuredErrorFields,
   createStructuredLogFields,
   createTraceContext,
   extractTraceContext,
+  injectRequestTelemetryHeaders,
   injectTraceContext,
+  requestIdHeaderName,
+  redactSensitiveValue,
   redactSensitiveHeaders,
   traceparentHeaderName,
 } from "./index";
@@ -66,4 +71,51 @@ test("structured log fields include trace correlation without losing custom fiel
   expect(fields.requestId).toBe("req_123");
   expect(fields.traceId).toBe(context.traceId);
   expect(fields.event).toBe("config.loaded");
+});
+
+test("request telemetry headers inject both request and trace correlation", () => {
+  const requestTelemetry = createRequestTelemetryContext();
+  const headers = injectRequestTelemetryHeaders(new Headers(), requestTelemetry);
+
+  expect(headers.get(requestIdHeaderName)).toBe(requestTelemetry.requestId);
+  expect(headers.get(traceparentHeaderName)).toBeTruthy();
+});
+
+test("structured error fields redact sensitive values before logging", () => {
+  const fields = createStructuredErrorFields(
+    {
+      environment: "test",
+      requestId: "req_123",
+      serviceName: "api-bun",
+    },
+    new Error("authorization Bearer secret"),
+    {
+      callbackUrl: "https://humanify.test/callback?code=secret-code",
+      sessionToken: "top-secret",
+    },
+  );
+
+  expect(fields.errorMessage).toContain("[redacted]");
+  expect(fields.callbackUrl).toBe("https://humanify.test/callback?code=%5Bredacted%5D");
+  expect(fields.sessionToken).toBe("[redacted]");
+});
+
+test("redactSensitiveValue scrubs nested telemetry payloads recursively", () => {
+  expect(
+    redactSensitiveValue({
+      headers: {
+        authorization: "Bearer secret",
+      },
+      providerCallback: {
+        rawUrl: "https://humanify.test/providers/callback?token=abc",
+      },
+    }),
+  ).toEqual({
+    headers: {
+      authorization: "[redacted]",
+    },
+    providerCallback: {
+      rawUrl: "https://humanify.test/providers/callback?token=%5Bredacted%5D",
+    },
+  });
 });

@@ -48,6 +48,6 @@
       "https://tanstack.dev/start/latest/docs/framework/react/guide/tailwind-integration",
       "https://www.heroui.com/docs/react/getting-started"
     ],
-    "notes": "The dashboard shell stays intentionally static until TanStack DB collections and Electric shapes are designed against Postgres-backed read models."
+    "notes": "The dashboard MVP now exposes /, /cases, /verification, and /policy routes with HeroUI v3 and explicit pending/dependency-unavailable read states instead of synthetic moderation data."
   }
 }

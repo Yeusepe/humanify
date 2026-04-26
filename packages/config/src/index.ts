@@ -50,6 +50,12 @@ export type BotTokenConfig = {
   botToken: string;
 };
 
+export type BotApiConfig = {
+  apiBaseUrl: string;
+  commandGuildId?: string;
+  registerCommandsOnStart: boolean;
+};
+
 export type DiscordOAuthConfig = {
   clientId: string;
   clientSecret: string;
@@ -71,6 +77,15 @@ export type SessionConfig = {
 
 export type PolicyClampConfig = {
   maxAutomaticAction: HumanifyAction;
+};
+
+export type ObservabilityConfig = {
+  sentryDsn?: string;
+  sentryTracesSampleRate: number;
+};
+
+export type AdvisoryServiceConfig = {
+  learningServiceUrl: string;
 };
 
 const humanifyEnvironmentValues = ["development", "test", "production"] as const;
@@ -109,6 +124,29 @@ function readInteger(
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isFinite(parsed) || parsed < minimum) {
     issues.push({ key, message: `${key} must be an integer greater than or equal to ${minimum}.` });
+    return fallback;
+  }
+
+  return parsed;
+}
+
+function readNumberInRange(
+  source: EnvSource,
+  key: string,
+  issues: ConfigIssue[],
+  fallback: number,
+  minimum: number,
+  maximum: number,
+): number {
+  const raw = readOptionalString(source, key);
+
+  if (!raw) {
+    return fallback;
+  }
+
+  const parsed = Number.parseFloat(raw);
+  if (!Number.isFinite(parsed) || parsed < minimum || parsed > maximum) {
+    issues.push({ key, message: `${key} must be a number between ${minimum} and ${maximum}.` });
     return fallback;
   }
 
@@ -208,6 +246,39 @@ export function loadBotTokenConfig(source: EnvSource = process.env): BotTokenCon
   return finalizeIssues(issues, { botToken });
 }
 
+function normalizeLoopbackHost(host: string): string {
+  if (host === "0.0.0.0" || host === "::" || host === "[::]") {
+    return "127.0.0.1";
+  }
+
+  return host;
+}
+
+export function loadBotApiConfig(source: EnvSource = process.env): BotApiConfig {
+  const issues: ConfigIssue[] = [];
+  const explicitApiBaseUrl = readOptionalString(source, "HUMANIFY_API_BASE_URL");
+  const registerCommandsOnStart = readBoolean(source, "HUMANIFY_BOT_REGISTER_COMMANDS", true);
+  const commandGuildId = readOptionalString(source, "HUMANIFY_BOT_COMMAND_GUILD_ID");
+
+  let apiBaseUrl = explicitApiBaseUrl;
+  if (!apiBaseUrl) {
+    const binding = loadApiBindingConfig(source);
+    apiBaseUrl = `http://${normalizeLoopbackHost(binding.host)}:${binding.port}`;
+  }
+
+  try {
+    apiBaseUrl = new URL(apiBaseUrl).toString().replace(/\/$/u, "");
+  } catch {
+    issues.push({ key: "HUMANIFY_API_BASE_URL", message: "HUMANIFY_API_BASE_URL must be a valid absolute URL." });
+  }
+
+  return finalizeIssues(issues, {
+    apiBaseUrl,
+    commandGuildId,
+    registerCommandsOnStart,
+  });
+}
+
 export function loadDiscordOAuthConfig(source: EnvSource = process.env): DiscordOAuthConfig {
   const issues: ConfigIssue[] = [];
   const clientId = readRequiredString(source, "DISCORD_CLIENT_ID", issues);
@@ -255,6 +326,51 @@ export function loadPolicyClampConfig(source: EnvSource = process.env): PolicyCl
   return finalizeIssues(issues, {
     maxAutomaticAction: isHumanifyAction(rawValue) ? rawValue : "quarantine",
   });
+}
+
+export function loadObservabilityConfig(source: EnvSource = process.env): ObservabilityConfig {
+  const issues: ConfigIssue[] = [];
+  const sentryDsn = readOptionalString(source, "HUMANIFY_SENTRY_DSN");
+  const sentryTracesSampleRate = readNumberInRange(
+    source,
+    "HUMANIFY_SENTRY_TRACES_SAMPLE_RATE",
+    issues,
+    0,
+    0,
+    1,
+  );
+
+  if (sentryDsn) {
+    try {
+      new URL(sentryDsn);
+    } catch {
+      issues.push({ key: "HUMANIFY_SENTRY_DSN", message: "HUMANIFY_SENTRY_DSN must be a valid DSN URL." });
+    }
+  }
+
+  return finalizeIssues(issues, {
+    sentryDsn,
+    sentryTracesSampleRate,
+  });
+}
+
+export function loadAdvisoryServiceConfig(source: EnvSource = process.env): AdvisoryServiceConfig {
+  const issues: ConfigIssue[] = [];
+  const learningServiceUrl = readOptionalString(source, "HUMANIFY_LEARNING_SERVICE_URL") ?? "http://127.0.0.1:4102";
+
+  try {
+    return finalizeIssues(issues, {
+      learningServiceUrl: new URL(learningServiceUrl).toString().replace(/\/$/u, ""),
+    });
+  } catch {
+    issues.push({
+      key: "HUMANIFY_LEARNING_SERVICE_URL",
+      message: "HUMANIFY_LEARNING_SERVICE_URL must be a valid absolute URL.",
+    });
+    return finalizeIssues(issues, {
+      learningServiceUrl,
+    });
+  }
 }
 
 export function summarizeConfigForLogs<T extends Record<string, unknown>>(config: T): Record<string, unknown> {

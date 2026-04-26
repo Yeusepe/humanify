@@ -16,10 +16,13 @@
 //! Tests:
 //! - cargo test --workspace
 
-use axum::{Json, Router, extract::State, routing::get};
+use axum::{Json, Router, extract::State, http::Request, routing::get};
 use humanify_core::{ServiceDescriptor, init_tracing};
 use humanify_evidence::EvidenceCapabilities;
+use std::time::Duration;
+use tower_http::classify::ServerErrorsFailureClass;
 use tower_http::trace::TraceLayer;
+use tracing::Span;
 
 const GOVERNING_DOCS: &[&str] = &[
     "AGENTS.md",
@@ -74,7 +77,47 @@ fn app(state: AppState) -> Router {
         .route("/service-info", get(service_info))
         .route("/internal/evidence/capabilities", get(capabilities))
         .with_state(state)
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(|request: &Request<_>| {
+                    let request_id = request
+                        .headers()
+                        .get("x-request-id")
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or("absent");
+                    let traceparent = request
+                        .headers()
+                        .get("traceparent")
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or("absent");
+
+                    tracing::info_span!(
+                        "http.request",
+                        service = DESCRIPTOR.name,
+                        method = %request.method(),
+                        path = %request.uri().path(),
+                        request_id = %request_id,
+                        traceparent = %traceparent
+                    )
+                })
+                .on_request(())
+                .on_response(|response: &axum::http::Response<_>, latency: Duration, span: &Span| {
+                    tracing::info!(
+                        parent: span,
+                        latency_ms = latency.as_secs_f64() * 1000.0,
+                        status = response.status().as_u16(),
+                        "request completed"
+                    );
+                })
+                .on_failure(|failure: ServerErrorsFailureClass, latency: Duration, span: &Span| {
+                    tracing::error!(
+                        parent: span,
+                        classification = %failure,
+                        latency_ms = latency.as_secs_f64() * 1000.0,
+                        "request failed"
+                    );
+                }),
+        )
 }
 
 async fn health(State(state): State<AppState>) -> Json<humanify_core::HealthReport> {

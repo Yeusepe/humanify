@@ -58,7 +58,7 @@ The exact path names may evolve, but the route groups and ownership below should
 | Auth | `POST /auth/discord/start`, `GET /auth/discord/callback`, `POST /auth/logout`, `GET /session` | owns browser session bootstrap and guild-scoped identity |
 | Guild config | `GET /guilds/:guildId/policy`, `PUT /guilds/:guildId/policy`, `PUT /guilds/:guildId/channels`, `PUT /guilds/:guildId/verification` | all writes create audit records |
 | Cases | `GET /guilds/:guildId/cases`, `GET /guilds/:guildId/cases/:caseId`, `POST /guilds/:guildId/cases/:caseId/review`, `POST /guilds/:guildId/cases/:caseId/appeal` | ties into `docs\cases-and-reports.md` |
-| Reports and evidence | `POST /guilds/:guildId/reports`, `POST /guilds/:guildId/reports/:reportId/evidence`, `POST /guilds/:guildId/evidence/upload-url`, `POST /guilds/:guildId/evidence/:evidenceId/redact` | upload URLs are brokered, time-limited, and auditable |
+| Reports and evidence | `POST /guilds/:guildId/reports`, `POST /guilds/:guildId/reports/:reportId/evidence`, `POST /guilds/:guildId/evidence/upload-url`, `POST /guilds/:guildId/evidence/:evidenceId/redact` | report intake and Discord message-link evidence now persist canonically in Postgres; blob upload URLs remain brokered, time-limited, and auditable |
 | Verification | `POST /guilds/:guildId/verification/sessions`, `GET /verification/sessions/:sessionId`, `POST /verification/challenges/:challengeId/complete`, `POST /verification/sessions/:sessionId/release` | detailed flow in `docs\verification.md` |
 | Provider callbacks | `POST /callbacks/discord/interactions`, `POST /callbacks/providers/:providerId` | raw-body verification, replay-safe, Postgres-first writes |
 | Moderation | `POST /guilds/:guildId/moderation/approve`, `POST /guilds/:guildId/moderation/quarantine`, `POST /guilds/:guildId/moderation/timeout`, `POST /guilds/:guildId/moderation/kick`, `POST /guilds/:guildId/moderation/ban` | API clamps action against policy before the bot executes |
@@ -136,14 +136,32 @@ Implementation details made concrete by the current spine:
 
 - `GET /service-info`, `GET /contracts/schema`, and `GET /contracts/summary` expose the API boundary metadata, shared package usage, and canonical schema references.
 - `POST /auth/discord/start` and `GET /auth/discord/callback` now use `packages\auth` plus `packages\config` to issue signed Discord OAuth state and session-cookie planning metadata without pretending a session store already exists.
-- `PUT /guilds/:guildId/policy`, `PUT /guilds/:guildId/verification`, `POST /guilds/:guildId/reports`, `POST /guilds/:guildId/reports/:reportId/evidence`, `POST /guilds/:guildId/cases/:caseId/review`, `POST /guilds/:guildId/cases/:caseId/appeal`, `POST /guilds/:guildId/verification/sessions`, `POST /verification/challenges/:challengeId/complete`, `POST /verification/sessions/:sessionId/release`, and the moderation routes now return `202 Accepted` planning envelopes containing:
+- `POST /guilds/:guildId/reports` now creates canonical Postgres state for the first real intake slice:
+  - `guilds` and `user_identities` are upserted as needed so foreign keys stay honest
+  - `cases` is created or re-used by `opening_fingerprint` when `openCase !== false`
+  - `reports`, `case_events`, `audit_records`, `idempotency_receipts`, and `outbox_events` are written in the same transaction
+  - the route returns `201 Created` with `persistence: persisted` and `queueDelivery: pending_outbox_publish` to distinguish canonical durability from later stream publication
+- `POST /guilds/:guildId/reports/:reportId/evidence` now durably supports only canonical Discord `message_link` evidence:
+  - the API validates the `https://discord.com/channels/{guildId}/{channelId}/{messageId}` form and rejects mismatched or non-Discord URLs
+  - `evidence_records`, `evidence_links`, `case_events`, `audit_records`, `idempotency_receipts`, and `outbox_events` are written transactionally when the parent report exists
+  - attachment, screenshot, and other blob-backed evidence kinds remain explicitly unavailable until object storage, hashing, and redaction flows are wired
+- `GET /guilds/:guildId/cases` and `GET /guilds/:guildId/cases/:caseId` now read directly from canonical Postgres tables for the first slice, returning `readModelStatus: canonical_postgres` instead of synthetic placeholders.
+- `PUT /guilds/:guildId/policy`, `PUT /guilds/:guildId/verification`, `POST /guilds/:guildId/cases/:caseId/review`, `POST /guilds/:guildId/cases/:caseId/appeal`, `POST /guilds/:guildId/verification/sessions`, `POST /verification/challenges/:challengeId/complete`, and the moderation routes still return `202 Accepted` planning envelopes containing:
   - a Postgres-first canonical write plan built with `packages\db`
   - idempotency metadata at the HTTP boundary
   - an outbox/Redis Streams envelope built with `packages\queue`
   - request and trace correlation from `packages\telemetry`
+- verification routes now keep signed session identity explicit:
+  - `POST /guilds/:guildId/verification/sessions` accepts an optional originating `caseId` and signs the verifier challenge with `challengeId`, `sessionId`, `guildId`, and `userId`
+  - `GET /verification/sessions/:sessionId?token=...` derives honest `challenge_issued` session context from that signed token while canonical reads are still pending
+  - `POST /verification/challenges/:challengeId/complete` re-checks that the token matches `challengeId`, `sessionId`, `guildId`, and `userId` before returning `provider_pending`
+  - `POST /verification/sessions/:sessionId/release` now refuses to invent success and returns `409 conflict` until a server-verified provider callback can prove a canonical `passed` session
 - moderation routes (`/approve`, `/quarantine`, `/timeout`, `/kick`, `/ban`) are now concretely clamped through `packages\policy-engine`; a requested action that exceeds Bun policy or Discord capability constraints must fail with `403 forbidden`.
-- read-model routes (`/guilds/:guildId/cases`, `/guilds/:guildId/audit`, `/guilds/:guildId/risk-queue`) return explicit `pending_postgres_projection` status rather than synthetic data.
+- moderation planning envelopes now separate durability from executor readiness: `durability: planned_not_persisted` means the bot must stop at planning, while `executorState` explains whether Bun approval exists but is still waiting on canonical persistence or is blocked by current capability.
+- API startup now validates the required session, OAuth, data-plane, policy-clamp, and observability config bundles up front, and request handling now emits structured request logs with redacted headers plus default `no-store`/`nosniff` response headers.
+- audit and risk-queue read-model routes (`/guilds/:guildId/audit`, `/guilds/:guildId/risk-queue`) still return explicit `pending_postgres_projection` status rather than synthetic data.
 - callback routes remain explicitly unavailable until provider-specific signature documentation and executor wiring exist; the API must not invent callback semantics.
+- `apps\dashboard-start` now consumes this boundary honestly through `/`, `/cases`, `/verification`, and `/policy` screens that surface metadata and pending states instead of fake live moderation rows.
 
 ## 9. What later implementation should add here
 

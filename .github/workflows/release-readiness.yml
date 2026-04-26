@@ -1,0 +1,129 @@
+# Purpose: Produce a release-readiness bundle for a tag or manual run, while keeping deployment and publishing manual until real targets exist.
+# Governing docs:
+# - AGENTS.md
+# - Implementation Plan.txt
+# - docs\architecture.md
+# - docs\operations.md
+# - docs\release-runbooks.md
+# - docs\testing.md
+# - docs\workspaces.md
+# External references:
+# - https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax
+# - https://docs.github.com/en/actions/how-tos/writing-workflows/choosing-what-your-workflow-does/storing-and-sharing-data-from-a-workflow
+# - https://bun.sh/guides/runtime/cicd
+# - https://github.com/oven-sh/setup-bun
+# - https://github.com/actions-rust-lang/setup-rust-toolchain
+# - https://doc.rust-lang.org/cargo/commands/cargo-test.html
+# Tests:
+# - tooling/verify-workspaces.test.ts
+
+name: Release readiness
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-readiness:
+    name: Release readiness bundle
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_DB: humanify
+          POSTGRES_PASSWORD: humanify
+          POSTGRES_USER: humanify
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U humanify -d humanify"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      HUMANIFY_POSTGRES_DB: humanify
+      HUMANIFY_POSTGRES_HOST: 127.0.0.1
+      HUMANIFY_POSTGRES_PASSWORD: humanify
+      HUMANIFY_POSTGRES_PORT: 5432
+      HUMANIFY_POSTGRES_USER: humanify
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: rustfmt
+          rustflags: ""
+
+      - name: Install workspace dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Run validation bundle
+        run: |
+          bun run check
+          bun run format:check
+          cargo test --workspace --all-targets
+          bun run db:migrate
+          bun run db:migrate
+          bun run db:status
+          bun run build
+          cargo build --workspace --release
+
+      - name: Create release readiness summary
+        shell: bash
+        run: |
+          mkdir -p artifacts/release-readiness
+          cat <<EOF > artifacts/release-readiness/summary.md
+          # Humanify release readiness
+
+          Trigger: ${GITHUB_EVENT_NAME}
+          Ref: ${GITHUB_REF}
+          SHA: ${GITHUB_SHA}
+          Bun: $(bun --version)
+          Cargo: $(cargo --version)
+          Rustc: $(rustc --version)
+
+          Validated commands:
+          - bun run check
+          - bun run format:check
+          - cargo test --workspace --all-targets
+          - bun run db:migrate (twice)
+          - bun run db:status
+          - bun run build
+          - cargo build --workspace --release
+
+          Artifact scope:
+          - dashboard and verifier static build output
+          - Rust service release binaries
+          - canonical migration SQL
+          - the operator release runbook
+
+          No deployment or publish step is intentionally included.
+          EOF
+
+      - name: Upload release readiness bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-readiness-${{ github.run_number }}
+          path: |
+            artifacts/release-readiness/summary.md
+            docs/release-runbooks.md
+            packages/db/migrations/*.sql
+            apps/dashboard-start/dist
+            apps/verifier-start/dist
+            target/release/evidence-rs
+            target/release/inference-rs
+            target/release/learning-rs
+            target/release/trust-rs
+          if-no-files-found: error
+          retention-days: 14

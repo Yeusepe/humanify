@@ -501,12 +501,16 @@ CREATE TABLE IF NOT EXISTS signal_examples (
   example_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   signal_id uuid NOT NULL REFERENCES learned_signals (signal_id) ON DELETE CASCADE,
   source_case_id uuid REFERENCES cases (case_id) ON DELETE SET NULL,
+  source_outcome_id uuid REFERENCES case_outcomes (outcome_id) ON DELETE SET NULL,
   evidence_id uuid REFERENCES evidence_records (evidence_id) ON DELETE SET NULL,
   normalized_value_hash text NOT NULL,
   label case_outcome_kind NOT NULL,
   metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS signal_examples_outcome_hash_idx
+  ON signal_examples (signal_id, source_outcome_id, normalized_value_hash);
 
 CREATE TABLE IF NOT EXISTS signal_embeddings (
   embedding_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

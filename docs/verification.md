@@ -98,6 +98,18 @@ The product plan's provider-capability abstraction should be implemented as Bun-
 
 Implementation rule: the provider adapter returns normalized attestation results; guild policy maps those capabilities to allow/deny/review behavior.
 
+## 4.1 Current implemented verifier spine
+
+The first real verifier path now makes these boundaries concrete without inventing unsupported provider semantics:
+
+1. `POST /guilds/:guildId/verification/sessions` issues a signed verifier challenge token that carries `sessionId`, `challengeId`, `guildId`, `userId`, and required capabilities.
+2. `GET /verification/sessions/:sessionId?token=...` verifies that signed token and derives the initial `challenge_issued` session view honestly from Bun-owned state, even before canonical persistence exists.
+3. `POST /verification/challenges/:challengeId/complete` re-verifies the same signed token against `challengeId`, `sessionId`, `guildId`, and `userId` before returning `provider_pending`.
+4. Provider callbacks remain disabled until a concrete provider doc and signature contract exist, so release stays blocked instead of pretending a provider passed.
+5. The verifier app now forwards `x-request-id` and W3C `traceparent` on its session fetch and challenge-complete requests so verification troubleshooting lines up with the same correlation model as Bun and Rust services.
+
+This means the verifier app currently relies on a Bun-authored signed link rather than a user-entered Discord short code or completed OAuth account binding. Those richer steps remain explicit follow-on work and must not be faked client-side.
+
 ## 5. Route and callback responsibilities
 
 | Boundary | Representative route | Required invariant |

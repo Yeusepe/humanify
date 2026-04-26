@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./bun": "./src/bun.ts"
   },
   "scripts": {
     "build": "bun run typecheck",
@@ -26,5 +27,8 @@
       "https://bun.sh/docs/runtime/env"
     ],
     "notes": "Shared telemetry boundaries keep trace context, redaction, and structured log fields consistent before full OpenTelemetry SDK wiring lands."
+  },
+  "dependencies": {
+    "@sentry/bun": "^10.50.0"
   }
 }

@@ -61,6 +61,7 @@ test("verifier challenge tokens expire and remain guild/user scoped", () => {
     {
       challengeId: "chal_123",
       guildId: "guild_123",
+      requiredCapabilities: ["captcha"],
       sessionId: "session_123",
       userId: "user_123",
     },
@@ -70,6 +71,7 @@ test("verifier challenge tokens expire and remain guild/user scoped", () => {
   );
 
   expect(verifyVerifierChallengeToken(token, "challenge-secret", now + 1_000).challengeId).toBe("chal_123");
+  expect(verifyVerifierChallengeToken(token, "challenge-secret", now + 1_000).requiredCapabilities).toEqual(["captcha"]);
   expect(() => verifyVerifierChallengeToken(token, "challenge-secret", now + 61_000)).toThrow();
 });
 

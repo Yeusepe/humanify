@@ -43,6 +43,7 @@ export type DiscordOAuthStatePayload = {
 export type VerifierChallengePayload = {
   challengeId: string;
   guildId: string;
+  requiredCapabilities: string[];
   sessionId: string;
   userId: string;
 };
