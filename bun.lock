@@ -12,8 +12,13 @@
       "name": "@humanify/api-bun",
       "version": "0.1.0",
       "dependencies": {
+        "@humanify/auth": "workspace:*",
         "@humanify/config": "workspace:*",
         "@humanify/contracts": "workspace:*",
+        "@humanify/db": "workspace:*",
+        "@humanify/discord-core": "workspace:*",
+        "@humanify/policy-engine": "workspace:*",
+        "@humanify/queue": "workspace:*",
         "@humanify/telemetry": "workspace:*",
         "elysia": "^1.4.28",
       },

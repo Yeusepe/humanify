@@ -125,7 +125,7 @@ Current concrete repo anchor:
 | `packages\telemetry` | traceparent propagation, header redaction, structured log context, bootstrap boundaries | become the durable audit system |
 | `packages\auth` | Discord OAuth2 helpers, session state, CSRF/state, verifier session helpers | approve moderation actions |
 | `packages\config` | environment schema, role-specific loaders, safe config summaries | hide missing critical config behind silent defaults |
-| `services\inference-rs` | text/image classification, similarity, embeddings, heuristic scoring | emit executable moderation commands |
+| `services\inference-rs` | advisory score/classify endpoints, fastembed text embeddings, similarity, rerank, explicit image-capability status | emit executable moderation commands |
 | `services\learning-rs` | outcome ingestion, calibration, suppression, reputation updates | rewrite canonical moderator outcomes |
 | `services\evidence-rs` | hashing, normalization, derivative generation, OCR prep, redaction primitives | own final retention or access policy |
 | `services\trust-rs` | trust-network scoring, cross-server weighting, advisory summaries | become a global blacklist authority |

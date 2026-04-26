@@ -129,6 +129,28 @@ pub enum EventKind {
     ManualReview,
 }
 
+/// Readiness of a specific advisory capability.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityStatus {
+    /// Capability is ready for normal advisory use.
+    Ready,
+    /// Capability works but is degraded.
+    Degraded,
+    /// Capability is not currently available.
+    Unavailable,
+}
+
+/// Purpose used when generating text embeddings.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum TextEmbeddingPurpose {
+    /// Query-like text used to search similar records.
+    Query,
+    /// Passage-like text stored as a retrievable record.
+    Passage,
+}
+
 /// The canonical advisory artifact returned by Rust.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -202,6 +224,34 @@ pub struct LearnedSignal {
     /// Optional expiry.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<String>,
+}
+
+/// Textual learned-signal candidate supplied by Bun from canonical storage.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LearnedSignalCandidate {
+    /// Learned signal identifier.
+    pub id: String,
+    /// Candidate signal type.
+    #[serde(rename = "type")]
+    pub kind: LearnedSignalType,
+    /// Canonical reason code the signal should surface when matched.
+    pub reason_code: String,
+    /// Canonical source cases backing this signal.
+    pub source_case_ids: Vec<String>,
+    /// Redacted or normalized text used for advisory matching.
+    pub text: String,
+    /// Optional precomputed hash for the text/value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value_hash: Option<String>,
+    /// Canonical signal weight before similarity adjustment.
+    pub weight: f64,
+    /// Canonical signal confidence before similarity adjustment.
+    pub confidence: f64,
+    /// False-positive counter used for suppression.
+    pub false_positive_count: u32,
+    /// True-positive counter used for reinforcement.
+    pub true_positive_count: u32,
 }
 
 /// Scoring-only policy hints provided by Bun.
@@ -305,6 +355,9 @@ pub struct InferenceRequest {
     pub evidence_refs: Vec<String>,
     /// Scoring-only policy hints.
     pub policy_input: ScoringPolicyInput,
+    /// Canonical learned-signal candidates Bun wants Rust to compare against.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub learned_signal_candidates: Vec<LearnedSignalCandidate>,
 }
 
 /// Event envelope inside `InferenceRequest`.
@@ -332,6 +385,9 @@ pub struct FeatureSnapshot {
     /// Optional first-message delay.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub first_message_delay_seconds: Option<u64>,
+    /// Optional redacted or normalized message text for advisory embedding work.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_text: Option<String>,
     /// Optional normalized message-text hash.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message_text_hash: Option<String>,
@@ -360,6 +416,212 @@ pub struct InferenceResponse {
     pub decision: RiskDecision,
     /// Learned signals surfaced with the response.
     pub learned_signals: Vec<LearnedSignal>,
+    /// Degraded-mode warnings.
+    pub warnings: Vec<String>,
+}
+
+/// Input text for embedding-oriented endpoints.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TextInput {
+    /// Optional caller-supplied identifier.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Redacted or normalized text content.
+    pub text: String,
+}
+
+/// Request for direct embedding generation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EmbedRequest {
+    /// Shared contract version.
+    pub contract_version: String,
+    /// Traceable request identifier.
+    pub request_id: String,
+    /// Whether inputs should be embedded as queries or passages.
+    pub purpose: TextEmbeddingPurpose,
+    /// Inputs to embed.
+    pub inputs: Vec<TextInput>,
+}
+
+/// Serialized embedding output for a single input.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct EmbeddingRecord {
+    /// Optional caller-supplied identifier.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Stable value hash for the embedded text.
+    pub value_hash: String,
+    /// Dense embedding vector.
+    pub vector: Vec<f32>,
+}
+
+/// Response for direct embedding generation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct EmbedResponse {
+    /// Shared contract version.
+    pub contract_version: String,
+    /// Echoed request identifier.
+    pub request_id: String,
+    /// Capability readiness.
+    pub capability_status: CapabilityStatus,
+    /// Backend/model identifier used for the embeddings.
+    pub model_version: String,
+    /// Embedding dimensionality.
+    pub dimensions: usize,
+    /// Output embeddings.
+    pub embeddings: Vec<EmbeddingRecord>,
+    /// Degraded-mode warnings.
+    pub warnings: Vec<String>,
+}
+
+/// Request for cosine-similarity matching against learned candidates.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SimilarityRequest {
+    /// Shared contract version.
+    pub contract_version: String,
+    /// Traceable request identifier.
+    pub request_id: String,
+    /// Query text to compare.
+    pub query: TextInput,
+    /// Candidate learned signals to compare against.
+    pub candidates: Vec<LearnedSignalCandidate>,
+    /// Optional top-k cap.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_k: Option<usize>,
+    /// Optional minimum score.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_score: Option<f64>,
+}
+
+/// A single similarity match.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SimilarityMatch {
+    /// Learned signal identifier.
+    pub id: String,
+    /// Candidate type.
+    #[serde(rename = "type")]
+    pub kind: LearnedSignalType,
+    /// Stable reason code surfaced by this match.
+    pub reason_code: String,
+    /// Canonical source cases backing the signal.
+    pub source_case_ids: Vec<String>,
+    /// Stable hash for the matched record.
+    pub value_hash: String,
+    /// Cosine similarity score.
+    pub score: f64,
+    /// Weight after similarity and suppression adjustment.
+    pub adjusted_weight: f64,
+    /// Confidence after similarity adjustment.
+    pub adjusted_confidence: f64,
+}
+
+/// Similarity endpoint response.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SimilarityResponse {
+    /// Shared contract version.
+    pub contract_version: String,
+    /// Echoed request identifier.
+    pub request_id: String,
+    /// Capability readiness.
+    pub capability_status: CapabilityStatus,
+    /// Backend/model identifier used for the comparison.
+    pub model_version: String,
+    /// Embedding dimensionality.
+    pub dimensions: usize,
+    /// Stable query hash.
+    pub query_hash: String,
+    /// Sorted matches in descending score order.
+    pub matches: Vec<SimilarityMatch>,
+    /// Degraded-mode warnings.
+    pub warnings: Vec<String>,
+}
+
+/// Rerank request built on the same learned-signal candidate shape.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RerankRequest {
+    /// Shared contract version.
+    pub contract_version: String,
+    /// Traceable request identifier.
+    pub request_id: String,
+    /// Query text to compare.
+    pub query: TextInput,
+    /// Candidate texts to rerank.
+    pub documents: Vec<LearnedSignalCandidate>,
+    /// Optional top-k cap.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_k: Option<usize>,
+}
+
+/// Reranked document result.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RerankResult {
+    /// Learned signal/document identifier.
+    pub id: String,
+    /// Stable reason code associated with the document.
+    pub reason_code: String,
+    /// Canonical source cases backing the document.
+    pub source_case_ids: Vec<String>,
+    /// Stable hash for the reranked text.
+    pub value_hash: String,
+    /// Descending relevance score.
+    pub score: f64,
+}
+
+/// Rerank endpoint response.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RerankResponse {
+    /// Shared contract version.
+    pub contract_version: String,
+    /// Echoed request identifier.
+    pub request_id: String,
+    /// Capability readiness.
+    pub capability_status: CapabilityStatus,
+    /// Backend/model identifier used for the rerank.
+    pub model_version: String,
+    /// Embedding dimensionality.
+    pub dimensions: usize,
+    /// Sorted rerank results in descending score order.
+    pub results: Vec<RerankResult>,
+    /// Degraded-mode warnings.
+    pub warnings: Vec<String>,
+}
+
+/// Request for image-classification capability checks.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageClassificationRequest {
+    /// Shared contract version.
+    pub contract_version: String,
+    /// Traceable request identifier.
+    pub request_id: String,
+    /// Canonical evidence references to classify.
+    pub evidence_refs: Vec<String>,
+}
+
+/// Response for image classification.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageClassificationResponse {
+    /// Shared contract version.
+    pub contract_version: String,
+    /// Echoed request identifier.
+    pub request_id: String,
+    /// Capability readiness.
+    pub capability_status: CapabilityStatus,
+    /// Backend/model identifier, even when unavailable.
+    pub model_version: String,
+    /// Echoed evidence references.
+    pub evidence_refs: Vec<String>,
     /// Degraded-mode warnings.
     pub warnings: Vec<String>,
 }
@@ -415,6 +677,7 @@ impl InferenceRequest {
             features,
             evidence_refs: Vec::new(),
             policy_input: ScoringPolicyInput::default(),
+            learned_signal_candidates: Vec::new(),
         }
     }
 }
@@ -422,7 +685,9 @@ impl InferenceRequest {
 #[cfg(test)]
 mod tests {
     use super::{
-        Action, EventKind, FeatureSnapshot, InferenceEvent, InferenceRequest, ScoringPolicyInput,
+        Action, CapabilityStatus, EmbedRequest, EventKind, FeatureSnapshot,
+        ImageClassificationResponse, InferenceEvent, InferenceRequest, ScoringPolicyInput,
+        TextEmbeddingPurpose, TextInput,
     };
 
     #[test]
@@ -442,6 +707,7 @@ mod tests {
                 has_avatar: false,
                 has_banner: false,
                 first_message_delay_seconds: Some(10),
+                message_text: Some("claim your discord gift".to_string()),
                 message_text_hash: Some("blake3:123".to_string()),
                 normalized_domains: vec!["example.test".to_string()],
                 invite_code_hash: None,
@@ -450,6 +716,7 @@ mod tests {
             },
             evidence_refs: vec!["evi_123".to_string()],
             policy_input: ScoringPolicyInput::default(),
+            learned_signal_candidates: Vec::new(),
         };
 
         let value = serde_json::to_value(request).expect("request should serialize");
@@ -457,6 +724,7 @@ mod tests {
         assert_eq!(value["requestId"], "req_123");
         assert_eq!(value["subjectUserId"], "user_123");
         assert_eq!(value["event"]["kind"], "message");
+        assert_eq!(value["features"]["messageText"], "claim your discord gift");
     }
 
     #[test]
@@ -464,5 +732,40 @@ mod tests {
         assert!(Action::Watch > Action::None);
         assert!(Action::Ban > Action::Quarantine);
         assert_eq!(Action::Verify.rank(), 2);
+    }
+
+    #[test]
+    fn embed_request_serializes_with_documented_shapes() {
+        let request = EmbedRequest {
+            contract_version: "0.1.0".to_string(),
+            request_id: "embed_123".to_string(),
+            purpose: TextEmbeddingPurpose::Query,
+            inputs: vec![TextInput {
+                id: Some("candidate_1".to_string()),
+                text: "query: suspicious giveaway".to_string(),
+            }],
+        };
+
+        let value = serde_json::to_value(request).expect("embed request should serialize");
+
+        assert_eq!(value["purpose"], "query");
+        assert_eq!(value["inputs"][0]["id"], "candidate_1");
+    }
+
+    #[test]
+    fn image_classification_response_surfaces_capability_status() {
+        let response = ImageClassificationResponse {
+            contract_version: "0.1.0".to_string(),
+            request_id: "img_123".to_string(),
+            capability_status: CapabilityStatus::Unavailable,
+            model_version: "image-backend-unconfigured".to_string(),
+            evidence_refs: vec!["evi_123".to_string()],
+            warnings: vec!["image_classification_backend_unconfigured".to_string()],
+        };
+
+        let value = serde_json::to_value(response).expect("response should serialize");
+
+        assert_eq!(value["capabilityStatus"], "unavailable");
+        assert_eq!(value["warnings"][0], "image_classification_backend_unconfigured");
     }
 }

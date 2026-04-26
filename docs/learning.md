@@ -46,8 +46,10 @@ flowchart LR
   E --> F[Persist durable embeddings in Postgres + pgvector]
   E --> G[Refresh SQLite/libSQL local caches]
   E --> H[Optional Qdrant projection refresh]
-  F --> I[Future inference requests use signals advisory only]
-  I --> J[Bun policy engine still decides actions]
+  F --> I[Bun loads canonical learned candidates from Postgres]
+  I --> J[services\\inference-rs compares redacted text with fastembed]
+  J --> K[Similarity matches stay advisory only]
+  K --> L[Bun policy engine still decides actions]
 ```
 
 ## 3. Canonical inputs and outputs
@@ -106,9 +108,18 @@ Metrics that should eventually be materialized for review:
 | Component | Responsibility |
 | --- | --- |
 | `services\learning-rs` | ingest feedback, recompute signal weights, maintain suppressions, publish projection refreshes |
-| `services\inference-rs` | consume learned signals as advisory inputs during scoring and similarity requests |
+| `services\inference-rs` | consume Bun-supplied learned candidates, embed text with `fastembed-rs`, and surface advisory similarity/rerank results |
 | `packages\policy-engine` | decide how advisory score changes affect allowed actions |
 | dashboard review surfaces | expose calibration and suppression state to moderators/operators |
+
+### 7.1 Concrete first advisory path
+
+The first production-quality slice is:
+
+1. Bun reads canonical `learned_signals` / `signal_embeddings` ownership metadata from Postgres-backed state.
+2. Bun sends redacted `messageText` plus `learnedSignalCandidates` into `services\inference-rs`.
+3. `services\inference-rs` uses `fastembed-rs` for `/embed`, `/similarity`, `/rerank`, and for optional similarity boosts inside `/score` / `/classify/text`.
+4. Image classification remains explicit-capability-only until a real image backend is wired.
 
 ## 8. Safety invariants
 

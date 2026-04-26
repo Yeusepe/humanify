@@ -22,6 +22,30 @@
     },
     {
       "$ref": "#/$defs/InferenceResponse"
+    },
+    {
+      "$ref": "#/$defs/EmbedRequest"
+    },
+    {
+      "$ref": "#/$defs/EmbedResponse"
+    },
+    {
+      "$ref": "#/$defs/SimilarityRequest"
+    },
+    {
+      "$ref": "#/$defs/SimilarityResponse"
+    },
+    {
+      "$ref": "#/$defs/RerankRequest"
+    },
+    {
+      "$ref": "#/$defs/RerankResponse"
+    },
+    {
+      "$ref": "#/$defs/ImageClassificationRequest"
+    },
+    {
+      "$ref": "#/$defs/ImageClassificationResponse"
     }
   ],
   "$defs": {
@@ -246,6 +270,98 @@
         }
       }
     },
+    "CapabilityStatus": {
+      "type": "string",
+      "enum": [
+        "ready",
+        "degraded",
+        "unavailable"
+      ]
+    },
+    "TextEmbeddingPurpose": {
+      "type": "string",
+      "enum": [
+        "query",
+        "passage"
+      ]
+    },
+    "TextInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "text"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "LearnedSignalCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "reasonCode",
+        "sourceCaseIds",
+        "text",
+        "weight",
+        "confidence",
+        "falsePositiveCount",
+        "truePositiveCount"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "$ref": "#/$defs/LearnedSignalType"
+        },
+        "reasonCode": {
+          "$ref": "#/$defs/ReasonCode"
+        },
+        "sourceCaseIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "valueHash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "weight": {
+          "type": "number"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "falsePositiveCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "truePositiveCount": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
     "ScoringPolicyInput": {
       "type": "object",
       "additionalProperties": false,
@@ -356,6 +472,10 @@
           "type": "number",
           "minimum": 0
         },
+        "messageText": {
+          "type": "string",
+          "minLength": 1
+        },
         "messageTextHash": {
           "type": "string",
           "minLength": 1
@@ -422,6 +542,13 @@
         },
         "policyInput": {
           "$ref": "#/$defs/ScoringPolicyInput"
+        },
+        "learnedSignalCandidates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LearnedSignalCandidate"
+          },
+          "default": []
         }
       }
     },
@@ -457,6 +584,423 @@
             "$ref": "#/$defs/LearnedSignal"
           },
           "default": []
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      }
+    },
+    "EmbedRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "requestId",
+        "purpose",
+        "inputs"
+      ],
+      "properties": {
+        "contractVersion": {
+          "$ref": "#/$defs/SemVer"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "purpose": {
+          "$ref": "#/$defs/TextEmbeddingPurpose"
+        },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TextInput"
+          },
+          "minItems": 1
+        }
+      }
+    },
+    "EmbeddingRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "valueHash",
+        "vector"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "valueHash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "vector": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 1
+        }
+      }
+    },
+    "EmbedResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "requestId",
+        "capabilityStatus",
+        "modelVersion",
+        "dimensions",
+        "embeddings",
+        "warnings"
+      ],
+      "properties": {
+        "contractVersion": {
+          "$ref": "#/$defs/SemVer"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "capabilityStatus": {
+          "$ref": "#/$defs/CapabilityStatus"
+        },
+        "modelVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "dimensions": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "embeddings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EmbeddingRecord"
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      }
+    },
+    "SimilarityRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "requestId",
+        "query",
+        "candidates"
+      ],
+      "properties": {
+        "contractVersion": {
+          "$ref": "#/$defs/SemVer"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "query": {
+          "$ref": "#/$defs/TextInput"
+        },
+        "candidates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LearnedSignalCandidate"
+          },
+          "minItems": 1
+        },
+        "topK": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "minScore": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "SimilarityMatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "reasonCode",
+        "sourceCaseIds",
+        "valueHash",
+        "score",
+        "adjustedWeight",
+        "adjustedConfidence"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "$ref": "#/$defs/LearnedSignalType"
+        },
+        "reasonCode": {
+          "$ref": "#/$defs/ReasonCode"
+        },
+        "sourceCaseIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "valueHash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "score": {
+          "type": "number",
+          "minimum": -1,
+          "maximum": 1
+        },
+        "adjustedWeight": {
+          "type": "number"
+        },
+        "adjustedConfidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "SimilarityResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "requestId",
+        "capabilityStatus",
+        "modelVersion",
+        "dimensions",
+        "queryHash",
+        "matches",
+        "warnings"
+      ],
+      "properties": {
+        "contractVersion": {
+          "$ref": "#/$defs/SemVer"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "capabilityStatus": {
+          "$ref": "#/$defs/CapabilityStatus"
+        },
+        "modelVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "dimensions": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "queryHash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "matches": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SimilarityMatch"
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      }
+    },
+    "RerankRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "requestId",
+        "query",
+        "documents"
+      ],
+      "properties": {
+        "contractVersion": {
+          "$ref": "#/$defs/SemVer"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "query": {
+          "$ref": "#/$defs/TextInput"
+        },
+        "documents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LearnedSignalCandidate"
+          },
+          "minItems": 1
+        },
+        "topK": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "RerankResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "reasonCode",
+        "sourceCaseIds",
+        "valueHash",
+        "score"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reasonCode": {
+          "$ref": "#/$defs/ReasonCode"
+        },
+        "sourceCaseIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "valueHash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "score": {
+          "type": "number",
+          "minimum": -1,
+          "maximum": 1
+        }
+      }
+    },
+    "RerankResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "requestId",
+        "capabilityStatus",
+        "modelVersion",
+        "dimensions",
+        "results",
+        "warnings"
+      ],
+      "properties": {
+        "contractVersion": {
+          "$ref": "#/$defs/SemVer"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "capabilityStatus": {
+          "$ref": "#/$defs/CapabilityStatus"
+        },
+        "modelVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "dimensions": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RerankResult"
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      }
+    },
+    "ImageClassificationRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "requestId",
+        "evidenceRefs"
+      ],
+      "properties": {
+        "contractVersion": {
+          "$ref": "#/$defs/SemVer"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidenceRefs": {
+          "$ref": "#/$defs/EvidenceRefList"
+        }
+      }
+    },
+    "ImageClassificationResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "requestId",
+        "capabilityStatus",
+        "modelVersion",
+        "evidenceRefs",
+        "warnings"
+      ],
+      "properties": {
+        "contractVersion": {
+          "$ref": "#/$defs/SemVer"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "capabilityStatus": {
+          "$ref": "#/$defs/CapabilityStatus"
+        },
+        "modelVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidenceRefs": {
+          "$ref": "#/$defs/EvidenceRefList"
         },
         "warnings": {
           "type": "array",

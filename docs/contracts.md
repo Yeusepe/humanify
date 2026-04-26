@@ -288,6 +288,19 @@ Rules:
 
 ## 9. Bun ↔ Rust inference payloads
 
+### 9.0 Endpoint coverage
+
+The first concrete inference boundary now exposes:
+
+| Endpoint | Request | Response | Current status |
+| --- | --- | --- | --- |
+| `/v1/inference/score` | `InferenceRequest` | `InferenceResponse` | real advisory score + optional fastembed similarity |
+| `/v1/inference/classify/text` | `InferenceRequest` | `InferenceResponse` | alias of the text scoring path |
+| `/v1/inference/embed` | `EmbedRequest` | `EmbedResponse` | real fastembed text embeddings |
+| `/v1/inference/similarity` | `SimilarityRequest` | `SimilarityResponse` | real cosine similarity against Bun-supplied learned candidates |
+| `/v1/inference/rerank` | `RerankRequest` | `RerankResponse` | real embedding-based rerank |
+| `/v1/inference/classify/image` | `ImageClassificationRequest` | `ImageClassificationResponse` | explicit capability response until an image backend is wired |
+
 ### 9.1 `InferenceRequest`
 
 ```ts
@@ -306,6 +319,7 @@ type InferenceRequest = {
     hasAvatar: boolean;
     hasBanner: boolean;
     firstMessageDelaySeconds?: number;
+    messageText?: string;
     messageTextHash?: string;
     normalizedDomains: string[];
     inviteCodeHash?: string;
@@ -314,12 +328,30 @@ type InferenceRequest = {
   };
   evidenceRefs: string[];
   policyInput: ScoringPolicyInput;
+  learnedSignalCandidates?: LearnedSignalCandidate[];
+};
+```
+
+```ts
+type LearnedSignalCandidate = {
+  id: string;
+  type: LearnedSignal["type"];
+  reasonCode: string;
+  sourceCaseIds: string[];
+  text: string;
+  valueHash?: string;
+  weight: number;
+  confidence: number;
+  falsePositiveCount: number;
+  truePositiveCount: number;
 };
 ```
 
 Rules:
 
 - Request payloads should prefer hashes, embeddings, and normalized metadata over raw private content.
+- `features.messageText` is optional and should only carry already-normalized or redacted text that Bun is willing to send across the Rust boundary for advisory similarity work.
+- `learnedSignalCandidates` must come from Bun-owned canonical reads; Rust does not invent cross-case authority on its own.
 - If a feature is unavailable, omit it instead of inventing a default.
 - Bun owns request normalization before calling Rust.
 
@@ -339,8 +371,115 @@ type InferenceResponse = {
 Rules:
 
 - `decision` is advisory.
+- `modelVersion` should identify both the scorer version and any embedding backend when similarity contributed materially to the result.
 - `warnings` should capture degraded inference states such as missing embeddings, unavailable reputation data, or partial evidence.
 - Rust must echo the request ID for traceability.
+
+### 9.3 Embedding and similarity payloads
+
+```ts
+type TextInput = {
+  id?: string;
+  text: string;
+};
+
+type CapabilityStatus = "ready" | "degraded" | "unavailable";
+
+type EmbedRequest = {
+  contractVersion: string;
+  requestId: string;
+  purpose: "query" | "passage";
+  inputs: TextInput[];
+};
+
+type EmbedResponse = {
+  contractVersion: string;
+  requestId: string;
+  capabilityStatus: CapabilityStatus;
+  modelVersion: string;
+  dimensions: number;
+  embeddings: {
+    id?: string;
+    valueHash: string;
+    vector: number[];
+  }[];
+  warnings: string[];
+};
+
+type SimilarityRequest = {
+  contractVersion: string;
+  requestId: string;
+  query: TextInput;
+  candidates: LearnedSignalCandidate[];
+  topK?: number;
+  minScore?: number;
+};
+
+type SimilarityResponse = {
+  contractVersion: string;
+  requestId: string;
+  capabilityStatus: CapabilityStatus;
+  modelVersion: string;
+  dimensions: number;
+  queryHash: string;
+  matches: {
+    id: string;
+    type: LearnedSignal["type"];
+    reasonCode: string;
+    sourceCaseIds: string[];
+    valueHash: string;
+    score: number;
+    adjustedWeight: number;
+    adjustedConfidence: number;
+  }[];
+  warnings: string[];
+};
+
+type RerankRequest = {
+  contractVersion: string;
+  requestId: string;
+  query: TextInput;
+  documents: LearnedSignalCandidate[];
+  topK?: number;
+};
+
+type RerankResponse = {
+  contractVersion: string;
+  requestId: string;
+  capabilityStatus: CapabilityStatus;
+  modelVersion: string;
+  dimensions: number;
+  results: {
+    id: string;
+    reasonCode: string;
+    sourceCaseIds: string[];
+    valueHash: string;
+    score: number;
+  }[];
+  warnings: string[];
+};
+
+type ImageClassificationRequest = {
+  contractVersion: string;
+  requestId: string;
+  evidenceRefs: string[];
+};
+
+type ImageClassificationResponse = {
+  contractVersion: string;
+  requestId: string;
+  capabilityStatus: CapabilityStatus;
+  modelVersion: string;
+  evidenceRefs: string[];
+  warnings: string[];
+};
+```
+
+Rules:
+
+- `capabilityStatus` makes partial capability explicit instead of implying production completeness.
+- `/embed`, `/similarity`, and `/rerank` are advisory compute helpers; Bun still owns persistence, policy, and any resulting moderation workflow.
+- `/classify/image` must remain explicit when no image backend is configured. Returning `unavailable` is acceptable; pretending an image model exists is not.
 
 ## 10. Contract examples
 
@@ -362,6 +501,7 @@ Rules:
     "hasAvatar": false,
     "hasBanner": false,
     "firstMessageDelaySeconds": 8,
+    "messageText": "claim your free nitro gift at http://disc0rd-gifts.example",
     "messageTextHash": "blake3:8f7d3f...",
     "normalizedDomains": ["disc0rd-gifts.example"],
     "inviteCodeHash": "blake3:3c93e1...",
@@ -374,9 +514,23 @@ Rules:
     "preferredContainmentAction": "quarantine",
     "suspiciousRoleIds": [],
     "trustedRoleIds": ["111111111111111111"],
-    "enabledSignalFamilies": ["account", "message", "behavior", "invite", "domain", "learned"],
-    "allowCrossServerSignals": true
-  }
+      "enabledSignalFamilies": ["account", "message", "behavior", "invite", "domain", "learned"],
+      "allowCrossServerSignals": true
+   },
+   "learnedSignalCandidates": [
+     {
+       "id": "ls_01jz6n8akgn1v8dqt8rn",
+       "type": "text_similarity",
+       "reasonCode": "similar_to_confirmed_scam_template",
+       "sourceCaseIds": ["case_01jz5rx5g8b9vn78q0pz"],
+       "text": "claim your free nitro gift now",
+       "valueHash": "blake3:6540aa...",
+       "weight": 2.5,
+       "confidence": 0.93,
+       "falsePositiveCount": 0,
+       "truePositiveCount": 4
+     }
+   ]
 }
 ```
 
@@ -386,7 +540,7 @@ Rules:
 {
   "contractVersion": "0.1.0",
   "requestId": "req_01jz6n5x3q6k0d8d5f8n",
-  "modelVersion": "risk-heuristics-0.1.0",
+  "modelVersion": "risk-hybrid-0.2.0+fastembed/BAAI-bge-small-en-v1.5",
   "decision": {
     "userId": "234567890123456789",
     "guildId": "123456789012345678",
@@ -416,6 +570,48 @@ Rules:
     }
   ],
   "warnings": []
+}
+```
+
+### 10.3 Example `SimilarityResponse`
+
+```json
+{
+  "contractVersion": "0.1.0",
+  "requestId": "sim_01jz6q0n2b5x6s7e8d9f",
+  "capabilityStatus": "ready",
+  "modelVersion": "fastembed/BAAI-bge-small-en-v1.5",
+  "dimensions": 384,
+  "queryHash": "blake3:7b5a90...",
+  "matches": [
+    {
+      "id": "ls_01jz6n8akgn1v8dqt8rn",
+      "type": "text_similarity",
+      "reasonCode": "similar_to_confirmed_scam_template",
+      "sourceCaseIds": ["case_01jz5rx5g8b9vn78q0pz"],
+      "valueHash": "blake3:6540aa...",
+      "score": 0.89,
+      "adjustedWeight": 2.23,
+      "adjustedConfidence": 0.88
+    }
+  ],
+  "warnings": []
+}
+```
+
+### 10.4 Example `ImageClassificationResponse`
+
+```json
+{
+  "contractVersion": "0.1.0",
+  "requestId": "img_01jz6q3m3d9k1r2s4t6u",
+  "capabilityStatus": "unavailable",
+  "modelVersion": "image-backend-unconfigured-0.1.0",
+  "evidenceRefs": ["evi_01jz6n6bk8y1rj8d3n3k"],
+  "warnings": [
+    "image_classification_backend_unconfigured",
+    "image_classification_remains_advisory_only"
+  ]
 }
 ```
 

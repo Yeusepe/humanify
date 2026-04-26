@@ -46,6 +46,7 @@ publish = false
 [workspace.dependencies]
 axum = { version = "0.8.1", features = ["json", "macros"] }
 blake3 = "1.5.5"
+fastembed = "5.13.3"
 fast_image_resize = "6.0.0"
 image = { version = "0.25.5", default-features = true, features = ["jpeg", "png", "webp"] }
 serde = { version = "1.0.217", features = ["derive"] }

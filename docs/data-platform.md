@@ -147,6 +147,7 @@ Notes:
 Notes:
 - Vector rows should point back to their owning case, evidence, or learned signal.
 - Learned signals are mutable; raw outcomes and examples are not rewritten to fit updated models.
+- The current first advisory path lets Bun read canonical learned-signal rows, pass candidate text and metadata to `services\inference-rs`, and receive fastembed-backed similarity results without moving vector ownership out of Postgres.
 
 ## 4. What lives in Postgres
 
@@ -188,6 +189,7 @@ Rules:
 2. Do not keep exclusive business state only in SQLite/libSQL.
 3. Keep private content minimized; prefer hashes, embeddings, and short-lived feature materialization.
 4. If libSQL is used for edge deployment, treat it as a distribution strategy for the same embedded schema, not a second canonical platform DB.
+5. Until the local cache refresh path is implemented, Bun should treat Postgres-owned learned-signal reads plus Rust-side fastembed inference as the authoritative advisory path.
 
 ## 6. What goes to Cloudflare R2
 

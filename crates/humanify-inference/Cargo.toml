@@ -10,6 +10,8 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+blake3.workspace = true
+fastembed.workspace = true
 humanify-core.workspace = true
 humanify-policy.workspace = true
 humanify-proto.workspace = true

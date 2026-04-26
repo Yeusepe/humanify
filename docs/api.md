@@ -120,16 +120,34 @@ Callback writes must be **idempotent** and **Postgres-first**. Queue publication
 | R2/MinIO | brokered evidence uploads/downloads | short-lived signed URLs, Postgres-owned metadata |
 | Electric | UI read-model sync | API owns what is synced; Electric does not create business state |
 
-## 8. What later implementation should add here
+## 8. Current `api-domain-spine` implementation notes
 
-- API runtime boot should compose shared kernel packages instead of re-implementing their concerns:
-  - `packages\config` for startup validation and safe env summaries
-  - `packages\auth` for Discord OAuth URL/state/session helpers
-  - `packages\db` for canonical write plans, idempotency receipts, and outbox metadata
-  - `packages\queue` for Redis Streams envelopes that carry canonical refs plus `traceparent`
-  - `packages\policy-engine` for advisory-score clamps into allowed actions
-  - `packages\telemetry` for trace propagation, header redaction, and structured log context
-- concrete route-to-handler ownership once shared Bun packages exist
-- exact auth/session cookie or token contract once `packages\auth` is introduced
-- exact request and response schemas for each route group once the JSON Schema and generated types expand
+`apps\api-bun` now implements the route groups above with validated Elysia handlers and a stable request-correlated envelope shape:
+
+```ts
+interface ApiSuccessEnvelope<T> {
+  contractVersion: string;
+  requestId: string;
+  data: T;
+}
+```
+
+Implementation details made concrete by the current spine:
+
+- `GET /service-info`, `GET /contracts/schema`, and `GET /contracts/summary` expose the API boundary metadata, shared package usage, and canonical schema references.
+- `POST /auth/discord/start` and `GET /auth/discord/callback` now use `packages\auth` plus `packages\config` to issue signed Discord OAuth state and session-cookie planning metadata without pretending a session store already exists.
+- `PUT /guilds/:guildId/policy`, `PUT /guilds/:guildId/verification`, `POST /guilds/:guildId/reports`, `POST /guilds/:guildId/reports/:reportId/evidence`, `POST /guilds/:guildId/cases/:caseId/review`, `POST /guilds/:guildId/cases/:caseId/appeal`, `POST /guilds/:guildId/verification/sessions`, `POST /verification/challenges/:challengeId/complete`, `POST /verification/sessions/:sessionId/release`, and the moderation routes now return `202 Accepted` planning envelopes containing:
+  - a Postgres-first canonical write plan built with `packages\db`
+  - idempotency metadata at the HTTP boundary
+  - an outbox/Redis Streams envelope built with `packages\queue`
+  - request and trace correlation from `packages\telemetry`
+- moderation routes (`/approve`, `/quarantine`, `/timeout`, `/kick`, `/ban`) are now concretely clamped through `packages\policy-engine`; a requested action that exceeds Bun policy or Discord capability constraints must fail with `403 forbidden`.
+- read-model routes (`/guilds/:guildId/cases`, `/guilds/:guildId/audit`, `/guilds/:guildId/risk-queue`) return explicit `pending_postgres_projection` status rather than synthetic data.
+- callback routes remain explicitly unavailable until provider-specific signature documentation and executor wiring exist; the API must not invent callback semantics.
+
+## 9. What later implementation should add here
+
+- exact auth/session persistence contract once `packages\auth` grows durable session storage helpers
+- Postgres-backed read-model queries for case detail, user profile, verification-session status, audit, and risk-queue routes
 - provider-specific callback contracts once the first real provider is selected and documented in `docs\verification.md`
+- R2 upload/redaction brokering once storage and evidence services are ready for those boundaries

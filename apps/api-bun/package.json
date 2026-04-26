@@ -11,8 +11,13 @@
     "typecheck": "tsc --project tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@humanify/auth": "workspace:*",
     "@humanify/config": "workspace:*",
     "@humanify/contracts": "workspace:*",
+    "@humanify/db": "workspace:*",
+    "@humanify/discord-core": "workspace:*",
+    "@humanify/policy-engine": "workspace:*",
+    "@humanify/queue": "workspace:*",
     "@humanify/telemetry": "workspace:*",
     "elysia": "^1.4.28"
   },
@@ -26,16 +31,22 @@
       "Implementation Plan.txt",
       "docs\\architecture.md",
       "docs\\api.md",
+      "docs\\cases-and-reports.md",
       "docs\\reference-baseline.md",
       "docs\\contracts.md",
+      "docs\\data-platform.md",
       "docs\\observability-security.md",
+      "docs\\verification.md",
       "docs\\workspaces.md"
     ],
     "upstreamDocs": [
       "https://elysiajs.com/at-glance",
+      "https://elysiajs.com/essential/validation",
+      "https://elysiajs.com/patterns/error-handling",
+      "https://discord.com/developers/docs/topics/oauth2",
       "https://bun.sh/docs/runtime/env",
       "https://bun.sh/docs/typescript"
     ],
-    "notes": "The API shell now resolves typed service config and telemetry bootstrap through shared kernel packages while keeping route scope limited to bootstrap-safe endpoints."
+    "notes": "The API domain spine composes shared auth, policy, db, queue, telemetry, and Discord helpers into validated route groups that return either real planning envelopes or explicit dependency-unavailable responses."
   }
 }

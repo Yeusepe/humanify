@@ -230,6 +230,7 @@ Upstream docs:
 - Planned use: embedding generation for similarity, retrieval, and learned signal features.
 - Official docs:
   - https://docs.rs/fastembed/latest/fastembed/
+  - https://docs.rs/fastembed/5.13.3/fastembed/
 
 ### Candle
 
