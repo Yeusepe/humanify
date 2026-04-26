@@ -29,6 +29,14 @@ export type {
   PersistedGuildChannelConfigResult,
 } from "./guild-channel-config";
 export {
+  createPostgresGuildVerificationConfigRepository,
+} from "./guild-verification-config";
+export type {
+  GuildVerificationConfigRecord,
+  GuildVerificationConfigRepository,
+  PersistedGuildVerificationConfigResult,
+} from "./guild-verification-config";
+export {
   createDatabaseConfigFromEnv,
   getConnectionTarget,
   getDiscoveredMigrations,

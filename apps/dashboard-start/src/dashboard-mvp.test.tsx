@@ -24,6 +24,10 @@ import { RouterProvider, createMemoryHistory, createRouter } from "@tanstack/rea
 
 import {
   buildCaseQueryPlan,
+  createVerificationEditorState,
+  fetchGuildVerificationConfig,
+  getDashboardApiBaseUrl,
+  saveGuildVerificationConfig,
   updateVerificationOptionConfiguration,
 } from "./dashboard-mvp";
 import { routeTree } from "./routeTree.gen";
@@ -81,12 +85,158 @@ test("verification route renders lifecycle guidance", async () => {
   const markup = await renderRoute("/verification");
 
   expect(markup).toContain("Verification state");
+  expect(markup).toContain("Load server verification settings");
   expect(markup).toContain("First-time capture flows");
   expect(markup).toContain("Reusable proof backends");
   expect(markup).toContain("Required proof bundles");
   expect(markup).toContain("Face verification policy");
-  expect(markup).toContain("Default reusable proof");
+  expect(markup).toContain("Trusted roles");
+  expect(markup).toContain("Suspicious roles");
   expect(markup).toContain("Release rules");
+});
+
+test("dashboard verification flow defaults to the local Bun API port unless configured", () => {
+  expect(getDashboardApiBaseUrl()).toBe("http://127.0.0.1:3211");
+  expect(getDashboardApiBaseUrl({ VITE_HUMANIFY_API_BASE_URL: "https://api.humanify.test/" })).toBe(
+    "https://api.humanify.test",
+  );
+});
+
+test("createVerificationEditorState hydrates persisted verification config into editable fields", () => {
+  expect(
+    createVerificationEditorState({
+      actorUserId: "mod_123",
+      guildId: "guild_123",
+      verificationConfig: {
+        availableProviderIds: ["didit", "privado", "self"],
+        defaultProviderId: "didit",
+        defaultReusableProofBackendId: "privado",
+        enabledProviderIds: ["didit", "privado"],
+        faceVerificationRequired: true,
+        fallbackRoles: ["role_verified"],
+        requiredBundleIds: ["humanify_id_nationality_v1"],
+        source: "persisted",
+        suspiciousRoleIds: ["role_suspicious"],
+        trustedRoleIds: ["role_verified"],
+      },
+    }),
+  ).toEqual({
+    actorUserId: "mod_123",
+    defaultProviderId: "didit",
+    defaultReusableProofBackendId: "privado",
+    enabledProviderIds: ["didit", "privado"],
+    faceVerificationRequired: true,
+    guildId: "guild_123",
+    requiredBundleIds: ["humanify_id_nationality_v1"],
+    suspiciousRoleIdsInput: "role_suspicious",
+    trustedRoleIdsInput: "role_verified",
+  });
+});
+
+test("fetchGuildVerificationConfig reads the persisted guild verification config snapshot", async () => {
+  const requests: Request[] = [];
+  const fetchImpl = async (input: URL | RequestInfo, init?: RequestInit) => {
+    requests.push(new Request(input, init));
+    return new Response(
+      JSON.stringify({
+        contractVersion: "0.1.0",
+        data: {
+          persistence: "persisted",
+          verificationConfig: {
+            availableProviderIds: ["didit", "privado", "self"],
+            defaultProviderId: "didit",
+            defaultReusableProofBackendId: "privado",
+            enabledProviderIds: ["didit", "privado"],
+            faceVerificationRequired: true,
+            fallbackRoles: ["role_verified"],
+            requiredBundleIds: ["humanify_id_age_and_nationality_v1"],
+            source: "persisted",
+            suspiciousRoleIds: ["role_suspicious"],
+            trustedRoleIds: ["role_verified"],
+          },
+        },
+        requestId: "request_123",
+      }),
+      {
+        headers: {
+          "content-type": "application/json",
+        },
+        status: 200,
+      },
+    );
+  };
+
+  const result = await fetchGuildVerificationConfig(fetchImpl, {
+    apiBaseUrl: "http://127.0.0.1:3211",
+    guildId: "guild_123",
+  });
+
+  expect(requests).toHaveLength(1);
+  expect(requests[0]?.url).toBe("http://127.0.0.1:3211/guilds/guild_123/verification");
+  expect(result.persistence).toBe("persisted");
+  expect(result.verificationConfig.enabledProviderIds).toEqual(["didit", "privado"]);
+});
+
+test("saveGuildVerificationConfig persists the editable guild verification fields", async () => {
+  const requests: Request[] = [];
+  const fetchImpl = async (input: URL | RequestInfo, init?: RequestInit) => {
+    requests.push(new Request(input, init));
+    return new Response(
+      JSON.stringify({
+        contractVersion: "0.1.0",
+        data: {
+          persistence: "persisted",
+          queueDelivery: "pending_outbox_publish",
+          verificationConfig: {
+            availableProviderIds: ["didit", "privado", "self"],
+            defaultProviderId: "didit",
+            defaultReusableProofBackendId: "privado",
+            enabledProviderIds: ["didit", "privado"],
+            faceVerificationRequired: true,
+            fallbackRoles: ["role_verified"],
+            requiredBundleIds: ["humanify_id_nationality_v1"],
+            source: "persisted",
+            suspiciousRoleIds: ["role_suspicious"],
+            trustedRoleIds: ["role_verified"],
+          },
+        },
+        requestId: "request_456",
+      }),
+      {
+        headers: {
+          "content-type": "application/json",
+        },
+        status: 200,
+      },
+    );
+  };
+
+  const result = await saveGuildVerificationConfig(fetchImpl, {
+    actorUserId: "mod_123",
+    apiBaseUrl: "http://127.0.0.1:3211",
+    defaultProviderId: "didit",
+    defaultReusableProofBackendId: "privado",
+    enabledProviderIds: ["didit", "privado"],
+    faceVerificationRequired: true,
+    guildId: "guild_123",
+    requiredBundleIds: ["humanify_id_nationality_v1"],
+    suspiciousRoleIdsInput: "role_suspicious",
+    trustedRoleIdsInput: "role_verified",
+  });
+
+  expect(requests).toHaveLength(1);
+  expect(requests[0]?.method).toBe("PUT");
+  expect(await requests[0]?.json()).toEqual({
+    actorUserId: "mod_123",
+    defaultProviderId: "didit",
+    defaultReusableProofBackendId: "privado",
+    enabledProviderIds: ["didit", "privado"],
+    faceVerificationRequired: true,
+    requiredBundleIds: ["humanify_id_nationality_v1"],
+    suspiciousRoleIds: ["role_suspicious"],
+    trustedRoleIds: ["role_verified"],
+  });
+  expect(result.verificationConfig.requiredBundleIds).toEqual(["humanify_id_nationality_v1"]);
 });
 
 test("verification option configuration keeps the default capture flow enabled", () => {

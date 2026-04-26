@@ -21,10 +21,12 @@ import {
   authorizeAdminOnlyBotAction,
   authorizeTrustedModeratorOnlyBotAction,
   buildComponentCustomId,
+  buildSetupFlowCustomId,
   createHumanifyApplicationCommands,
   createBotGatewayIntents,
   createDiscordAuditReason,
   parseComponentCustomId,
+  parseSetupFlowCustomId,
   resolveDiscordExecutionPlan,
   snapshotExecutionCapabilities,
 } from "./index";
@@ -49,6 +51,21 @@ test("component IDs round-trip through the shared discord-core format", () => {
     entityId: "case_123",
     guildId: "guild_123",
     kind: "review",
+    version: 1,
+  });
+});
+
+test("setup flow component IDs round-trip through the setup-scoped helper", () => {
+  const customId = buildSetupFlowCustomId({
+    action: "next",
+    draftId: "draft_123",
+    guildId: "guild_123",
+  });
+
+  expect(parseSetupFlowCustomId(customId)).toEqual({
+    action: "next",
+    draftId: "draft_123",
+    guildId: "guild_123",
     version: 1,
   });
 });

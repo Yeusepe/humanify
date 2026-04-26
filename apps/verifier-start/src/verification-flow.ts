@@ -20,6 +20,7 @@ import {
   getHumanifyIdClaimBundles as getSharedHumanifyIdClaimBundles,
   parseVerificationProviderSelection,
   resolveVerificationProviderCatalog,
+  verificationOptionSupportsFaceVerificationRequirement,
   verificationProviderSupportsClaims,
   type HumanifyClaimKey,
   type HumanifyIdClaimBundle,
@@ -43,6 +44,19 @@ export type VerificationRouteSearch = {
 
 export type VerificationProviderId = VerificationProviderDefinition["id"];
 export type VerificationProviderOption = VerificationProviderDefinition;
+
+export type GuildVerificationConfigSnapshot = {
+  availableProviderIds: string[];
+  defaultProviderId: VerificationProviderId;
+  defaultReusableProofBackendId?: VerificationProviderId;
+  enabledProviderIds: VerificationProviderId[];
+  faceVerificationRequired: boolean;
+  fallbackRoles: string[];
+  requiredBundleIds: string[];
+  source: "catalog_default" | "persisted";
+  suspiciousRoleIds: string[];
+  trustedRoleIds: string[];
+};
 
 export type VerificationSessionSnapshot = {
   challengeExpiresAt: string;
@@ -73,10 +87,68 @@ export type VerificationProviderBoundary = {
   status: string;
 };
 
+export type VerificationSummary = {
+  authoritativeSource?: string;
+  faceVerificationPassed?: boolean;
+  faceVerificationPerformed?: boolean;
+  nullifierRefs?: string[];
+  proofReceipt?: {
+    nullifiers?: Array<{
+      claimKey?: HumanifyClaimKey;
+      nullifier: string;
+      nullifierSessionId?: string;
+      scopeId?: number;
+    }>;
+    proofReceiptHash?: string;
+    proofReceiptRef?: string;
+    trustedIssuerScopes?: string[];
+    verifiablePresentationCount?: number;
+  };
+  proofReceiptHash?: string;
+  proofReceiptRef?: string;
+  providerReferenceId?: string;
+  providerStatus?: string;
+  requestedClaims?: HumanifyClaimKey[];
+  satisfiedClaims?: HumanifyClaimKey[];
+  status?: "failed" | "pending" | "verified";
+  trustedIssuerScopes?: string[];
+  verifiablePresentationCount?: number;
+};
+
+export type ReusableCredentialBridgeSummary = {
+  approvedClaims?: HumanifyClaimKey[];
+  claims?: {
+    disclosedAttributes?: Record<string, string>;
+    proofOnlyPredicates?: Record<string, boolean>;
+  };
+  contractVersion?: string;
+  handoff?: {
+    disclosedAttributeKeys?: string[];
+    proofOnlyClaimKeys?: string[];
+    requestedClaims?: HumanifyClaimKey[];
+    targetBackend?: string;
+  };
+  policyInputs?: {
+    faceVerification?: {
+      passed?: boolean;
+      performed?: boolean;
+      requirementSatisfied?: boolean;
+    };
+  };
+  status?: string;
+  targetProvider?: VerificationProviderId;
+  temporaryRetention?: {
+    expiresAt?: string;
+  };
+};
+
 export type VerificationSessionData = {
   providerBoundary: VerificationProviderBoundary;
   persistence: string;
+  reusableCredentialBridge?: ReusableCredentialBridgeSummary;
   session: VerificationSessionSnapshot;
+  verification?: VerificationSummary;
+  verificationConfig: GuildVerificationConfigSnapshot;
 };
 
 export type VerificationChallengeData = {
@@ -90,6 +162,7 @@ export type VerificationChallengeData = {
   persistence: string;
   providerBoundary: VerificationProviderBoundary;
   session: VerificationSessionSnapshot;
+  verificationConfig: GuildVerificationConfigSnapshot;
 };
 
 export type ReusableProofStartData = {
@@ -124,7 +197,7 @@ export type ReusableProofVerificationData = {
   persistence: string;
   providerBoundary: VerificationProviderBoundary;
   session: VerificationSessionSnapshot;
-  verification: {
+  verification: VerificationSummary & {
     message: string;
     proofReceipt: {
       nullifiers: Array<{
@@ -201,6 +274,23 @@ export function getVerificationProviderOptions(env: Record<string, string | unde
   return getVerificationProviderCatalog(env).list();
 }
 
+export function getGuildVerificationProviderOptions(
+  verificationConfig?: GuildVerificationConfigSnapshot,
+  env: Record<string, string | undefined> = {},
+): VerificationProviderOption[] {
+  const browserCatalog = getVerificationProviderCatalog(env);
+  if (!verificationConfig) {
+    return browserCatalog.list();
+  }
+
+  const enabledProviderIds = verificationConfig.enabledProviderIds.filter((providerId) => browserCatalog.has(providerId));
+  if (enabledProviderIds.length === 0) {
+    return [];
+  }
+
+  return browserCatalog.withEnabled(enabledProviderIds).list();
+}
+
 export function getVerificationProvider(
   providerId: VerificationProviderId,
   env: Record<string, string | undefined> = {},
@@ -216,11 +306,66 @@ export function getHumanifyIdClaimBundles(): HumanifyIdClaimBundle[] {
   return getSharedHumanifyIdClaimBundles();
 }
 
+export function getGuildVerificationClaimBundleOptions(
+  verificationConfig?: GuildVerificationConfigSnapshot,
+): HumanifyIdClaimBundle[] {
+  const bundles = getSharedHumanifyIdClaimBundles();
+  if (!verificationConfig) {
+    return bundles;
+  }
+
+  return bundles.filter((bundle) => verificationConfig.requiredBundleIds.includes(bundle.bundleId));
+}
+
+export function getInitialGuildVerificationSelection(
+  verificationConfig?: GuildVerificationConfigSnapshot,
+  env: Record<string, string | undefined> = {},
+) {
+  const providerOptions = getGuildVerificationProviderOptions(verificationConfig, env);
+  const claimBundleOptions = getGuildVerificationClaimBundleOptions(verificationConfig);
+  const providerId = providerOptions.find((provider) => provider.id === verificationConfig?.defaultProviderId)?.id
+    ?? providerOptions[0]?.id
+    ?? getDefaultVerificationProviderId(env);
+  const claimBundleId = claimBundleOptions[0]?.bundleId ?? getSharedDefaultHumanifyIdClaimBundle().bundleId;
+
+  return {
+    claimBundleId,
+    providerId,
+  };
+}
+
 export function getVerificationProviderClaimCompatibility(
   provider: VerificationProviderOption,
   requestedClaims: readonly HumanifyClaimKey[],
 ): boolean {
   return verificationProviderSupportsClaims(provider, requestedClaims);
+}
+
+export function getVerificationProviderAvailability(input: {
+  faceVerificationRequired: boolean;
+  provider: VerificationProviderOption;
+  requestedClaims: readonly HumanifyClaimKey[];
+}) {
+  if (!getVerificationProviderClaimCompatibility(input.provider, input.requestedClaims)) {
+    return {
+      allowed: false,
+      reason: "This option cannot prove the checks this server asked for.",
+    } as const;
+  }
+
+  if (
+    input.faceVerificationRequired
+    && !verificationOptionSupportsFaceVerificationRequirement(input.provider)
+  ) {
+    return {
+      allowed: false,
+      reason: "This server needs a face check, so choose a first-time capture option instead.",
+    } as const;
+  }
+
+  return {
+    allowed: true,
+  } as const;
 }
 
 export function getVerificationOptionLaunch(boundary: VerificationProviderBoundary): VerificationOptionLaunch | null {

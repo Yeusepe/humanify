@@ -28,12 +28,14 @@ import {
   fetchVerificationSession,
   getDefaultHumanifyIdClaimBundle,
   getDefaultVerificationProviderId,
-  getHumanifyIdClaimBundles,
+  getGuildVerificationClaimBundleOptions,
+  getGuildVerificationProviderOptions,
+  getInitialGuildVerificationSelection,
   getVerificationOptionLaunch,
   getVerificationProvider,
+  getVerificationProviderAvailability,
   getVerificationProviderClaimCompatibility,
   getVerifierApiBaseUrl,
-  getVerificationProviderOptions,
   hasVerificationLink,
   parseVerificationSearch,
   startVerificationOptionLaunch,
@@ -74,36 +76,6 @@ function VerificationRoute() {
   const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
 
   const apiBaseUrl = getVerifierApiBaseUrl(providerEnv);
-  const providerOptions = useMemo(() => getVerificationProviderOptions(providerEnv), [providerEnv]);
-  const claimBundleOptions = useMemo(() => getHumanifyIdClaimBundles(), []);
-  const selectedProviderDefinition = useMemo(
-    () => getVerificationProvider(selectedProvider, providerEnv),
-    [providerEnv, selectedProvider],
-  );
-  const providerRoleGroups = useMemo(() => splitVerificationProviderOptions(providerOptions), [providerOptions]);
-  const humanifyIdBundle = useMemo(
-    () =>
-      claimBundleOptions.find((bundle) => bundle.bundleId === selectedClaimBundleId) ?? getDefaultHumanifyIdClaimBundle(),
-    [claimBundleOptions, selectedClaimBundleId],
-  );
-  const selectedOptionRuntime = useMemo(
-    () => resolveVerificationOptionRouteRuntime(selectedProviderDefinition),
-    [selectedProviderDefinition],
-  );
-
-  useEffect(() => {
-    const currentProvider = providerOptions.find((provider) => provider.id === selectedProvider);
-    if (currentProvider && getVerificationProviderClaimCompatibility(currentProvider, humanifyIdBundle.claims)) {
-      return;
-    }
-
-    const fallbackProvider = providerOptions.find((provider) =>
-      getVerificationProviderClaimCompatibility(provider, humanifyIdBundle.claims)
-    );
-    if (fallbackProvider) {
-      setSelectedProvider(fallbackProvider.id);
-    }
-  }, [humanifyIdBundle.claims, providerOptions, selectedProvider]);
 
   useEffect(() => {
     let active = true;
@@ -152,6 +124,30 @@ function VerificationRoute() {
     };
   }, [apiBaseUrl, search.sessionId, search.token]);
 
+  const effectiveVerificationConfig = challengeData?.verificationConfig ?? sessionData?.verificationConfig ?? null;
+  const providerOptions = useMemo(
+    () => getGuildVerificationProviderOptions(effectiveVerificationConfig ?? undefined, providerEnv),
+    [effectiveVerificationConfig, providerEnv],
+  );
+  const claimBundleOptions = useMemo(
+    () => getGuildVerificationClaimBundleOptions(effectiveVerificationConfig ?? undefined),
+    [effectiveVerificationConfig],
+  );
+  const humanifyIdBundle = useMemo(
+    () =>
+      claimBundleOptions.find((bundle) => bundle.bundleId === selectedClaimBundleId) ?? getDefaultHumanifyIdClaimBundle(),
+    [claimBundleOptions, selectedClaimBundleId],
+  );
+  const providerRoleGroups = useMemo(() => splitVerificationProviderOptions(providerOptions), [providerOptions]);
+  const selectedProviderDefinition = useMemo(
+    () => providerOptions.find((provider) => provider.id === selectedProvider) ?? getVerificationProvider(selectedProvider, providerEnv),
+    [providerEnv, providerOptions, selectedProvider],
+  );
+  const selectedOptionRuntime = useMemo(
+    () => resolveVerificationOptionRouteRuntime(selectedProviderDefinition),
+    [selectedProviderDefinition],
+  );
+
   const effectiveSession = challengeData?.session ?? proofStartData?.session ?? proofVerificationData?.session ?? sessionData?.session ?? null;
   const activeProviderBoundary =
     proofVerificationData?.providerBoundary ??
@@ -172,9 +168,11 @@ function VerificationRoute() {
     proofVerificationData?.providerBoundary.providerSessionToken ??
     proofStartData?.providerBoundary.providerSessionToken;
   const activeProviderId = activeProviderBoundary?.selectedProvider ?? selectedProviderDefinition.id;
+  const activeVerificationSummary = proofVerificationData?.verification ?? sessionData?.verification ?? null;
+  const activeReusableCredentialBridge = sessionData?.reusableCredentialBridge ?? null;
   const activeProviderDefinition = useMemo(
-    () => getVerificationProvider(activeProviderId, providerEnv),
-    [activeProviderId, providerEnv],
+    () => providerOptions.find((provider) => provider.id === activeProviderId) ?? getVerificationProvider(activeProviderId, providerEnv),
+    [activeProviderId, providerEnv, providerOptions],
   );
   const activeOptionRuntime = useMemo(
     () => resolveVerificationOptionRouteRuntime(activeProviderDefinition),
@@ -191,6 +189,19 @@ function VerificationRoute() {
     [challengeCompleted, providerFlowConfigured, releaseEligible],
   );
   const selectedClaims = activeProviderBoundary?.requestedClaims ?? humanifyIdBundle.claims;
+  const selectedProviderAvailability = useMemo(
+    () =>
+      getVerificationProviderAvailability({
+        faceVerificationRequired: effectiveVerificationConfig?.faceVerificationRequired ?? false,
+        provider: selectedProviderDefinition,
+        requestedClaims: humanifyIdBundle.claims,
+      }),
+    [
+      effectiveVerificationConfig?.faceVerificationRequired,
+      humanifyIdBundle.claims,
+      selectedProviderDefinition,
+    ],
+  );
   const humanifyKnowledge = useMemo(
     () => buildHumanifyKnowledgeSummary(selectedClaims, selectedProviderDefinition.role),
     [selectedClaims, selectedProviderDefinition.role],
@@ -198,12 +209,50 @@ function VerificationRoute() {
   const faceVerificationSummary = useMemo(
     () =>
       buildFaceVerificationSummary({
+        faceVerificationRequired: effectiveVerificationConfig?.faceVerificationRequired ?? false,
         providerRole: selectedProviderDefinition.role,
-        requestedClaims: selectedClaims,
         requiredCapabilities: activeProviderBoundary?.requiredCapabilities ?? effectiveSession?.requiredCapabilities ?? [],
       }),
-    [activeProviderBoundary?.requiredCapabilities, effectiveSession?.requiredCapabilities, selectedClaims, selectedProviderDefinition.role],
+    [
+      activeProviderBoundary?.requiredCapabilities,
+      effectiveSession?.requiredCapabilities,
+      effectiveVerificationConfig?.faceVerificationRequired,
+      selectedProviderDefinition.role,
+    ],
   );
+
+  useEffect(() => {
+    const initialSelection = getInitialGuildVerificationSelection(effectiveVerificationConfig ?? undefined, providerEnv);
+    const selectedBundle = claimBundleOptions.find((bundle) => bundle.bundleId === selectedClaimBundleId) ?? claimBundleOptions[0];
+    const currentProvider = providerOptions.find((provider) => provider.id === selectedProvider);
+    const currentProviderAvailable = currentProvider && selectedBundle
+      ? getVerificationProviderAvailability({
+          faceVerificationRequired: effectiveVerificationConfig?.faceVerificationRequired ?? false,
+          provider: currentProvider,
+          requestedClaims: selectedBundle.claims,
+        }).allowed
+      : false;
+
+    if (!selectedBundle && initialSelection.claimBundleId !== selectedClaimBundleId) {
+      setSelectedClaimBundleId(initialSelection.claimBundleId);
+    }
+
+    if (!currentProviderAvailable && initialSelection.providerId !== selectedProvider) {
+      setSelectedProvider(initialSelection.providerId);
+      return;
+    }
+
+    if (!currentProvider) {
+      setSelectedProvider(initialSelection.providerId);
+    }
+  }, [
+    claimBundleOptions,
+    effectiveVerificationConfig,
+    providerEnv,
+    providerOptions,
+    selectedClaimBundleId,
+    selectedProvider,
+  ]);
 
   async function refreshSessionStatus() {
     if (!hasVerificationLink(search)) {
@@ -351,7 +400,7 @@ function VerificationRoute() {
 
   return (
     <ProductShell
-      description="This verifier uses Bun-signed challenge state, launches the selected verification option through generic runtime helpers, and still treats backend verification as the only authoritative result."
+      description="This verifier uses Bun-signed challenge state plus the server-returned verification config snapshot so people only see the proof paths the server currently allows."
       eyebrow="HUMANIFY / VERIFIER"
       panels={[
         {
@@ -360,9 +409,9 @@ function VerificationRoute() {
           value: effectiveSession?.state ?? "link required",
         },
         {
-          description: "Required assurance capabilities from the signed challenge token.",
-          title: "Required checks",
-          value: effectiveSession ? String(effectiveSession.requiredCapabilities.length) : "0",
+          description: "Allowed proof bundles and face-check rules from the guild verification config snapshot.",
+          title: "Guild rules",
+          value: effectiveVerificationConfig ? String(effectiveVerificationConfig.requiredBundleIds.length) : "0",
           variant: "secondary",
         },
         {
@@ -401,7 +450,7 @@ function VerificationRoute() {
                 <Card.Header className="gap-2">
                   <Card.Title>Session context</Card.Title>
                   <Card.Description>
-                    Derived from the signed challenge token, not from synthetic client-side state.
+                    Derived from the signed challenge token and refreshed from the Bun API, not from synthetic client-side state.
                   </Card.Description>
                 </Card.Header>
                 <Card.Content className="space-y-3 text-sm leading-7 text-muted">
@@ -425,37 +474,72 @@ function VerificationRoute() {
 
               <Card>
                 <Card.Header className="gap-2">
-                  <Card.Title>Verification checklist</Card.Title>
+                  <Card.Title>Server verification rules</Card.Title>
                   <Card.Description>
-                    Honest step state: complete what exists, block what does not yet have a Bun-side proof path.
+                    The Bun API decides which proof bundles, providers, and face-check rules apply to this server.
                   </Card.Description>
                 </Card.Header>
-                <Card.Content className="space-y-3">
-                  {checklist.map((item) => (
-                    <div key={item.title} className="rounded-2xl border border-content3 px-4 py-3">
-                      <div className="flex items-center justify-between gap-3">
-                        <p className="font-medium text-foreground">{item.title}</p>
-                        <span className="rounded-full border border-content3 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-foreground">
-                          {item.status}
-                        </span>
-                      </div>
-                      <p className="mt-2 text-sm leading-6 text-muted">{item.detail}</p>
-                    </div>
-                  ))}
+                <Card.Content className="space-y-3 text-sm leading-7 text-muted">
+                  {effectiveVerificationConfig ? (
+                    <>
+                      <DetailRow
+                        label="Config source"
+                        value={effectiveVerificationConfig.source === "persisted" ? "saved guild settings" : "server defaults"}
+                      />
+                      <DetailRow
+                        label="Allowed providers"
+                        value={providerOptions.map((provider) => provider.title).join(", ") || "No provider allowed"}
+                      />
+                      <DetailRow
+                        label="Allowed proofs"
+                        value={claimBundleOptions.map((bundle) => bundle.title).join(", ") || "No proof bundle allowed"}
+                      />
+                      <DetailRow
+                        label="Face check"
+                        value={effectiveVerificationConfig.faceVerificationRequired ? "Required for this server" : "Not required"}
+                      />
+                    </>
+                  ) : (
+                    <p>Load the signed session first so Humanify can show the guild's current verification rules.</p>
+                  )}
                 </Card.Content>
               </Card>
             </div>
+
+            <Card>
+              <Card.Header className="gap-2">
+                <Card.Title>Verification checklist</Card.Title>
+                <Card.Description>
+                  Honest step state: complete what exists, block what does not yet have a Bun-side proof path.
+                </Card.Description>
+              </Card.Header>
+              <Card.Content className="space-y-3">
+                {checklist.map((item) => (
+                  <div key={item.title} className="rounded-2xl border border-content3 px-4 py-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="font-medium text-foreground">{item.title}</p>
+                      <span className="rounded-full border border-content3 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-foreground">
+                        {item.status}
+                      </span>
+                    </div>
+                    <p className="mt-2 text-sm leading-6 text-muted">{item.detail}</p>
+                  </div>
+                ))}
+              </Card.Content>
+            </Card>
 
             <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
               <Card>
                 <Card.Header className="gap-2">
                   <Card.Title>Choose what to prove</Card.Title>
                   <Card.Description>
-                    Pick the smallest proof bundle that satisfies the server's rules. Humanify keeps this focused on the claims you selected.
+                    Pick from the proof bundles this server currently allows. Humanify keeps this focused on the smallest acceptable proof.
                   </Card.Description>
                 </Card.Header>
                 <Card.Content className="space-y-4 text-sm leading-7 text-muted">
-                  {claimBundleOptions.map((bundle) => {
+                  {claimBundleOptions.length === 0 ? (
+                    <p>This server has not exposed an allowed proof bundle for this verification session.</p>
+                  ) : claimBundleOptions.map((bundle) => {
                     const current = humanifyIdBundle.bundleId === bundle.bundleId;
                     return (
                       <div

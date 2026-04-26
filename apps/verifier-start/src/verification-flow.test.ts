@@ -27,8 +27,12 @@ import {
   getDefaultHumanifyIdClaimBundle,
   getHumanifyIdClaimBundles,
   getDefaultVerificationProviderId,
+  getGuildVerificationClaimBundleOptions,
+  getGuildVerificationProviderOptions,
+  getInitialGuildVerificationSelection,
   getVerificationOptionLaunch,
   getVerifierApiBaseUrl,
+  getVerificationProviderAvailability,
   getVerificationProviderClaimCompatibility,
   getVerificationProviderOptions,
   hasVerificationLink,
@@ -124,6 +128,7 @@ test("fetchVerificationSession calls the Bun API status route with the signed to
   expect(requests[0]?.headers.get("x-request-id")).toBeTruthy();
   expect(requests[0]?.headers.get("traceparent")).toBeTruthy();
   expect(result.session.requiredCapabilities).toEqual(["captcha"]);
+  expect(result.verificationConfig.defaultProviderId).toBe("didit");
   expect(result.providerBoundary.providerFlowConfigured).toBe(false);
 });
 
@@ -204,6 +209,7 @@ test("completeVerificationChallenge posts the signed session identity back to th
   expect(result.providerBoundary.status).toBe("pending_provider_verification");
   expect(result.providerBoundary.selectedProvider).toBe("self");
   expect(result.providerBoundary.handoffKind).toBe("server_verified_proof");
+  expect(result.verificationConfig.faceVerificationRequired).toBe(true);
 });
 
 test("startReusableProofFlow posts a signed reusable-proof start token and returns a wallet launch", async () => {
@@ -499,6 +505,48 @@ test("provider options rank Self first and keep Didit as the process-and-purge f
 test("provider defaults and enablement come from the shared provider catalog", () => {
   expect(getDefaultVerificationProviderId()).toBe("didit");
   expect(getDefaultVerificationProviderId({ VITE_HUMANIFY_ENABLED_VERIFICATION_PROVIDERS: "didit" })).toBe("didit");
+});
+
+test("guild verification config filters provider and proof choices from the server snapshot", () => {
+  const verificationConfig = {
+    availableProviderIds: ["didit", "privado", "self"],
+    defaultProviderId: "didit",
+    defaultReusableProofBackendId: "privado",
+    enabledProviderIds: ["didit", "privado"],
+    faceVerificationRequired: false,
+    fallbackRoles: ["role_verified"],
+    requiredBundleIds: ["humanify_id_nationality_v1"],
+    source: "persisted" as const,
+    suspiciousRoleIds: ["role_suspicious"],
+    trustedRoleIds: ["role_verified"],
+  };
+
+  expect(getGuildVerificationProviderOptions(verificationConfig).map((provider) => provider.id)).toEqual([
+    "didit",
+    "privado",
+  ]);
+  expect(getGuildVerificationClaimBundleOptions(verificationConfig).map((bundle) => bundle.bundleId)).toEqual([
+    "humanify_id_nationality_v1",
+  ]);
+  expect(getInitialGuildVerificationSelection(verificationConfig)).toEqual({
+    claimBundleId: "humanify_id_nationality_v1",
+    providerId: "didit",
+  });
+});
+
+test("face verification requirements block incompatible reusable-proof options", () => {
+  const privado = getVerificationProviderOptions().find((provider) => provider.id === "privado")!;
+
+  expect(
+    getVerificationProviderAvailability({
+      faceVerificationRequired: true,
+      provider: privado,
+      requestedClaims: ["age_over_18"],
+    }),
+  ).toEqual({
+    allowed: false,
+    reason: "This server needs a face check, so choose a first-time capture option instead.",
+  });
 });
 
 test("claim bundle options expose consumer-facing choices for what to prove", () => {

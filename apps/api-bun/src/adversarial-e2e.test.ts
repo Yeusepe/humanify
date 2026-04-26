@@ -28,6 +28,7 @@ import { completeVerificationChallenge, fetchVerificationSession } from "../../v
 import { createApiApp, type HumanifyApiApp, type LearningServiceClient } from "./app";
 import {
   createInMemoryGuildChannelConfigRepository,
+  createInMemoryGuildVerificationConfigRepository,
   createInMemoryReportCasesRepository,
   createInMemoryVerificationSessionsRepository,
 } from "./test-support";
@@ -80,6 +81,7 @@ function createTestApp(
   return createApiApp({
     env: testEnv,
     guildChannelConfigRepository: createInMemoryGuildChannelConfigRepository(),
+    guildVerificationConfigRepository: createInMemoryGuildVerificationConfigRepository(),
     learningServiceClient,
     now: () => fixedNow,
     reportCasesRepository: repository,

@@ -145,7 +145,8 @@ Runtime and guild enablement stay Bun-owned:
 
 - `HUMANIFY_ENABLED_VERIFICATION_PROVIDERS` controls which concrete adapters the Bun API can expose at all.
 - `VITE_HUMANIFY_ENABLED_VERIFICATION_PROVIDERS` controls which concrete adapters the verifier UI can render at all.
-- `PUT /guilds/:guildId/verification` lets each server owner choose which adapters are enabled and which first-time capture adapter is the guild default.
+- `GET /guilds/:guildId/verification` returns the current effective guild verification config snapshot, and `PUT /guilds/:guildId/verification` persists the canonical guild row in `verification_requirements`.
+- that canonical row keeps the setup surface bundle-driven: `requiredBundleIds`, `faceVerificationRequired`, `enabledProviderIds`, `defaultProviderId`, optional `defaultReusableProofBackendId`, and the trusted/suspicious role arrays are Bun-owned policy data.
 - Keep the environment allowlists aligned so the browser never offers an adapter the API has disabled globally.
 
 ### 4.2 First-time capture default: Didit
@@ -356,12 +357,13 @@ The current verifier spine is intentionally generic, but the default Didit captu
 4. The verifier UI lets the person verifying choose both the proof bundle and the concrete adapter, using consumer-facing wording rather than operator language.
 5. The verifier and dashboard UIs split enabled options into **first-time capture flows** and **reusable proof backends**, so both consumers and server owners can understand what is being configured without reading app-local provider branches.
 6. Provider-specific verifier UI copy and browser-launch behavior now live in app-local option runtime modules (`apps\verifier-start\src\verification-options\`) so `src\verification-flow.ts` and `src\routes\verify.tsx` stay option-driven.
-7. The dashboard stays honest about the current route contract: enabled adapters and default flow choices come from the shared catalog today, while proof-bundle and face-verification controls are explicit draft UI state until `PUT /guilds/:guildId/verification` persists them.
+7. The dashboard and verifier now consume the same authoritative guild verification config snapshot from Bun: enabled adapters, required proof bundles, face-verification policy, and default provider choices come from the persisted `verification_requirements` row when present, or an explicit `catalog_default` snapshot when a guild has not saved config yet.
 8. `apps\api-bun\src\verification-options\` now owns provider-specific capture, reusable-proof, and callback runtimes so `apps\api-bun\src\app.ts` dispatches through generic option boundaries rather than branching on concrete adapters.
-9. `POST /verification/challenges/:challengeId/complete` re-verifies the same signed token against `challengeId`, `sessionId`, `guildId`, and `userId`, validates the selected adapter against the shared registry, and:
+9. `POST /verification/challenges/:challengeId/complete` re-verifies the same signed token against `challengeId`, `sessionId`, `guildId`, and `userId`, validates the selected adapter and requested proof bundle against the shared registry plus the persisted guild config, and:
    - creates a real Didit session server-side when the selected adapter is `didit`
    - returns the Didit SDK launch contract to the verifier shell
    - exposes reusable-proof adapters through the same shared boundary with `providerStartEndpoint` and a signed `providerStartToken`
+   - rejects reusable-proof adapters that cannot satisfy a guild's `faceVerificationRequired` policy instead of silently downgrading the flow
 10. `POST /callbacks/providers/didit` verifies the raw-body HMAC/timestamp webhook boundary, fetches the authoritative Didit decision server-side, reduces the result to minimal-custody facts, requests Didit-side deletion after reconciliation, and persists a time-bounded Didit → Privado bridge contract when the approved predicates can seed a later reusable credential or proof-input handoff.
 11. `POST /verification/sessions/:sessionId/providers/:providerId/start` is the reusable-proof start boundary. Today it is implemented for Privado and must:
    - verify the signed start token

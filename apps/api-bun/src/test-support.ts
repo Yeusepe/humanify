@@ -17,6 +17,7 @@ import type {
   AppliedLearningResult,
   CaseOutcomeKind,
   GuildChannelConfigRepository,
+  GuildVerificationConfigRepository,
   LearnedSignalCandidateRecord,
   LearnedSignalFamily,
   LearningFeedbackSummary,
@@ -747,6 +748,92 @@ export function createInMemoryGuildChannelConfigRepository(): GuildChannelConfig
         persistence: "persisted",
         queueDelivery: "pending_outbox_publish",
       } satisfies Awaited<ReturnType<GuildChannelConfigRepository["upsertConfig"]>>;
+
+      storeIdempotencyReceipt(input.artifacts.idempotency.scope, input.artifacts.idempotency.key, result);
+
+      return result;
+    },
+
+    async close() {
+      return;
+    },
+  };
+}
+
+export function createInMemoryGuildVerificationConfigRepository(): GuildVerificationConfigRepository {
+  const configs = new Map<string, {
+    createdAt: string;
+    defaultProviderId: string;
+    defaultReusableProofBackendId?: string;
+    enabledProviderIds: string[];
+    faceVerificationRequired: boolean;
+    guildId: string;
+    requiredBundleIds: string[];
+    suspiciousRoleIds: string[];
+    trustedRoleIds: string[];
+    updatedAt: string;
+  }>();
+  const idempotencyReceipts = new Map<string, unknown>();
+
+  function buildIdempotencyReceiptKey(scope: string, key: string) {
+    return `${scope}::${key}`;
+  }
+
+  function readIdempotencyReceipt<TResult>(scope: string, key: string) {
+    return idempotencyReceipts.get(buildIdempotencyReceiptKey(scope, key)) as TResult | undefined;
+  }
+
+  function storeIdempotencyReceipt<TResult>(scope: string, key: string, result: TResult) {
+    idempotencyReceipts.set(buildIdempotencyReceiptKey(scope, key), result);
+  }
+
+  return {
+    async getConfig(guildId) {
+      const current = configs.get(guildId);
+      if (!current) {
+        return undefined;
+      }
+
+      return {
+        ...current,
+        enabledProviderIds: [...current.enabledProviderIds],
+        requiredBundleIds: [...current.requiredBundleIds],
+        suspiciousRoleIds: [...current.suspiciousRoleIds],
+        trustedRoleIds: [...current.trustedRoleIds],
+      };
+    },
+
+    async upsertConfig(input) {
+      const existing = readIdempotencyReceipt<Awaited<ReturnType<GuildVerificationConfigRepository["upsertConfig"]>>>(
+        input.artifacts.idempotency.scope,
+        input.artifacts.idempotency.key,
+      );
+      if (existing) {
+        return existing;
+      }
+
+      const now = new Date().toISOString();
+      const previous = configs.get(input.guildId);
+      const verificationConfig = {
+        createdAt: previous?.createdAt ?? now,
+        defaultProviderId: input.body.defaultProviderId,
+        defaultReusableProofBackendId: input.body.defaultReusableProofBackendId,
+        enabledProviderIds: [...input.body.enabledProviderIds],
+        faceVerificationRequired: input.body.faceVerificationRequired,
+        guildId: input.guildId,
+        requiredBundleIds: [...input.body.requiredBundleIds],
+        suspiciousRoleIds: [...input.body.suspiciousRoleIds],
+        trustedRoleIds: [...input.body.trustedRoleIds],
+        updatedAt: now,
+      };
+
+      configs.set(input.guildId, verificationConfig);
+
+      const result = {
+        persistence: "persisted",
+        queueDelivery: "pending_outbox_publish",
+        verificationConfig,
+      } satisfies Awaited<ReturnType<GuildVerificationConfigRepository["upsertConfig"]>>;
 
       storeIdempotencyReceipt(input.artifacts.idempotency.scope, input.artifacts.idempotency.key, result);
 

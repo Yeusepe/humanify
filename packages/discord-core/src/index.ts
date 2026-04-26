@@ -49,6 +49,29 @@ export type BotActionAuthorization = {
   scope: BotAuthorizationScope;
 };
 
+export type SetupFlowAction =
+  | "back"
+  | "bundle_required"
+  | "cancel"
+  | "channel_alert"
+  | "channel_audit"
+  | "channel_mod_log"
+  | "channel_review"
+  | "face_requirement"
+  | "next"
+  | "provider_default"
+  | "provider_enabled"
+  | "role_suspicious"
+  | "role_trusted"
+  | "save";
+
+export type ParsedSetupFlowCustomId = {
+  action: SetupFlowAction;
+  draftId: string;
+  guildId: string;
+  version: number;
+};
+
 type MemberPermissionsLike = PermissionResolvable | Readonly<PermissionsBitField> | null | undefined;
 
 export const humanifyBotCommandNames = {
@@ -272,6 +295,56 @@ export function parseComponentCustomId(customId: string) {
     guildId,
     kind,
     version: Number.parseInt(version.slice(1), 10),
+  };
+}
+
+const setupFlowActions = new Set<SetupFlowAction>([
+  "back",
+  "bundle_required",
+  "cancel",
+  "channel_alert",
+  "channel_audit",
+  "channel_mod_log",
+  "channel_review",
+  "face_requirement",
+  "next",
+  "provider_default",
+  "provider_enabled",
+  "role_suspicious",
+  "role_trusted",
+  "save",
+]);
+
+export function buildSetupFlowCustomId(input: {
+  action: SetupFlowAction;
+  draftId: string;
+  guildId: string;
+  version?: number;
+}) {
+  return buildComponentCustomId({
+    entityId: `${input.draftId}~${input.action}`,
+    guildId: input.guildId,
+    kind: "setup_flow",
+    version: input.version,
+  });
+}
+
+export function parseSetupFlowCustomId(customId: string): ParsedSetupFlowCustomId {
+  const parsed = parseComponentCustomId(customId);
+  if (parsed.kind !== "setup_flow") {
+    throw new Error("Component custom ID is not a Humanify setup-flow identifier.");
+  }
+
+  const [draftId, action] = parsed.entityId.split("~");
+  if (!draftId || !action || !setupFlowActions.has(action as SetupFlowAction)) {
+    throw new Error("Setup-flow component custom ID is missing its draft or action.");
+  }
+
+  return {
+    action: action as SetupFlowAction,
+    draftId,
+    guildId: parsed.guildId,
+    version: parsed.version,
   };
 }
 

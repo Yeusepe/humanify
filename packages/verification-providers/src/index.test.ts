@@ -26,6 +26,7 @@ import {
   registeredVerificationCaptureFlowStrategies,
   registeredVerificationPolicyConsumerStrategies,
   registeredVerificationReusableProofBackendStrategies,
+  resolveVerificationProviderConfiguration,
   resolveVerificationOptionConfiguration,
   resolveVerificationStrategyCatalog,
   resolveVerificationStrategyConfiguration,
@@ -294,4 +295,16 @@ test("option configuration stays aligned with the strategy catalog without treat
       enabledOptionIds: ["didit", "privado", "world_id"],
     }).defaultReusableProofBackendId,
   ).toBe("world_id");
+
+  expect(
+    resolveVerificationProviderConfiguration({
+      defaultProviderId: "didit",
+      defaultReusableProofBackendId: "privado",
+      enabledProviderIds: ["didit", "privado"],
+    }),
+  ).toMatchObject({
+    defaultProviderId: "didit",
+    defaultReusableProofBackendId: "privado",
+    enabledProviderIds: ["didit", "privado"],
+  });
 });

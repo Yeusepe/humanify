@@ -58,11 +58,14 @@ import {
 import { createDiscordAuditReason, createBotGatewayIntents, resolveDiscordExecutionPlan } from "@humanify/discord-core";
 import {
   createPostgresGuildChannelConfigRepository,
+  createPostgresGuildVerificationConfigRepository,
   createPostgresReportCasesRepository,
   createPostgresVerificationSessionsRepository,
   createIdempotencyReceipt,
   createOutboxEvent,
   type GuildChannelConfigRepository,
+  type GuildVerificationConfigRecord,
+  type GuildVerificationConfigRepository,
   parsePostgresConnectionString,
   planCanonicalWrite,
   redactPostgresConnectionString,
@@ -94,12 +97,16 @@ import {
   type TraceContext,
 } from "@humanify/telemetry";
 import {
+  getDefaultVerificationClaimBundle,
+  getVerificationClaimBundles,
   getSupportedHumanifyClaimIds,
   isHumanifyClaimKey,
   parseVerificationProviderSelection,
   resolveVerificationProviderConfiguration,
   resolveVerificationProviderCatalog,
+  verificationOptionSupportsFaceVerificationRequirement,
   verificationProviderSupportsClaims,
+  type VerificationClaimBundle,
   type HumanifyClaimKey,
   type VerificationProviderConfiguration,
 } from "@humanify/verification-providers";
@@ -171,6 +178,31 @@ type LearningServiceSummary = LearningFeedbackSummary & {
   contractVersion: string;
 };
 
+type GuildVerificationConfigSnapshot = {
+  availableBundles: VerificationClaimBundle[];
+  availableProviderIds: string[];
+  defaultProviderId: string;
+  defaultReusableProofBackendId?: string;
+  enabledProviderIds: string[];
+  faceVerificationRequired: boolean;
+  fallbackRoles: string[];
+  guildId: string;
+  requiredBundleIds: string[];
+  requiredBundles: VerificationClaimBundle[];
+  source: "catalog_default" | "persisted";
+  suspiciousRoleIds: string[];
+  trustedRoleIds: string[];
+};
+
+type GuildChannelConfigSnapshot = {
+  auditLogChannelId?: string;
+  guildId: string;
+  moderationLogChannelId?: string;
+  moderatorAlertChannelId?: string;
+  reviewChannelId?: string;
+  source: "not_configured" | "persisted";
+};
+
 export type LearningServiceClient = {
   ingestCaseOutcome(
     outcome: LearningServiceCaseOutcome,
@@ -181,6 +213,7 @@ export type LearningServiceClient = {
 export type ApiAppOptions = {
   env?: EnvSource;
   guildChannelConfigRepository?: GuildChannelConfigRepository;
+  guildVerificationConfigRepository?: GuildVerificationConfigRepository;
   learningServiceClient?: LearningServiceClient;
   logger?: LoggerLike;
   now?: () => number;
@@ -292,6 +325,40 @@ function readReusableCredentialBridgeFromRecord(record: VerificationSessionRecor
 
 function readVerificationSummaryFromRecord(record: VerificationSessionRecord) {
   return Object.keys(record.resultSummary).length > 0 ? record.resultSummary : undefined;
+}
+
+function uniqueNonEmptyStrings(values: readonly string[]) {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+
+  for (const value of values) {
+    if (!value || seen.has(value)) {
+      continue;
+    }
+
+    seen.add(value);
+    normalized.push(value);
+  }
+
+  return normalized;
+}
+
+function buildClaimSetKey(values: readonly string[]) {
+  return [...values].sort().join("|");
+}
+
+function resolveRequiredClaimBundles(input: {
+  bundleById: ReadonlyMap<string, VerificationClaimBundle>;
+  requiredBundleIds: readonly string[];
+}) {
+  return input.requiredBundleIds.map((bundleId) => {
+    const bundle = input.bundleById.get(bundleId);
+    if (!bundle) {
+      throw new Error(`requiredBundleIds contains unsupported bundle "${bundleId}".`);
+    }
+
+    return bundle;
+  });
 }
 
 function buildErrorEnvelope(requestId: string, errorCode: ApiErrorCode, message: string, retryable: boolean) {
@@ -640,6 +707,10 @@ export function createApiApp(options: ApiAppOptions = {}) {
     options.guildChannelConfigRepository ?? createPostgresGuildChannelConfigRepository({
       connectionString: dataPlaneConfig.postgresUrl,
     });
+  const guildVerificationConfigRepository =
+    options.guildVerificationConfigRepository ?? createPostgresGuildVerificationConfigRepository({
+      connectionString: dataPlaneConfig.postgresUrl,
+    });
   const reportCasesRepository = options.reportCasesRepository ?? createPostgresReportCasesRepository({
     connectionString: dataPlaneConfig.postgresUrl,
   });
@@ -651,12 +722,93 @@ export function createApiApp(options: ApiAppOptions = {}) {
   const verificationProviderCatalog = resolveVerificationProviderCatalog({
     enabledProviderIds: parseVerificationProviderSelection(env.HUMANIFY_ENABLED_VERIFICATION_PROVIDERS),
   });
+  const verificationClaimBundles = getVerificationClaimBundles();
+  const verificationClaimBundleById = new Map(verificationClaimBundles.map((bundle) => [bundle.bundleId, bundle]));
+  const verificationClaimBundleByClaimSet = new Map(
+    verificationClaimBundles.map((bundle) => [buildClaimSetKey(bundle.claims), bundle]),
+  );
   const supportedHumanifyClaimIds = getSupportedHumanifyClaimIds();
+  const defaultVerificationProviderConfiguration = resolveVerificationProviderConfiguration({
+    availableCatalog: verificationProviderCatalog,
+  });
   const telemetry = createTelemetryBootstrap({
     ...identity,
     sentryDsn: observability.sentryDsn,
     sentryTracesSampleRate: observability.sentryTracesSampleRate,
   });
+
+  function buildGuildVerificationConfigSnapshot(input: {
+    guildId: string;
+    persistedConfig?: GuildVerificationConfigRecord;
+  }): GuildVerificationConfigSnapshot {
+    if (!input.persistedConfig) {
+      return {
+        availableBundles: verificationClaimBundles.map((bundle) => ({ ...bundle, claims: [...bundle.claims] })),
+        availableProviderIds: defaultVerificationProviderConfiguration.availableProviderIds,
+        defaultProviderId: defaultVerificationProviderConfiguration.defaultProviderId,
+        defaultReusableProofBackendId: defaultVerificationProviderConfiguration.defaultReusableProofBackendId,
+        enabledProviderIds: defaultVerificationProviderConfiguration.enabledProviderIds,
+        faceVerificationRequired: false,
+        fallbackRoles: [],
+        guildId: input.guildId,
+        requiredBundleIds: verificationClaimBundles.map((bundle) => bundle.bundleId),
+        requiredBundles: verificationClaimBundles.map((bundle) => ({ ...bundle, claims: [...bundle.claims] })),
+        source: "catalog_default",
+        suspiciousRoleIds: [],
+        trustedRoleIds: [],
+      };
+    }
+
+    const requiredBundles = resolveRequiredClaimBundles({
+      bundleById: verificationClaimBundleById,
+      requiredBundleIds: input.persistedConfig.requiredBundleIds,
+    });
+
+    return {
+      availableBundles: verificationClaimBundles.map((bundle) => ({ ...bundle, claims: [...bundle.claims] })),
+      availableProviderIds: verificationProviderCatalog.ids(),
+      defaultProviderId: input.persistedConfig.defaultProviderId,
+      defaultReusableProofBackendId: input.persistedConfig.defaultReusableProofBackendId,
+      enabledProviderIds: [...input.persistedConfig.enabledProviderIds],
+      faceVerificationRequired: input.persistedConfig.faceVerificationRequired,
+      fallbackRoles: [...input.persistedConfig.trustedRoleIds],
+      guildId: input.guildId,
+      requiredBundleIds: [...input.persistedConfig.requiredBundleIds],
+      requiredBundles: requiredBundles.map((bundle) => ({ ...bundle, claims: [...bundle.claims] })),
+      source: "persisted",
+      suspiciousRoleIds: [...input.persistedConfig.suspiciousRoleIds],
+      trustedRoleIds: [...input.persistedConfig.trustedRoleIds],
+    };
+  }
+
+  function buildGuildChannelConfigSnapshot(input: {
+    guildId: string;
+    persistedConfig?: Awaited<ReturnType<GuildChannelConfigRepository["getConfig"]>>;
+  }): GuildChannelConfigSnapshot {
+    if (!input.persistedConfig) {
+      return {
+        guildId: input.guildId,
+        source: "not_configured",
+      };
+    }
+
+    return {
+      auditLogChannelId: input.persistedConfig.auditLogChannelId,
+      guildId: input.guildId,
+      moderationLogChannelId: input.persistedConfig.moderationLogChannelId,
+      moderatorAlertChannelId: input.persistedConfig.moderatorAlertChannelId,
+      reviewChannelId: input.persistedConfig.reviewChannelId,
+      source: "persisted",
+    };
+  }
+
+  async function loadGuildVerificationConfigSnapshot(guildId: string) {
+    const persistedConfig = await guildVerificationConfigRepository.getConfig(guildId);
+    return buildGuildVerificationConfigSnapshot({
+      guildId,
+      persistedConfig,
+    });
+  }
 
   const policyBodySchema = t.Object({
     actorUserId: t.String({ minLength: 1 }),
@@ -728,7 +880,10 @@ export function createApiApp(options: ApiAppOptions = {}) {
   const verificationConfigSchema = t.Object({
     actorUserId: t.String({ minLength: 1 }),
     defaultProviderId: t.Optional(t.String({ minLength: 1 })),
+    defaultReusableProofBackendId: t.Optional(t.String({ minLength: 1 })),
     enabledProviderIds: t.Array(t.String({ minLength: 1 })),
+    faceVerificationRequired: t.Optional(t.Boolean()),
+    requiredBundleIds: t.Optional(t.Array(t.String({ minLength: 1 }))),
     suspiciousRoleIds: t.Optional(t.Array(t.String({ minLength: 1 }))),
     trustedRoleIds: t.Optional(t.Array(t.String({ minLength: 1 }))),
   });
@@ -1031,15 +1186,58 @@ export function createApiApp(options: ApiAppOptions = {}) {
             writePlan: artifacts.writePlan,
           });
         }, { body: policyBodySchema })
+        .get("/verification", async ({ params, request, set }) => {
+          const requestContext = ensureResponseContext(request, set);
+          const verificationConfig = await loadGuildVerificationConfigSnapshot(params.guildId);
+
+          return buildEnvelope(requestContext.requestId, {
+            persistence: verificationConfig.source === "persisted" ? "persisted" : "catalog_default",
+            verificationConfig,
+          });
+        })
+        .get("/channels", async ({ params, request, set }) => {
+          const requestContext = ensureResponseContext(request, set);
+          const persistedConfig = await guildChannelConfigRepository.getConfig(params.guildId);
+          const channelConfig = buildGuildChannelConfigSnapshot({
+            guildId: params.guildId,
+            persistedConfig,
+          });
+
+          return buildEnvelope(requestContext.requestId, {
+            channelConfig,
+            persistence: channelConfig.source,
+          });
+        })
         .put(
           "/verification",
-          ({ body, params, request, set }) => {
+          async ({ body, params, request, set }) => {
             const requestContext = ensureResponseContext(request, set);
+            const requiredBundleIds = uniqueNonEmptyStrings(body.requiredBundleIds ?? [getDefaultVerificationClaimBundle().bundleId]);
+            if (requiredBundleIds.length === 0) {
+              throw new ApiRouteError(400, "validation_failed", "requiredBundleIds must include at least one supported bundle.");
+            }
+
+            let requiredBundles: VerificationClaimBundle[];
+            try {
+              requiredBundles = resolveRequiredClaimBundles({
+                bundleById: verificationClaimBundleById,
+                requiredBundleIds,
+              });
+            } catch (error) {
+              throw new ApiRouteError(
+                400,
+                "validation_failed",
+                error instanceof Error ? error.message : "requiredBundleIds must only contain supported bundles.",
+              );
+            }
+
+            const faceVerificationRequired = body.faceVerificationRequired ?? false;
             let providerConfig: VerificationProviderConfiguration;
             try {
               providerConfig = resolveVerificationProviderConfiguration({
                 availableCatalog: verificationProviderCatalog,
                 defaultProviderId: body.defaultProviderId,
+                defaultReusableProofBackendId: body.defaultReusableProofBackendId,
                 enabledProviderIds: body.enabledProviderIds,
               });
             } catch (error) {
@@ -1047,11 +1245,15 @@ export function createApiApp(options: ApiAppOptions = {}) {
                 400,
                 "validation_failed",
                 error instanceof Error ? error.message : "Verification provider configuration is invalid.",
-              );
+                );
             }
+            const requiredCapabilities = uniqueNonEmptyStrings([
+              ...requiredBundles.flatMap((bundle) => [...bundle.claims]),
+              ...(faceVerificationRequired ? ["face_verification"] : []),
+            ]);
             const artifacts = buildWriteArtifacts({
               aggregateId: params.guildId,
-              aggregateType: "verification_requirement",
+              aggregateType: "guild_verification_config",
               auditRefs: [createAuditRef(requestContext.requestId, "verification_requirement", "update")],
               canonicalMutations: [
                 {
@@ -1070,32 +1272,53 @@ export function createApiApp(options: ApiAppOptions = {}) {
               idempotencyKey:
                 request.headers.get("x-idempotency-key") ?? `verification-config:${params.guildId}:${requestContext.requestId}`,
               kind: "guild.verification.updated",
-              payload: {
-                actorUserId: body.actorUserId,
-                defaultProviderId: providerConfig.defaultProviderId,
-                enabledProviderIds: providerConfig.enabledProviderIds,
-                guildId: params.guildId,
-                suspiciousRoleIds: body.suspiciousRoleIds ?? [],
-                trustedRoleIds: body.trustedRoleIds ?? [],
-              },
+                payload: {
+                  actorUserId: body.actorUserId,
+                  defaultProviderId: providerConfig.defaultProviderId,
+                  defaultReusableProofBackendId: providerConfig.defaultReusableProofBackendId,
+                  enabledProviderIds: providerConfig.enabledProviderIds,
+                  faceVerificationRequired,
+                  guildId: params.guildId,
+                  requiredBundleIds,
+                  suspiciousRoleIds: body.suspiciousRoleIds ?? [],
+                  trustedRoleIds: body.trustedRoleIds ?? [],
+                },
               requestContext,
               scope: `guild-verification:${params.guildId}`,
               stream: "verification.events",
               transactionName: "guild_verification_update",
             });
 
-            set.status = 202;
-            return buildEnvelope(requestContext.requestId, {
-              persistence: "planned_not_persisted",
-              queueEnvelope: artifacts.queueEnvelope,
-              verificationConfig: {
-                availableProviderIds: providerConfig.availableProviderIds,
-                defaultProviderId: providerConfig.defaultProviderId,
-                enabledProviderIds: providerConfig.enabledProviderIds,
-                fallbackRoles: body.trustedRoleIds ?? [],
-                guildId: params.guildId,
-                suspiciousRoleIds: body.suspiciousRoleIds ?? [],
+            const persisted = await guildVerificationConfigRepository.upsertConfig({
+              artifacts: {
+                idempotency: artifacts.idempotency,
+                queueEnvelope: artifacts.queueEnvelope,
               },
+              body: {
+                actorUserId: body.actorUserId,
+                defaultProviderId: providerConfig.defaultProviderId,
+                defaultReusableProofBackendId: providerConfig.defaultReusableProofBackendId,
+                enabledProviderIds: providerConfig.enabledProviderIds,
+                faceVerificationRequired,
+                requiredBundleIds,
+                requiredCapabilities,
+                suspiciousRoleIds: body.suspiciousRoleIds ?? [],
+                trustedRoleIds: body.trustedRoleIds ?? [],
+              },
+              guildId: params.guildId,
+              requestFingerprint: request.headers.get("x-idempotency-key") ?? undefined,
+              traceId: requestContext.traceContext.traceId,
+            });
+
+            set.status = 200;
+            return buildEnvelope(requestContext.requestId, {
+              persistence: persisted.persistence,
+              queueDelivery: persisted.queueDelivery,
+              queueEnvelope: artifacts.queueEnvelope,
+              verificationConfig: buildGuildVerificationConfigSnapshot({
+                guildId: params.guildId,
+                persistedConfig: persisted.verificationConfig,
+              }),
               writePlan: artifacts.writePlan,
             });
           },
@@ -1635,6 +1858,7 @@ export function createApiApp(options: ApiAppOptions = {}) {
         )
         .post("/verification/sessions", async ({ body, params, request, set }) => {
           const requestContext = ensureResponseContext(request, set);
+          const verificationConfig = await loadGuildVerificationConfigSnapshot(params.guildId);
           const sessionId = crypto.randomUUID();
           const challengeId = crypto.randomUUID();
           const challengeExpiresAt = new Date(now() + 300_000).toISOString();
@@ -1709,6 +1933,7 @@ export function createApiApp(options: ApiAppOptions = {}) {
               state: "challenge_issued",
               userId: body.userId,
             },
+            verificationConfig,
             writePlan: artifacts.writePlan,
           });
         }, { body: verificationSessionSchema })
@@ -1842,10 +2067,12 @@ export function createApiApp(options: ApiAppOptions = {}) {
       "/verification/challenges/:challengeId/complete",
       async ({ body, params, request, requestContext, set }) => {
         const verified = verifyVerifierChallengeToken(body.token, sessionConfig.sessionSecret, now());
+        const verificationConfig = await loadGuildVerificationConfigSnapshot(body.guildId);
         const providerId = requireKnownVerificationProvider(body.providerId, "providerId", verificationProviderCatalog.ids());
         const providerDefinition = verificationProviderCatalog.require(providerId);
         const optionRuntime = getApiVerificationOptionRuntime(providerId);
         const requestedClaims = requireKnownHumanifyClaims(body.requestedClaims, "requestedClaims", supportedHumanifyClaimIds);
+        const selectedBundle = verificationClaimBundleByClaimSet.get(buildClaimSetKey(requestedClaims));
         const providerFlowConfigured = optionRuntime.isConfigured(verificationOptionEnvironment);
         const providerStartToken = providerDefinition.role === "reusable_proof_backend"
           ? issueReusableProofStartToken(
@@ -1863,6 +2090,14 @@ export function createApiApp(options: ApiAppOptions = {}) {
             now(),
           )
           : undefined;
+
+        if (!selectedBundle) {
+          throw new ApiRouteError(
+            400,
+            "validation_failed",
+            "requestedClaims must match a supported proof bundle from the shared verification catalog.",
+          );
+        }
 
         if (!verificationProviderSupportsClaims(providerDefinition, requestedClaims)) {
           throw new ApiRouteError(
@@ -1886,6 +2121,33 @@ export function createApiApp(options: ApiAppOptions = {}) {
 
         if (verified.userId !== body.userId) {
           throw new ApiRouteError(400, "validation_failed", "Challenge token does not match the requested userId.");
+        }
+
+        if (!verificationConfig.enabledProviderIds.includes(providerId)) {
+          throw new ApiRouteError(
+            403,
+            "forbidden",
+            `providerId "${providerId}" is not enabled for guild "${body.guildId}".`,
+          );
+        }
+
+        if (!verificationConfig.requiredBundleIds.includes(selectedBundle.bundleId)) {
+          throw new ApiRouteError(
+            403,
+            "forbidden",
+            `requestedClaims must match one of the guild verification requiredBundleIds: ${verificationConfig.requiredBundleIds.join(", ")}.`,
+          );
+        }
+
+        if (
+          verificationConfig.faceVerificationRequired
+          && !verificationOptionSupportsFaceVerificationRequirement(providerDefinition)
+        ) {
+          throw new ApiRouteError(
+            403,
+            "forbidden",
+            `providerId "${providerId}" cannot satisfy the guild face verification requirement.`,
+          );
         }
 
         if (optionRuntime.completeChallenge) {
@@ -1914,6 +2176,7 @@ export function createApiApp(options: ApiAppOptions = {}) {
               requiredCapabilities: verified.requiredCapabilities,
             },
             session: buildVerificationSessionFromRecord(updatedSession),
+            verificationConfig,
           });
         }
 
@@ -1974,6 +2237,7 @@ export function createApiApp(options: ApiAppOptions = {}) {
           },
           queueEnvelope: artifacts.queueEnvelope,
           session: buildDerivedVerificationSession(verified, "provider_pending"),
+          verificationConfig,
           writePlan: artifacts.writePlan,
         });
       },
@@ -2071,6 +2335,7 @@ export function createApiApp(options: ApiAppOptions = {}) {
       "/verification/sessions/:sessionId",
       async ({ params, query, requestContext }) => {
         const verified = verifyVerifierChallengeToken(query.token, sessionConfig.sessionSecret, now());
+        const verificationConfig = await loadGuildVerificationConfigSnapshot(verified.guildId);
 
         if (verified.sessionId !== params.sessionId) {
           throw new ApiRouteError(400, "validation_failed", "Challenge token does not match the requested sessionId.");
@@ -2083,7 +2348,8 @@ export function createApiApp(options: ApiAppOptions = {}) {
               persistence: "persisted",
               reusableCredentialBridge: readReusableCredentialBridgeFromRecord(persistedSession),
               session: buildVerificationSessionFromRecord(persistedSession),
-            verification: readVerificationSummaryFromRecord(persistedSession),
+              verification: readVerificationSummaryFromRecord(persistedSession),
+              verificationConfig,
           });
         }
 
@@ -2096,6 +2362,7 @@ export function createApiApp(options: ApiAppOptions = {}) {
           },
           persistence: "derived_from_signed_challenge",
           session: buildDerivedVerificationSession(verified, "challenge_issued"),
+          verificationConfig,
         });
       },
       {

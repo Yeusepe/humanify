@@ -25,30 +25,41 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ChannelSelectMenuBuilder,
+  ChannelType,
   Client,
   Events,
   MessageFlags,
+  RoleSelectMenuBuilder,
+  StringSelectMenuBuilder,
   type ButtonInteraction,
+  type ChannelSelectMenuInteraction,
   type ChatInputCommandInteraction,
   type ClientOptions,
   type Interaction,
   type InteractionReplyOptions,
+  type InteractionUpdateOptions,
   type MessageContextMenuCommandInteraction,
+  type RoleSelectMenuInteraction,
+  type StringSelectMenuInteraction,
 } from "discord.js";
 
 import { loadBotApiConfig, loadBotTokenConfig, loadObservabilityConfig, loadServiceIdentityConfig } from "@humanify/config";
 import { humanifyActionLadder, humanifyContractVersion } from "@humanify/contracts";
 import {
-  buildComponentCustomId,
   authorizeAdminOnlyBotAction,
   authorizeTrustedModeratorOnlyBotAction,
+  buildComponentCustomId,
+  buildSetupFlowCustomId,
   createBotGatewayIntents,
   createHumanifyApplicationCommands,
   humanifyBotCommandNames,
   parseComponentCustomId,
+  parseSetupFlowCustomId,
   resolveDiscordExecutionPlan,
   type DiscordExecutionCapabilities,
   type DiscordExecutionPlan,
+  type SetupFlowAction,
 } from "@humanify/discord-core";
 import {
   createRequestTelemetryContext,
@@ -122,6 +133,87 @@ export type BotVerificationSessionResponse = {
   };
 };
 
+export type BotSetupBundle = {
+  bestFor: string;
+  bundleId: string;
+  claims: string[];
+  futureExtensions: string[];
+  operatorStorageGuarantees: string[];
+  summary: string;
+  title: string;
+};
+
+export type BotGuildChannelConfigReadResponse = {
+  channelConfig: {
+    auditLogChannelId?: string;
+    guildId: string;
+    moderationLogChannelId?: string;
+    moderatorAlertChannelId?: string;
+    reviewChannelId?: string;
+    source: "not_configured" | "persisted";
+  };
+  persistence: "not_configured" | "persisted";
+};
+
+export type BotGuildChannelConfigWriteBody = {
+  actorUserId: string;
+  auditLogChannelId?: string;
+  moderationLogChannelId?: string;
+  moderatorAlertChannelId: string;
+  reviewChannelId?: string;
+};
+
+export type BotGuildChannelConfigWriteResponse = {
+  channelConfig: {
+    auditLogChannelId?: string;
+    createdAt: string;
+    guildId: string;
+    moderationLogChannelId?: string;
+    moderatorAlertChannelId: string;
+    reviewChannelId?: string;
+    updatedAt: string;
+  };
+  persistence: "persisted";
+  queueDelivery: "pending_outbox_publish";
+};
+
+export type BotGuildVerificationConfig = {
+  availableBundles: BotSetupBundle[];
+  availableProviderIds: string[];
+  defaultProviderId: string;
+  defaultReusableProofBackendId?: string;
+  enabledProviderIds: string[];
+  faceVerificationRequired: boolean;
+  fallbackRoles: string[];
+  guildId: string;
+  requiredBundleIds: string[];
+  requiredBundles: BotSetupBundle[];
+  source: "catalog_default" | "persisted";
+  suspiciousRoleIds: string[];
+  trustedRoleIds: string[];
+};
+
+export type BotGuildVerificationConfigReadResponse = {
+  persistence: "catalog_default" | "persisted";
+  verificationConfig: BotGuildVerificationConfig;
+};
+
+export type BotGuildVerificationConfigWriteBody = {
+  actorUserId: string;
+  defaultProviderId: string;
+  enabledProviderIds: string[];
+  faceVerificationRequired: boolean;
+  requiredBundleIds: string[];
+  suspiciousRoleIds: string[];
+  trustedRoleIds: string[];
+};
+
+export type BotGuildVerificationConfigWriteResponse = {
+  persistence: "persisted";
+  queueDelivery: "pending_outbox_publish";
+  verificationConfig: BotGuildVerificationConfig;
+};
+
 export type ApprovedActionExecutionDecision = DiscordExecutionPlan;
 
 export type ApprovedActionEnvelope = {
@@ -143,6 +235,21 @@ export type BotApiClient = {
     body: BotVerificationSessionBody,
     requestTelemetry?: RequestTelemetryContext,
   ): Promise<BotVerificationSessionResponse>;
+  getGuildChannelConfig(guildId: string, requestTelemetry?: RequestTelemetryContext): Promise<BotGuildChannelConfigReadResponse>;
+  getGuildVerificationConfig(
+    guildId: string,
+    requestTelemetry?: RequestTelemetryContext,
+  ): Promise<BotGuildVerificationConfigReadResponse>;
+  updateGuildChannelConfig(
+    guildId: string,
+    body: BotGuildChannelConfigWriteBody,
+    requestTelemetry?: RequestTelemetryContext,
+  ): Promise<BotGuildChannelConfigWriteResponse>;
+  updateGuildVerificationConfig(
+    guildId: string,
+    body: BotGuildVerificationConfigWriteBody,
+    requestTelemetry?: RequestTelemetryContext,
+  ): Promise<BotGuildVerificationConfigWriteResponse>;
 };
 
 export type CreateInteractionHandlerOptions = {
@@ -275,14 +382,19 @@ export function createBotApiClient(input: {
   fetchFn?: typeof fetch;
 }): BotApiClient {
   const fetchFn = input.fetchFn ?? fetch;
-  const request = async <TData>(path: string, body: unknown, requestTelemetry?: RequestTelemetryContext) => {
-    const response = await fetchFn(`${input.apiBaseUrl}${path}`, {
-      body: JSON.stringify(body),
+  const request = async <TData>(requestInput: {
+    body?: unknown;
+    method: "GET" | "POST" | "PUT";
+    path: string;
+    requestTelemetry?: RequestTelemetryContext;
+  }) => {
+    const response = await fetchFn(`${input.apiBaseUrl}${requestInput.path}`, {
+      body: requestInput.body === undefined ? undefined : JSON.stringify(requestInput.body),
       headers: injectRequestTelemetryHeaders({
         accept: "application/json",
-        "content-type": "application/json",
-      }, requestTelemetry ?? createRequestTelemetryContext()),
-      method: "POST",
+        ...(requestInput.body === undefined ? {} : { "content-type": "application/json" }),
+      }, requestInput.requestTelemetry ?? createRequestTelemetryContext()),
+      method: requestInput.method,
     });
 
     return readJsonResponse<TData>(response);
@@ -290,13 +402,58 @@ export function createBotApiClient(input: {
 
   return {
     attachReportEvidence(guildId, reportId, body, requestTelemetry) {
-      return request<BotEvidenceResponse>(`/guilds/${guildId}/reports/${reportId}/evidence`, body, requestTelemetry);
+      return request<BotEvidenceResponse>({
+        body,
+        method: "POST",
+        path: `/guilds/${guildId}/reports/${reportId}/evidence`,
+        requestTelemetry,
+      });
     },
     createReport(guildId, body, requestTelemetry) {
-      return request<BotReportResponse>(`/guilds/${guildId}/reports`, body, requestTelemetry);
+      return request<BotReportResponse>({
+        body,
+        method: "POST",
+        path: `/guilds/${guildId}/reports`,
+        requestTelemetry,
+      });
     },
     createVerificationSession(guildId, body, requestTelemetry) {
-      return request<BotVerificationSessionResponse>(`/guilds/${guildId}/verification/sessions`, body, requestTelemetry);
+      return request<BotVerificationSessionResponse>({
+        body,
+        method: "POST",
+        path: `/guilds/${guildId}/verification/sessions`,
+        requestTelemetry,
+      });
+    },
+    getGuildChannelConfig(guildId, requestTelemetry) {
+      return request<BotGuildChannelConfigReadResponse>({
+        method: "GET",
+        path: `/guilds/${guildId}/channels`,
+        requestTelemetry,
+      });
+    },
+    getGuildVerificationConfig(guildId, requestTelemetry) {
+      return request<BotGuildVerificationConfigReadResponse>({
+        method: "GET",
+        path: `/guilds/${guildId}/verification`,
+        requestTelemetry,
+      });
+    },
+    updateGuildChannelConfig(guildId, body, requestTelemetry) {
+      return request<BotGuildChannelConfigWriteResponse>({
+        body,
+        method: "PUT",
+        path: `/guilds/${guildId}/channels`,
+        requestTelemetry,
+      });
+    },
+    updateGuildVerificationConfig(guildId, body, requestTelemetry) {
+      return request<BotGuildVerificationConfigWriteResponse>({
+        body,
+        method: "PUT",
+        path: `/guilds/${guildId}/verification`,
+        requestTelemetry,
+      });
     },
   };
 }

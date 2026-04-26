@@ -48,8 +48,10 @@ import {
   getDefaultHumanifyIdClaimBundle,
   getHumanifyIdClaimBundles,
   humanifyVerificationOptionCatalog,
+  resolveVerificationOptionCatalog,
   resolveVerificationOptionConfiguration,
   type VerificationOptionConfiguration,
+  type VerificationOptionCatalog,
   type VerificationOptionDefinition,
 } from "@humanify/verification-providers";
 
@@ -154,6 +156,55 @@ const defaultVerificationClaimBundle = getDefaultHumanifyIdClaimBundle();
 type VerificationRequirementDraft = {
   faceVerificationRequired: boolean;
   requiredBundleIds: string[];
+};
+
+type FetchLike = (input: URL | string | Request, init?: RequestInit) => Promise<Response>;
+
+type ApiEnvelope<TData> = {
+  contractVersion: string;
+  data: TData;
+  requestId: string;
+};
+
+type ApiErrorEnvelope = {
+  errorCode: string;
+  message: string;
+  requestId: string;
+  retryable: boolean;
+};
+
+type DashboardVerificationConfigSnapshot = {
+  availableProviderIds: string[];
+  defaultProviderId: string;
+  defaultReusableProofBackendId?: string;
+  enabledProviderIds: string[];
+  faceVerificationRequired: boolean;
+  fallbackRoles: string[];
+  requiredBundleIds: string[];
+  source: "catalog_default" | "persisted";
+  suspiciousRoleIds: string[];
+  trustedRoleIds: string[];
+};
+
+type DashboardVerificationConfigData = {
+  persistence: string;
+  verificationConfig: DashboardVerificationConfigSnapshot;
+};
+
+type DashboardVerificationSaveData = DashboardVerificationConfigData & {
+  queueDelivery: string;
+};
+
+type VerificationEditorState = {
+  actorUserId: string;
+  defaultProviderId: string;
+  defaultReusableProofBackendId?: string;
+  enabledProviderIds: string[];
+  faceVerificationRequired: boolean;
+  guildId: string;
+  requiredBundleIds: string[];
+  suspiciousRoleIdsInput: string;
+  trustedRoleIdsInput: string;
 };
 
 const initialVerificationRequirementDraft: VerificationRequirementDraft = {
@@ -261,9 +312,11 @@ export function updateVerificationOptionConfiguration(
         type: "toggle-option";
         optionId: string;
       },
+  availableCatalog: VerificationOptionCatalog = humanifyVerificationOptionCatalog,
 ): VerificationOptionConfiguration {
   if (action.type === "set-default") {
     return resolveVerificationOptionConfiguration({
+      availableCatalog,
       defaultOptionId: action.optionId,
       defaultReusableProofBackendId: current.defaultReusableProofBackendId,
       enabledOptionIds: current.enabledOptionIds,
@@ -272,6 +325,7 @@ export function updateVerificationOptionConfiguration(
 
   if (action.type === "set-default-reusable") {
     return resolveVerificationOptionConfiguration({
+      availableCatalog,
       defaultOptionId: current.defaultOptionId,
       defaultReusableProofBackendId: action.optionId,
       enabledOptionIds: current.enabledOptionIds,
@@ -283,7 +337,7 @@ export function updateVerificationOptionConfiguration(
     ? current.enabledOptionIds.filter((optionId) => optionId !== action.optionId)
     : [...current.enabledOptionIds, action.optionId];
 
-  const nextReusableOptions = verificationOptionRows.filter((option) =>
+  const nextReusableOptions = availableCatalog.list().filter((option) =>
     option.role === "reusable_proof_backend" && nextEnabledOptionIds.includes(option.id)
   );
   const nextDefaultOptionId = isEnabled && current.defaultOptionId === action.optionId
@@ -294,10 +348,123 @@ export function updateVerificationOptionConfiguration(
     : current.defaultReusableProofBackendId;
 
   return resolveVerificationOptionConfiguration({
+    availableCatalog,
     defaultOptionId: nextDefaultOptionId,
     defaultReusableProofBackendId: nextDefaultReusableProofBackendId,
     enabledOptionIds: nextEnabledOptionIds,
   });
+}
+
+function splitRoleIdsInput(value: string) {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+
+  for (const entry of value.split(",")) {
+    const trimmed = entry.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      continue;
+    }
+
+    seen.add(trimmed);
+    normalized.push(trimmed);
+  }
+
+  return normalized;
+}
+
+function joinRoleIdsInput(values: readonly string[]) {
+  return values.join(", ");
+}
+
+function buildApiUrl(apiBaseUrl: string, path: string) {
+  return `${apiBaseUrl.replace(/\/+$/, "")}${path}`;
+}
+
+async function readApiEnvelope<TData>(response: Response): Promise<TData> {
+  const json = (await response.json()) as ApiEnvelope<TData> | ApiErrorEnvelope;
+
+  if (!response.ok) {
+    const error = json as ApiErrorEnvelope;
+    throw new Error(error.message ?? "Dashboard request failed.");
+  }
+
+  return (json as ApiEnvelope<TData>).data;
+}
+
+export function getDashboardApiBaseUrl(env: Record<string, string | undefined> = {}) {
+  const configuredBaseUrl = env.VITE_HUMANIFY_API_BASE_URL?.trim();
+  if (configuredBaseUrl) {
+    return configuredBaseUrl.replace(/\/+$/, "");
+  }
+
+  return "http://127.0.0.1:3211";
+}
+
+export async function fetchGuildVerificationConfig(
+  fetchImpl: FetchLike,
+  input: {
+    apiBaseUrl: string;
+    guildId: string;
+  },
+) {
+  const response = await fetchImpl(
+    buildApiUrl(input.apiBaseUrl, `/guilds/${encodeURIComponent(input.guildId)}/verification`),
+    {
+      headers: {
+        accept: "application/json",
+      },
+    },
+  );
+
+  return readApiEnvelope<DashboardVerificationConfigData>(response);
+}
+
+export function createVerificationEditorState(input: {
+  actorUserId?: string;
+  guildId: string;
+  verificationConfig: DashboardVerificationConfigSnapshot;
+}): VerificationEditorState {
+  return {
+    actorUserId: input.actorUserId ?? "",
+    defaultProviderId: input.verificationConfig.defaultProviderId,
+    defaultReusableProofBackendId: input.verificationConfig.defaultReusableProofBackendId,
+    enabledProviderIds: [...input.verificationConfig.enabledProviderIds],
+    faceVerificationRequired: input.verificationConfig.faceVerificationRequired,
+    guildId: input.guildId,
+    requiredBundleIds: [...input.verificationConfig.requiredBundleIds],
+    suspiciousRoleIdsInput: joinRoleIdsInput(input.verificationConfig.suspiciousRoleIds),
+    trustedRoleIdsInput: joinRoleIdsInput(input.verificationConfig.trustedRoleIds),
+  };
+}
+
+export async function saveGuildVerificationConfig(
+  fetchImpl: FetchLike,
+  input: VerificationEditorState & {
+    apiBaseUrl: string;
+  },
+) {
+  const response = await fetchImpl(
+    buildApiUrl(input.apiBaseUrl, `/guilds/${encodeURIComponent(input.guildId)}/verification`),
+    {
+      body: JSON.stringify({
+        actorUserId: input.actorUserId,
+        defaultProviderId: input.defaultProviderId,
+        defaultReusableProofBackendId: input.defaultReusableProofBackendId,
+        enabledProviderIds: input.enabledProviderIds,
+        faceVerificationRequired: input.faceVerificationRequired,
+        requiredBundleIds: input.requiredBundleIds,
+        suspiciousRoleIds: splitRoleIdsInput(input.suspiciousRoleIdsInput),
+        trustedRoleIds: splitRoleIdsInput(input.trustedRoleIdsInput),
+      }),
+      headers: {
+        accept: "application/json",
+        "content-type": "application/json",
+      },
+      method: "PUT",
+    },
+  );
+
+  return readApiEnvelope<DashboardVerificationSaveData>(response);
 }
 
 function splitVerificationOptionsByRole(options: readonly VerificationOptionDefinition[]) {
@@ -810,26 +977,142 @@ export function DashboardCasesPage() {
 }
 
 export function DashboardVerificationPage() {
-  const [optionConfiguration, setOptionConfiguration] = useState<VerificationOptionConfiguration>(
-    initialVerificationOptionConfiguration,
+  const env = import.meta.env as Record<string, string | undefined>;
+  const apiBaseUrl = getDashboardApiBaseUrl(env);
+  const [editorState, setEditorState] = useState<VerificationEditorState>({
+    actorUserId: "",
+    defaultProviderId: initialVerificationOptionConfiguration.defaultOptionId,
+    defaultReusableProofBackendId: initialVerificationOptionConfiguration.defaultReusableProofBackendId,
+    enabledProviderIds: initialVerificationOptionConfiguration.enabledOptionIds,
+    faceVerificationRequired: initialVerificationRequirementDraft.faceVerificationRequired,
+    guildId: "",
+    requiredBundleIds: initialVerificationRequirementDraft.requiredBundleIds,
+    suspiciousRoleIdsInput: "",
+    trustedRoleIdsInput: "",
+  });
+  const [loadedConfig, setLoadedConfig] = useState<DashboardVerificationConfigData | null>(null);
+  const [requestState, setRequestState] = useState<"error" | "idle" | "loading" | "ready" | "saving">("idle");
+  const [feedbackMessage, setFeedbackMessage] = useState<string | null>(
+    "Enter a guild ID to load the current server-owned verification settings.",
   );
-  const [requirementDraft, setRequirementDraft] = useState<VerificationRequirementDraft>(
-    initialVerificationRequirementDraft,
+
+  const availableOptionCatalog = useMemo(
+    () =>
+      loadedConfig
+        ? resolveVerificationOptionCatalog({
+            enabledOptionIds: loadedConfig.verificationConfig.availableProviderIds,
+          })
+        : humanifyVerificationOptionCatalog,
+    [loadedConfig],
   );
-  const optionGroups = useMemo(() => splitVerificationOptionsByRole(verificationOptionRows), []);
+  const optionRows = useMemo(() => availableOptionCatalog.list(), [availableOptionCatalog]);
+  const optionGroups = useMemo(() => splitVerificationOptionsByRole(optionRows), [optionRows]);
+  const optionConfiguration = useMemo(
+    () =>
+      resolveVerificationOptionConfiguration({
+        availableCatalog: availableOptionCatalog,
+        defaultOptionId: editorState.defaultProviderId,
+        defaultReusableProofBackendId: editorState.defaultReusableProofBackendId,
+        enabledOptionIds: editorState.enabledProviderIds,
+      }),
+    [
+      availableOptionCatalog,
+      editorState.defaultProviderId,
+      editorState.defaultReusableProofBackendId,
+      editorState.enabledProviderIds,
+    ],
+  );
   const enabledCaptureFlows = optionGroups.captureFlows.filter((option) =>
     optionConfiguration.enabledOptionIds.includes(option.id)
   );
   const enabledReusableProofBackends = optionGroups.reusableProofBackends.filter((option) =>
     optionConfiguration.enabledOptionIds.includes(option.id)
   );
-  const currentDefaultCaptureFlow = verificationOptionRows.find((option) => optionConfiguration.defaultOptionId === option.id);
-  const currentDefaultReusableProof = verificationOptionRows.find((option) =>
+  const currentDefaultCaptureFlow = optionRows.find((option) => optionConfiguration.defaultOptionId === option.id);
+  const currentDefaultReusableProof = optionRows.find((option) =>
     optionConfiguration.defaultReusableProofBackendId === option.id
   );
   const requiredBundles = verificationClaimBundleRows.filter((bundle) =>
-    requirementDraft.requiredBundleIds.includes(bundle.bundleId)
+    editorState.requiredBundleIds.includes(bundle.bundleId)
   );
+  const fallbackRoles = loadedConfig?.verificationConfig.fallbackRoles ?? [];
+
+  const handleLoad = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const guildId = trimOrEmpty(editorState.guildId);
+    if (!guildId) {
+      setRequestState("error");
+      setFeedbackMessage("Enter a guild ID before loading verification settings.");
+      return;
+    }
+
+    setRequestState("loading");
+    setFeedbackMessage(null);
+
+    try {
+      const data = await fetchGuildVerificationConfig(fetch, {
+        apiBaseUrl,
+        guildId,
+      });
+      setLoadedConfig(data);
+      setEditorState(createVerificationEditorState({
+        actorUserId: editorState.actorUserId,
+        guildId,
+        verificationConfig: data.verificationConfig,
+      }));
+      setRequestState("ready");
+      setFeedbackMessage(
+        data.verificationConfig.source === "persisted"
+          ? "Loaded the saved verification settings for this server."
+          : "Loaded the current server defaults. Save once to persist a guild-specific configuration.",
+      );
+    } catch (error) {
+      setRequestState("error");
+      setFeedbackMessage(error instanceof Error ? error.message : "Verification settings could not be loaded.");
+    }
+  };
+
+  const handleSave = async () => {
+    const guildId = trimOrEmpty(editorState.guildId);
+    const actorUserId = trimOrEmpty(editorState.actorUserId);
+    if (!guildId) {
+      setRequestState("error");
+      setFeedbackMessage("Enter a guild ID before saving verification settings.");
+      return;
+    }
+
+    if (!actorUserId) {
+      setRequestState("error");
+      setFeedbackMessage("Enter the actor user ID before saving verification settings.");
+      return;
+    }
+
+    setRequestState("saving");
+    setFeedbackMessage(null);
+
+    try {
+      const data = await saveGuildVerificationConfig(fetch, {
+        ...editorState,
+        actorUserId,
+        apiBaseUrl,
+        defaultProviderId: optionConfiguration.defaultOptionId,
+        defaultReusableProofBackendId: optionConfiguration.defaultReusableProofBackendId,
+        enabledProviderIds: optionConfiguration.enabledOptionIds,
+        guildId,
+      });
+      setLoadedConfig(data);
+      setEditorState(createVerificationEditorState({
+        actorUserId,
+        guildId,
+        verificationConfig: data.verificationConfig,
+      }));
+      setRequestState("ready");
+      setFeedbackMessage("Saved the server-owned verification settings.");
+    } catch (error) {
+      setRequestState("error");
+      setFeedbackMessage(error instanceof Error ? error.message : "Verification settings could not be saved.");
+    }
+  };
 
   return (
     <DashboardLayout
@@ -846,6 +1129,62 @@ export function DashboardVerificationPage() {
           </Alert.Description>
         </Alert.Content>
       </Alert>
+
+      <Card>
+        <Card.Header className="gap-2">
+          <Card.Title>Load server verification settings</Card.Title>
+          <Card.Description>
+            This screen now reads and writes the Bun-owned guild verification config instead of relying on dashboard-only draft defaults.
+          </Card.Description>
+        </Card.Header>
+        <Card.Content>
+          <Form aria-label="Verification settings loader" className="grid gap-4" onSubmit={handleLoad}>
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <label className="text-sm font-semibold text-foreground" htmlFor="verification-guild-id">
+                  Guild ID
+                </label>
+                <Input
+                  aria-label="Guild ID"
+                  id="verification-guild-id"
+                  onChange={(event) => setEditorState((current) => ({ ...current, guildId: event.currentTarget.value }))}
+                  placeholder="guild_123"
+                  value={editorState.guildId}
+                  variant="secondary"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-semibold text-foreground" htmlFor="verification-actor-user-id">
+                  Actor user ID
+                </label>
+                <Input
+                  aria-label="Actor user ID"
+                  id="verification-actor-user-id"
+                  onChange={(event) =>
+                    setEditorState((current) => ({ ...current, actorUserId: event.currentTarget.value }))}
+                  placeholder="mod_123"
+                  value={editorState.actorUserId}
+                  variant="secondary"
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <Button isDisabled={requestState === "loading" || requestState === "saving"} type="submit">
+                {requestState === "loading" ? "Loading settings…" : "Load settings"}
+              </Button>
+              <Button
+                isDisabled={requestState === "loading" || requestState === "saving"}
+                onPress={handleSave}
+                type="button"
+                variant="secondary"
+              >
+                {requestState === "saving" ? "Saving settings…" : "Save settings"}
+              </Button>
+            </div>
+          </Form>
+        </Card.Content>
+      </Card>
 
       <div className="grid gap-4 md:grid-cols-4">
         <Card>
@@ -875,7 +1214,7 @@ export function DashboardVerificationPage() {
           </Card.Header>
           <Card.Content className="space-y-2 text-sm leading-7 text-muted">
             <p>{requiredBundles.length} required option(s)</p>
-            <p>{requiredBundles.map((bundle) => bundle.title).join(", ")}</p>
+            <p>{requiredBundles.map((bundle) => bundle.title).join(", ") || "None selected"}</p>
           </Card.Content>
         </Card>
         <Card variant="tertiary">
@@ -884,18 +1223,22 @@ export function DashboardVerificationPage() {
             <Card.Description>Only applies to first-time capture flows, never reusable proof backends.</Card.Description>
           </Card.Header>
           <Card.Content className="space-y-2 text-sm leading-7 text-muted">
-            <p>{requirementDraft.faceVerificationRequired ? "Required for first-time capture" : "Not required"}</p>
+            <p>{editorState.faceVerificationRequired ? "Required for first-time capture" : "Not required"}</p>
             <p>Humanify stores only whether the face check ran and whether it passed.</p>
           </Card.Content>
         </Card>
       </div>
 
-      <Alert status="warning">
+      <Alert status={requestState === "error" ? "warning" : "accent"}>
         <Alert.Indicator />
         <Alert.Content>
-          <Alert.Title>Current contract honesty</Alert.Title>
+          <Alert.Title>
+            {loadedConfig?.verificationConfig.source === "persisted"
+              ? "Loaded persisted verification config"
+              : "Verification config status"}
+          </Alert.Title>
           <Alert.Description>
-            The shared provider catalog already drives enabled flows and default selections. Proof-bundle and face-verification controls remain dashboard draft state until the verification settings route persists them server-side.
+            {feedbackMessage ?? "Load a guild to view the current verification setup."}
           </Alert.Description>
         </Alert.Content>
       </Alert>
@@ -907,7 +1250,20 @@ export function DashboardVerificationPage() {
           description="Server owners decide which first-time capture flows members can use when they need a fresh check."
           emptyState="No first-time capture flow is enabled for this server."
           onOptionAction={(action) =>
-            setOptionConfiguration((current) => updateVerificationOptionConfiguration(current, action))}
+            setEditorState((current) => {
+              const nextConfiguration = updateVerificationOptionConfiguration(
+                optionConfiguration,
+                action,
+                availableOptionCatalog,
+              );
+
+              return {
+                ...current,
+                defaultProviderId: nextConfiguration.defaultOptionId,
+                defaultReusableProofBackendId: nextConfiguration.defaultReusableProofBackendId,
+                enabledProviderIds: nextConfiguration.enabledOptionIds,
+              };
+            })}
           options={optionGroups.captureFlows}
           title="First-time capture flows"
         />
@@ -918,7 +1274,20 @@ export function DashboardVerificationPage() {
           description="Reusable proof backends stay separate from first-time capture so members can reuse a credential when they already have one."
           emptyState="No reusable proof backend is enabled for this server."
           onOptionAction={(action) =>
-            setOptionConfiguration((current) => updateVerificationOptionConfiguration(current, action))}
+            setEditorState((current) => {
+              const nextConfiguration = updateVerificationOptionConfiguration(
+                optionConfiguration,
+                action,
+                availableOptionCatalog,
+              );
+
+              return {
+                ...current,
+                defaultProviderId: nextConfiguration.defaultOptionId,
+                defaultReusableProofBackendId: nextConfiguration.defaultReusableProofBackendId,
+                enabledProviderIds: nextConfiguration.enabledOptionIds,
+              };
+            })}
           options={optionGroups.reusableProofBackends}
           title="Reusable proof backends"
         />
@@ -934,7 +1303,7 @@ export function DashboardVerificationPage() {
           </Card.Header>
           <Card.Content className="space-y-4 text-sm leading-7 text-muted">
             {verificationClaimBundleRows.map((bundle) => {
-              const required = requirementDraft.requiredBundleIds.includes(bundle.bundleId);
+              const required = editorState.requiredBundleIds.includes(bundle.bundleId);
 
               return (
                 <div className="rounded-3xl border border-border/60 px-4 py-4" key={bundle.bundleId}>
@@ -958,7 +1327,7 @@ export function DashboardVerificationPage() {
                     </div>
                     <Button
                       onPress={() =>
-                        setRequirementDraft((current) => {
+                        setEditorState((current) => {
                           const alreadyRequired = current.requiredBundleIds.includes(bundle.bundleId);
                           if (alreadyRequired && current.requiredBundleIds.length === 1) {
                             return current;
@@ -995,19 +1364,61 @@ export function DashboardVerificationPage() {
             </p>
             <Button
               onPress={() =>
-                setRequirementDraft((current) => ({
+                setEditorState((current) => ({
                   ...current,
                   faceVerificationRequired: !current.faceVerificationRequired,
                 }))}
-              variant={requirementDraft.faceVerificationRequired ? "primary" : "secondary"}
+              variant={editorState.faceVerificationRequired ? "primary" : "secondary"}
             >
-              {requirementDraft.faceVerificationRequired ? "Face verification required" : "Face verification optional"}
+              {editorState.faceVerificationRequired ? "Face verification required" : "Face verification optional"}
             </Button>
             <ul className="list-disc space-y-1 pl-5">
               <li>Use this when the server needs a live selfie or liveness step before release.</li>
               <li>Humanify keeps only the normalized pass/fail facts, not raw biometric captures.</li>
               <li>Members who use reusable proofs do not repeat a fresh face capture in the current flow.</li>
             </ul>
+          </Card.Content>
+        </Card>
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+        <Card variant="secondary">
+          <Card.Header className="gap-2">
+            <Card.Title>Trusted roles</Card.Title>
+            <Card.Description>
+              Members who pass verification can be released into these server roles.
+            </Card.Description>
+          </Card.Header>
+          <Card.Content className="space-y-4 text-sm leading-7 text-muted">
+            <Input
+              aria-label="Trusted roles"
+              onChange={(event) =>
+                setEditorState((current) => ({ ...current, trustedRoleIdsInput: event.currentTarget.value }))}
+              placeholder="role_verified, role_member"
+              value={editorState.trustedRoleIdsInput}
+              variant="secondary"
+            />
+            <p>Fallback roles from the API: {fallbackRoles.join(", ") || "None returned yet"}</p>
+          </Card.Content>
+        </Card>
+
+        <Card variant="secondary">
+          <Card.Header className="gap-2">
+            <Card.Title>Suspicious roles</Card.Title>
+            <Card.Description>
+              Keep these role IDs available for suspicious or quarantine-style release paths when the guild uses them.
+            </Card.Description>
+          </Card.Header>
+          <Card.Content className="space-y-4 text-sm leading-7 text-muted">
+            <Input
+              aria-label="Suspicious roles"
+              onChange={(event) =>
+                setEditorState((current) => ({ ...current, suspiciousRoleIdsInput: event.currentTarget.value }))}
+              placeholder="role_suspicious, role_quarantine"
+              value={editorState.suspiciousRoleIdsInput}
+              variant="secondary"
+            />
+            <p>Use comma-separated role IDs. Humanify saves them as the Bun-owned guild config.</p>
           </Card.Content>
         </Card>
       </div>

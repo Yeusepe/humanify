@@ -20,9 +20,14 @@ import { expect, test } from "bun:test";
 
 import { GatewayIntentBits, MessageFlags, PermissionFlagsBits, PermissionsBitField } from "discord.js";
 
-import { createBotGatewayIntents, parseComponentCustomId } from "@humanify/discord-core";
+import {
+  createBotGatewayIntents,
+  parseComponentCustomId,
+  parseSetupFlowCustomId,
+} from "@humanify/discord-core";
 
 import {
+  type BotApiClient,
   createBotApiClient,
   createInteractionHandler,
   decideApprovedActionExecution,
@@ -65,11 +70,192 @@ function createChatCommandInteraction(input: {
   } as any;
 }
 
+function createComponentInteraction(input: {
+  customId: string;
+  kind: "button" | "channel_select" | "role_select" | "string_select";
+  memberPermissions?: PermissionsBitField | null;
+  reply?: (payload: unknown) => Promise<void>;
+  update?: (payload: unknown) => Promise<void>;
+  userId?: string;
+  values?: string[];
+}) {
+  return {
+    customId: input.customId,
+    guildId: "guild_123",
+    inGuild: () => true,
+    isAnySelectMenu: () => input.kind !== "button",
+    isButton: () => input.kind === "button",
+    isChannelSelectMenu: () => input.kind === "channel_select",
+    isChatInputCommand: () => false,
+    isMessageContextMenuCommand: () => false,
+    isRoleSelectMenu: () => input.kind === "role_select",
+    isStringSelectMenu: () => input.kind === "string_select",
+    memberPermissions: input.memberPermissions,
+    reply: input.reply ?? (async () => undefined),
+    update: input.update ?? (async () => undefined),
+    user: { id: input.userId ?? "user_123" },
+    values: input.values ?? [],
+  } as any;
+}
+
+function createVerificationBundle(input: {
+  bundleId: string;
+  claims: string[];
+  summary: string;
+  title: string;
+}) {
+  return {
+    bestFor: "setup testing",
+    bundleId: input.bundleId,
+    claims: input.claims,
+    futureExtensions: [],
+    operatorStorageGuarantees: [],
+    summary: input.summary,
+    title: input.title,
+  };
+}
+
+function createTestApiClient(overrides: Partial<BotApiClient> = {}): BotApiClient {
+  return {
+    attachReportEvidence: async () => {
+      throw new Error("test did not provide attachReportEvidence");
+    },
+    createReport: async () => {
+      throw new Error("test did not provide createReport");
+    },
+    createVerificationSession: async () => {
+      throw new Error("test did not provide createVerificationSession");
+    },
+    getGuildChannelConfig: async () => ({
+      channelConfig: {
+        guildId: "guild_123",
+        source: "not_configured",
+      },
+      persistence: "not_configured",
+    }),
+    getGuildVerificationConfig: async () => ({
+      persistence: "catalog_default",
+      verificationConfig: {
+        availableBundles: [
+          createVerificationBundle({
+            bundleId: "humanify_id_age_over_18_v1",
+            claims: ["age_over_18"],
+            summary: "Age only",
+            title: "Only prove age over 18",
+          }),
+          createVerificationBundle({
+            bundleId: "humanify_id_nationality_v1",
+            claims: ["nationality"],
+            summary: "Nationality only",
+            title: "Only prove nationality",
+          }),
+          createVerificationBundle({
+            bundleId: "humanify_id_age_and_nationality_v1",
+            claims: ["age_over_18", "nationality"],
+            summary: "Age and nationality",
+            title: "Prove age + nationality",
+          }),
+        ],
+        availableProviderIds: ["didit", "privado", "self", "world_id"],
+        defaultProviderId: "didit",
+        enabledProviderIds: ["didit", "privado", "self", "world_id"],
+        faceVerificationRequired: false,
+        fallbackRoles: [],
+        guildId: "guild_123",
+        requiredBundleIds: ["humanify_id_age_and_nationality_v1"],
+        requiredBundles: [
+          createVerificationBundle({
+            bundleId: "humanify_id_age_and_nationality_v1",
+            claims: ["age_over_18", "nationality"],
+            summary: "Age and nationality",
+            title: "Prove age + nationality",
+          }),
+        ],
+        source: "catalog_default",
+        suspiciousRoleIds: [],
+        trustedRoleIds: [],
+      },
+    }),
+    updateGuildChannelConfig: async (guildId, body) => ({
+      channelConfig: {
+        auditLogChannelId: body.auditLogChannelId,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        guildId,
+        moderationLogChannelId: body.moderationLogChannelId,
+        moderatorAlertChannelId: body.moderatorAlertChannelId,
+        reviewChannelId: body.reviewChannelId,
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+      persistence: "persisted",
+      queueDelivery: "pending_outbox_publish",
+    }),
+    updateGuildVerificationConfig: async (guildId, body) => ({
+      persistence: "persisted",
+      queueDelivery: "pending_outbox_publish",
+      verificationConfig: {
+        availableBundles: [
+          createVerificationBundle({
+            bundleId: "humanify_id_age_over_18_v1",
+            claims: ["age_over_18"],
+            summary: "Age only",
+            title: "Only prove age over 18",
+          }),
+          createVerificationBundle({
+            bundleId: "humanify_id_nationality_v1",
+            claims: ["nationality"],
+            summary: "Nationality only",
+            title: "Only prove nationality",
+          }),
+          createVerificationBundle({
+            bundleId: "humanify_id_age_and_nationality_v1",
+            claims: ["age_over_18", "nationality"],
+            summary: "Age and nationality",
+            title: "Prove age + nationality",
+          }),
+        ],
+        availableProviderIds: ["didit", "privado", "self", "world_id"],
+        defaultProviderId: body.defaultProviderId,
+        enabledProviderIds: body.enabledProviderIds,
+        faceVerificationRequired: body.faceVerificationRequired,
+        fallbackRoles: body.trustedRoleIds,
+        guildId,
+        requiredBundleIds: body.requiredBundleIds,
+        requiredBundles: [
+          createVerificationBundle({
+            bundleId: "humanify_id_age_over_18_v1",
+            claims: ["age_over_18"],
+            summary: "Age only",
+            title: "Only prove age over 18",
+          }),
+        ],
+        source: "persisted",
+        suspiciousRoleIds: body.suspiciousRoleIds,
+        trustedRoleIds: body.trustedRoleIds,
+      },
+    }),
+    ...overrides,
+  };
+}
+
+function findCustomId(payload: {
+  components?: Array<{ toJSON(): { components?: Array<{ custom_id?: string }> } }>;
+}, matcher: (customId: string) => boolean) {
+  for (const row of payload.components ?? []) {
+    for (const component of row.toJSON().components ?? []) {
+      if (component.custom_id && matcher(component.custom_id)) {
+        return component.custom_id;
+      }
+    }
+  }
+
+  throw new Error("Expected setup component custom ID was not found.");
+}
+
 test("report command routes moderator intake through the report API and offers a verification shortcut", async () => {
   const apiCalls: unknown[] = [];
   const replies: unknown[] = [];
   const handler = createInteractionHandler({
-    apiClient: {
+    apiClient: createTestApiClient({
       attachReportEvidence: async () => {
         throw new Error("report command should not attach evidence");
       },
@@ -87,7 +273,7 @@ test("report command routes moderator intake through the report API and offers a
       createVerificationSession: async () => {
         throw new Error("report command should not create verification directly");
       },
-    },
+    }),
   });
 
   await handler({
@@ -152,17 +338,7 @@ test("report command routes moderator intake through the report API and offers a
 test("humanify setup refuses members who are not server admins", async () => {
   const replies: unknown[] = [];
   const handler = createInteractionHandler({
-    apiClient: {
-      attachReportEvidence: async () => {
-        throw new Error("setup should not attach evidence");
-      },
-      createReport: async () => {
-        throw new Error("setup should not create reports");
-      },
-      createVerificationSession: async () => {
-        throw new Error("setup should not create verification");
-      },
-    },
+    apiClient: createTestApiClient(),
   });
 
   await handler(
@@ -185,20 +361,72 @@ test("humanify setup refuses members who are not server admins", async () => {
   ]);
 });
 
-test("humanify setup keeps an honest pending reply for server admins", async () => {
+test("humanify setup loads the current config and opens a guided setup flow for server admins", async () => {
   const replies: unknown[] = [];
+  const apiCalls: unknown[] = [];
   const handler = createInteractionHandler({
-    apiClient: {
-      attachReportEvidence: async () => {
-        throw new Error("setup should not attach evidence");
+    apiClient: createTestApiClient({
+      getGuildChannelConfig: async (guildId) => {
+        apiCalls.push({ guildId, kind: "channels" });
+        return {
+          channelConfig: {
+            auditLogChannelId: "channel_audit",
+            guildId,
+            moderationLogChannelId: "channel_mod_log",
+            moderatorAlertChannelId: "channel_alerts",
+            reviewChannelId: "channel_review",
+            source: "persisted",
+          },
+          persistence: "persisted",
+        };
       },
-      createReport: async () => {
-        throw new Error("setup should not create reports");
+      getGuildVerificationConfig: async (guildId) => {
+        apiCalls.push({ guildId, kind: "verification" });
+        return {
+          persistence: "persisted",
+          verificationConfig: {
+            availableBundles: [
+              createVerificationBundle({
+                bundleId: "humanify_id_age_over_18_v1",
+                claims: ["age_over_18"],
+                summary: "Age only",
+                title: "Only prove age over 18",
+              }),
+              createVerificationBundle({
+                bundleId: "humanify_id_nationality_v1",
+                claims: ["nationality"],
+                summary: "Nationality only",
+                title: "Only prove nationality",
+              }),
+              createVerificationBundle({
+                bundleId: "humanify_id_age_and_nationality_v1",
+                claims: ["age_over_18", "nationality"],
+                summary: "Age and nationality",
+                title: "Prove age + nationality",
+              }),
+            ],
+            availableProviderIds: ["didit", "privado", "self", "world_id"],
+            defaultProviderId: "didit",
+            enabledProviderIds: ["didit", "privado"],
+            faceVerificationRequired: false,
+            fallbackRoles: ["role_trusted"],
+            guildId,
+            requiredBundleIds: ["humanify_id_age_and_nationality_v1"],
+            requiredBundles: [
+              createVerificationBundle({
+                bundleId: "humanify_id_age_and_nationality_v1",
+                claims: ["age_over_18", "nationality"],
+                summary: "Age and nationality",
+                title: "Prove age + nationality",
+              }),
+            ],
+            source: "persisted",
+            suspiciousRoleIds: ["role_suspicious"],
+            trustedRoleIds: ["role_trusted"],
+          },
+        };
       },
-      createVerificationSession: async () => {
-        throw new Error("setup should not create verification");
-      },
-    },
+    }),
   });
 
   await handler(
@@ -213,18 +441,241 @@ test("humanify setup keeps an honest pending reply for server admins", async () 
     }),
   );
 
-  expect(replies).toEqual([
-    expect.objectContaining({
-      content: "Humanify setup is not ready yet. Server admins will be able to configure channels and roles here soon.",
-      flags: MessageFlags.Ephemeral,
-    }),
+  expect(apiCalls).toEqual([
+    { guildId: "guild_123", kind: "channels" },
+    { guildId: "guild_123", kind: "verification" },
   ]);
+
+  const reply = replies[0] as {
+    components: Array<{ toJSON(): { components?: Array<{ custom_id?: string }> } }>;
+    content: string;
+    flags: number;
+  };
+
+  expect(reply.flags).toBe(MessageFlags.Ephemeral);
+  expect(reply.content).toContain("Step 1 of 6");
+  expect(reply.content).toContain("Pick the channels Humanify should use");
+  expect(reply.content).toContain("<#channel_alerts>");
+  expect(parseSetupFlowCustomId(findCustomId(reply, (customId) => parseSetupFlowCustomId(customId).action === "next"))).toMatchObject({
+    action: "next",
+    guildId: "guild_123",
+  });
+});
+
+test("humanify setup saves the guided selections through the real guild config routes", async () => {
+  const apiCalls: unknown[] = [];
+  const replies: unknown[] = [];
+  const updates: unknown[] = [];
+  const handler = createInteractionHandler({
+    apiClient: createTestApiClient({
+      getGuildChannelConfig: async (guildId) => ({
+        channelConfig: {
+          guildId,
+          source: "not_configured",
+        },
+        persistence: "not_configured",
+      }),
+      getGuildVerificationConfig: async (guildId) => ({
+        persistence: "catalog_default",
+        verificationConfig: {
+          availableBundles: [
+            createVerificationBundle({
+              bundleId: "humanify_id_age_over_18_v1",
+              claims: ["age_over_18"],
+              summary: "Age only",
+              title: "Only prove age over 18",
+            }),
+            createVerificationBundle({
+              bundleId: "humanify_id_nationality_v1",
+              claims: ["nationality"],
+              summary: "Nationality only",
+              title: "Only prove nationality",
+            }),
+            createVerificationBundle({
+              bundleId: "humanify_id_age_and_nationality_v1",
+              claims: ["age_over_18", "nationality"],
+              summary: "Age and nationality",
+              title: "Prove age + nationality",
+            }),
+          ],
+          availableProviderIds: ["didit", "privado", "self", "world_id"],
+          defaultProviderId: "didit",
+          enabledProviderIds: ["didit", "privado", "self", "world_id"],
+          faceVerificationRequired: false,
+          fallbackRoles: [],
+          guildId,
+          requiredBundleIds: ["humanify_id_age_and_nationality_v1"],
+          requiredBundles: [
+            createVerificationBundle({
+              bundleId: "humanify_id_age_and_nationality_v1",
+              claims: ["age_over_18", "nationality"],
+              summary: "Age and nationality",
+              title: "Prove age + nationality",
+            }),
+          ],
+          source: "catalog_default",
+          suspiciousRoleIds: [],
+          trustedRoleIds: [],
+        },
+      }),
+      updateGuildChannelConfig: async (guildId, body) => {
+        apiCalls.push({ body, guildId, kind: "channels" });
+        return {
+          channelConfig: {
+            auditLogChannelId: body.auditLogChannelId,
+            createdAt: "2026-01-01T00:00:00.000Z",
+            guildId,
+            moderationLogChannelId: body.moderationLogChannelId,
+            moderatorAlertChannelId: body.moderatorAlertChannelId,
+            reviewChannelId: body.reviewChannelId,
+            updatedAt: "2026-01-01T00:00:00.000Z",
+          },
+          persistence: "persisted",
+          queueDelivery: "pending_outbox_publish",
+        };
+      },
+      updateGuildVerificationConfig: async (guildId, body) => {
+        apiCalls.push({ body, guildId, kind: "verification" });
+        return {
+          persistence: "persisted",
+          queueDelivery: "pending_outbox_publish",
+          verificationConfig: {
+            availableBundles: [
+              createVerificationBundle({
+                bundleId: "humanify_id_age_over_18_v1",
+                claims: ["age_over_18"],
+                summary: "Age only",
+                title: "Only prove age over 18",
+              }),
+              createVerificationBundle({
+                bundleId: "humanify_id_nationality_v1",
+                claims: ["nationality"],
+                summary: "Nationality only",
+                title: "Only prove nationality",
+              }),
+            ],
+            availableProviderIds: ["didit", "privado", "self", "world_id"],
+            defaultProviderId: body.defaultProviderId,
+            enabledProviderIds: body.enabledProviderIds,
+            faceVerificationRequired: body.faceVerificationRequired,
+            fallbackRoles: body.trustedRoleIds,
+            guildId,
+            requiredBundleIds: body.requiredBundleIds,
+            requiredBundles: [
+              createVerificationBundle({
+                bundleId: "humanify_id_nationality_v1",
+                claims: ["nationality"],
+                summary: "Nationality only",
+                title: "Only prove nationality",
+              }),
+            ],
+            source: "persisted",
+            suspiciousRoleIds: body.suspiciousRoleIds,
+            trustedRoleIds: body.trustedRoleIds,
+          },
+        };
+      },
+    }),
+  });
+
+  await handler(
+    createChatCommandInteraction({
+      commandName: "humanify",
+      getSubcommand: () => "setup",
+      memberPermissions: createGuildInteractionPermissions(PermissionFlagsBits.Administrator),
+      reply: async (payload) => {
+        replies.push(payload);
+      },
+      userId: "admin_123",
+    }),
+  );
+
+  let latest = replies[0] as {
+    components: Array<{ toJSON(): { components?: Array<{ custom_id?: string }> } }>;
+    content: string;
+  };
+
+  async function runComponent(input: {
+    action?: string;
+    kind: "button" | "channel_select" | "role_select" | "string_select";
+    values?: string[];
+  }) {
+    const customId = findCustomId(
+      latest,
+      (candidate) => !input.action || parseSetupFlowCustomId(candidate).action === input.action,
+    );
+
+    await handler(
+      createComponentInteraction({
+        customId,
+        kind: input.kind,
+        memberPermissions: createGuildInteractionPermissions(PermissionFlagsBits.Administrator),
+        update: async (payload) => {
+          updates.push(payload);
+          latest = payload as typeof latest;
+        },
+        userId: "admin_123",
+        values: input.values,
+      }),
+    );
+  }
+
+  await runComponent({ action: "channel_alert", kind: "channel_select", values: ["channel_alerts_live"] });
+  await runComponent({ action: "channel_review", kind: "channel_select", values: ["channel_review_live"] });
+  await runComponent({ action: "channel_audit", kind: "channel_select", values: ["channel_audit_live"] });
+  await runComponent({ action: "channel_mod_log", kind: "channel_select", values: ["channel_mod_log_live"] });
+  await runComponent({ action: "next", kind: "button" });
+  await runComponent({ action: "role_trusted", kind: "role_select", values: ["role_trusted_a", "role_trusted_b"] });
+  await runComponent({ action: "role_suspicious", kind: "role_select", values: ["role_suspicious_a"] });
+  await runComponent({ action: "next", kind: "button" });
+  await runComponent({ action: "provider_enabled", kind: "string_select", values: ["didit", "world_id"] });
+  await runComponent({ action: "provider_default", kind: "string_select", values: ["didit"] });
+  await runComponent({ action: "next", kind: "button" });
+  await runComponent({ action: "bundle_required", kind: "string_select", values: ["humanify_id_nationality_v1"] });
+  await runComponent({ action: "next", kind: "button" });
+  await runComponent({ action: "face_requirement", kind: "string_select", values: ["required"] });
+  await runComponent({ action: "next", kind: "button" });
+  await runComponent({ action: "save", kind: "button" });
+
+  expect(apiCalls).toEqual([
+    {
+      body: {
+        actorUserId: "admin_123",
+        defaultProviderId: "didit",
+        enabledProviderIds: ["didit", "world_id"],
+        faceVerificationRequired: true,
+        requiredBundleIds: ["humanify_id_nationality_v1"],
+        suspiciousRoleIds: ["role_suspicious_a"],
+        trustedRoleIds: ["role_trusted_a", "role_trusted_b"],
+      },
+      guildId: "guild_123",
+      kind: "verification",
+    },
+    {
+      body: {
+        actorUserId: "admin_123",
+        auditLogChannelId: "channel_audit_live",
+        moderationLogChannelId: "channel_mod_log_live",
+        moderatorAlertChannelId: "channel_alerts_live",
+        reviewChannelId: "channel_review_live",
+      },
+      guildId: "guild_123",
+      kind: "channels",
+    },
+  ]);
+
+  expect(updates).not.toHaveLength(0);
+  expect(latest.content).toContain("Setup saved");
+  expect(latest.content).toContain("<#channel_alerts_live>");
+  expect(latest.content).toContain("Only prove nationality");
+  expect(latest.content).toContain("Face check required: Yes");
+  expect(latest.components).toEqual([]);
 });
 
 test("case open refuses members who are not trusted moderators", async () => {
   const replies: unknown[] = [];
   const handler = createInteractionHandler({
-    apiClient: {
+    apiClient: createTestApiClient({
       attachReportEvidence: async () => {
         throw new Error("case open should not attach evidence");
       },
@@ -234,7 +685,7 @@ test("case open refuses members who are not trusted moderators", async () => {
       createVerificationSession: async () => {
         throw new Error("case open should not create verification");
       },
-    },
+    }),
   });
 
   await handler(
@@ -269,7 +720,7 @@ test("verify allows members to start verification for themselves", async () => {
   const apiCalls: unknown[] = [];
   const replies: unknown[] = [];
   const handler = createInteractionHandler({
-    apiClient: {
+    apiClient: createTestApiClient({
       attachReportEvidence: async () => {
         throw new Error("verify should not attach evidence");
       },
@@ -290,7 +741,7 @@ test("verify allows members to start verification for themselves", async () => {
           },
         };
       },
-    },
+    }),
   });
 
   await handler(
@@ -330,7 +781,7 @@ test("verify allows members to start verification for themselves", async () => {
 test("verify refuses members who try to start verification for someone else without trusted moderator permission", async () => {
   const replies: unknown[] = [];
   const handler = createInteractionHandler({
-    apiClient: {
+    apiClient: createTestApiClient({
       attachReportEvidence: async () => {
         throw new Error("verify should not attach evidence");
       },
@@ -340,7 +791,7 @@ test("verify refuses members who try to start verification for someone else with
       createVerificationSession: async () => {
         throw new Error("verify should be blocked before API handoff");
       },
-    },
+    }),
   });
 
   await handler(
@@ -370,7 +821,7 @@ test("verify refuses members who try to start verification for someone else with
 test("message context intake opens a report and then attaches canonical Discord message evidence", async () => {
   const apiCalls: unknown[] = [];
   const handler = createInteractionHandler({
-    apiClient: {
+    apiClient: createTestApiClient({
       attachReportEvidence: async (guildId, reportId, body) => {
         apiCalls.push({ body, guildId, kind: "evidence", reportId });
 
@@ -395,7 +846,7 @@ test("message context intake opens a report and then attaches canonical Discord 
       createVerificationSession: async () => {
         throw new Error("message context report should not create verification");
       },
-    },
+    }),
   });
 
   await handler({

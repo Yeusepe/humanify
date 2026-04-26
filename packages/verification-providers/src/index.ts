@@ -673,11 +673,13 @@ export const verificationProviderSupportsClaims = verificationOptionSupportsClai
 export function resolveVerificationProviderConfiguration(input: {
   availableCatalog?: VerificationProviderCatalog;
   defaultProviderId?: string;
+  defaultReusableProofBackendId?: string;
   enabledProviderIds?: readonly string[];
 } = {}): VerificationProviderConfiguration {
   const optionConfiguration = resolveVerificationOptionConfiguration({
     availableCatalog: input.availableCatalog,
     defaultOptionId: input.defaultProviderId,
+    defaultReusableProofBackendId: input.defaultReusableProofBackendId,
     enabledOptionIds: input.enabledProviderIds,
   });
 
