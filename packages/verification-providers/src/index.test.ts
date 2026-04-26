@@ -15,11 +15,13 @@ import {
   createVerificationProviderCatalog,
   defineVerificationProvider,
   getDefaultHumanifyIdClaimBundle,
+  getHumanifyIdClaimBundles,
   getSupportedHumanifyClaimIds,
   humanifyVerificationProviderCatalog,
   parseVerificationProviderSelection,
   resolveVerificationProviderConfiguration,
   resolveVerificationProviderCatalog,
+  verificationProviderSupportsClaims,
 } from "./index";
 
 test("provider catalogs sort by rank and can be filtered without touching app code", () => {
@@ -74,13 +76,28 @@ test("the shared provider template rejects unsupported claims and duplicate prov
 
 test("default Humanify ID bundle stays age + nationality and stores proof receipts instead of raw identity data", () => {
   const bundle = getDefaultHumanifyIdClaimBundle();
+  const bundles = getHumanifyIdClaimBundles();
   const storageContract = bundle.operatorStorageGuarantees.join(" ");
 
   expect(getSupportedHumanifyClaimIds()).toEqual(["age_over_18", "nationality"]);
+  expect(bundles.map((entry) => entry.bundleId)).toEqual([
+    "humanify_id_age_over_18_v1",
+    "humanify_id_nationality_v1",
+    "humanify_id_age_and_nationality_v1",
+  ]);
   expect(bundle.claims).toEqual(["age_over_18", "nationality"]);
   expect(storageContract).toContain("nullifiers");
-  expect(storageContract).toContain("should not store document images");
+  expect(storageContract).toContain("does not store document images");
   expect(storageContract).toContain("birthdates");
+});
+
+test("provider capability checks stay generic and claim-based", () => {
+  expect(
+    verificationProviderSupportsClaims(humanifyVerificationProviderCatalog.require("self"), ["age_over_18", "nationality"]),
+  ).toBe(true);
+  expect(
+    verificationProviderSupportsClaims(humanifyVerificationProviderCatalog.require("didit"), ["age_over_18"]),
+  ).toBe(true);
 });
 
 test("server-owner provider configuration resolves enabled and default providers from the shared catalog", () => {

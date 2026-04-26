@@ -91,7 +91,7 @@ sequenceDiagram
 
 ## 4. Provider abstraction
 
-The product plan's provider-capability abstraction should be implemented as Bun-owned orchestration around provider adapters.
+The product plan's provider-capability abstraction is implemented as Bun-owned orchestration around provider adapters.
 
 | Capability | Meaning | Example policy use |
 | --- | --- | --- |
@@ -146,7 +146,7 @@ That keeps the main apps open for extension and closed for modification: the cat
 
 ## 4.1 Provider choice at verification time
 
-Humanify should let the user choose the verification path **during verification**, with the verifier UI explaining both privacy and coverage tradeoffs in user language:
+Humanify lets the user choose the verification path **during verification**, with the verifier UI explaining both privacy and coverage tradeoffs in user language:
 
 | Provider | Best use | Privacy profile | Practical limitation |
 | --- | --- | --- | --- |
@@ -156,38 +156,46 @@ Humanify should let the user choose the verification path **during verification*
 
 Important implementation rule: **Self.xyz is the privacy-first default**, **World ID is the uniqueness-oriented option**, and **Didit is the speed/coverage fallback**.
 
-The server owner controls which of these choices are actually available in their guild. The verifier UI should only render the enabled subset and clearly mark the guild default without hiding the other enabled options.
+The server owner controls which of these choices are actually available in their guild. The verifier UI renders only the enabled subset and clearly marks the guild default without hiding the other enabled options.
 
 ### Provider-specific guidance
 
 1. **Self.xyz**
    - best fit for the first reusable Humanify ID because it supports selective disclosure for age and nationality
-   - Humanify should verify proofs and store only proof receipts / nullifiers / issuer references, not the underlying document data
+   - Humanify verifies proofs and stores only proof receipts / nullifiers / issuer references, not the underlying document data
 2. **World ID**
    - best fit for proof-of-human / uniqueness, especially where unlinkable nullifiers matter
-   - should remain advisory and optional until document/credential coverage for the target user base is acceptable
+   - remains advisory and optional until document/credential coverage for the target user base is acceptable
 3. **Didit**
    - useful when the user needs the fastest web flow or broader document support
    - privacy limitation must be shown to the user explicitly: the provider processes the document data to create the verification result
-   - Humanify should follow a **process-and-purge** model:
+   - Humanify follows a **process-and-purge** model:
      - receive the normalized result
      - store only the minimum attestation needed for policy and audit
      - call Didit's delete-session API (`DELETE /v3/session/{session_id}/`) immediately after normalization
 
 ## 4.2 Humanify ID: reusable selective-disclosure identity
 
-Humanify ID should be a **user-held reusable credential**, not a server-side identity warehouse.
+Humanify ID is a **user-held reusable credential**, not a server-side identity warehouse.
 
-For the first implementation, the default bundle should be:
+At verification time, the verifier presents these consumer-facing proof choices:
+
+| Verifier choice | Claims carried | Best for |
+| --- | --- | --- |
+| Only prove age over 18 | `age_over_18` | age-gated communities that do not need nationality |
+| Only prove nationality | `nationality` | communities that only need country or citizenship eligibility |
+| Prove age + nationality | `age_over_18`, `nationality` | communities that need both checks or users who want one reusable combined proof |
+
+For the first implementation, the default bundle remains:
 
 - `age_over_18`
 - `nationality`
 
-`unique_person` should remain a later extension, most naturally backed by World ID or another proof-of-personhood source.
+`unique_person` remains a later extension, most naturally backed by World ID or another proof-of-personhood source.
 
 ### Storage model
 
-Humanify should not store:
+Humanify does not store:
 
 - raw document images
 - passport or national ID numbers
@@ -195,7 +203,7 @@ Humanify should not store:
 - the full provider payload
 - the full reusable credential payload
 
-Humanify should store only:
+Humanify stores only:
 
 - proof receipt metadata
 - issuer/provider reference
@@ -213,9 +221,10 @@ The first real verifier path now makes these boundaries concrete without inventi
 1. `POST /guilds/:guildId/verification/sessions` issues a signed verifier challenge token that carries `sessionId`, `challengeId`, `guildId`, `userId`, and required capabilities.
 2. `GET /verification/sessions/:sessionId?token=...` verifies that signed token and derives the initial `challenge_issued` session view honestly from Bun-owned state, even before canonical persistence exists.
 3. The verifier UI now renders the shared provider catalog from `packages\verification-providers`, so provider descriptions, deletion policies, and server handoff notes come from provider modules rather than app-local conditionals.
-4. `POST /verification/challenges/:challengeId/complete` re-verifies the same signed token against `challengeId`, `sessionId`, `guildId`, and `userId`, validates the selected provider against the shared registry, and carries the chosen provider plus the requested Humanify ID claim predicates (`age_over_18`, `nationality`) through a provider-neutral server handoff boundary.
-5. Provider handoffs remain disabled until a concrete provider doc and signature/proof contract exist, so release stays blocked instead of pretending a provider passed.
-6. The verifier app now forwards `x-request-id` and W3C `traceparent` on its session fetch and challenge-complete requests so verification troubleshooting lines up with the same correlation model as Bun and Rust services.
+4. The verifier UI lets the person verifying choose both the proof bundle and the provider, using consumer-facing wording rather than operator language.
+5. `POST /verification/challenges/:challengeId/complete` re-verifies the same signed token against `challengeId`, `sessionId`, `guildId`, and `userId`, validates the selected provider against the shared registry, and carries the chosen provider plus the requested Humanify ID claim predicates through a provider-neutral server handoff boundary.
+6. Provider handoffs remain disabled until a concrete provider doc and signature/proof contract exist, so release stays blocked instead of pretending a provider passed.
+7. The verifier app now forwards `x-request-id` and W3C `traceparent` on its session fetch and challenge-complete requests so verification troubleshooting lines up with the same correlation model as Bun and Rust services.
 
 This means the verifier app currently relies on a Bun-authored signed link rather than a user-entered Discord short code or completed OAuth account binding. Those richer steps remain explicit follow-on work and must not be faked client-side.
 
@@ -250,4 +259,4 @@ This means the verifier app currently relies on a Bun-authored signed link rathe
 - `packages\auth` must implement Discord OAuth2 authorize URL building, signed state/CSRF handling, verifier challenge tokens, and session cookie helpers to match this document
 - bot challenge delivery and release receipts must match `docs\discord-bot.md`
 - API callback and release routes must match `docs\api.md`
-- provider-specific docs should be added here before the first real provider integration lands
+- add provider-specific docs here before the first real provider integration lands

@@ -28,7 +28,9 @@ import {
   fetchVerificationSession,
   getDefaultHumanifyIdClaimBundle,
   getDefaultVerificationProviderId,
+  getHumanifyIdClaimBundles,
   getVerificationProvider,
+  getVerificationProviderClaimCompatibility,
   getVerifierApiBaseUrl,
   getVerificationProviderOptions,
   hasVerificationLink,
@@ -51,6 +53,9 @@ function VerificationRoute() {
   const [selectedProvider, setSelectedProvider] = useState<VerificationProviderId>(() =>
     getDefaultVerificationProviderId(providerEnv),
   );
+  const [selectedClaimBundleId, setSelectedClaimBundleId] = useState<string>(() =>
+    getDefaultHumanifyIdClaimBundle().bundleId,
+  );
   const [loadState, setLoadState] = useState<"error" | "idle" | "loading" | "ready">(
     hasVerificationLink(search) ? "loading" : "idle",
   );
@@ -59,11 +64,30 @@ function VerificationRoute() {
 
   const apiBaseUrl = getVerifierApiBaseUrl(providerEnv);
   const providerOptions = useMemo(() => getVerificationProviderOptions(providerEnv), [providerEnv]);
+  const claimBundleOptions = useMemo(() => getHumanifyIdClaimBundles(), []);
   const selectedProviderDefinition = useMemo(
     () => getVerificationProvider(selectedProvider, providerEnv),
     [providerEnv, selectedProvider],
   );
-  const humanifyIdBundle = useMemo(() => getDefaultHumanifyIdClaimBundle(), []);
+  const humanifyIdBundle = useMemo(
+    () =>
+      claimBundleOptions.find((bundle) => bundle.bundleId === selectedClaimBundleId) ?? getDefaultHumanifyIdClaimBundle(),
+    [claimBundleOptions, selectedClaimBundleId],
+  );
+
+  useEffect(() => {
+    const currentProvider = providerOptions.find((provider) => provider.id === selectedProvider);
+    if (currentProvider && getVerificationProviderClaimCompatibility(currentProvider, humanifyIdBundle.claims)) {
+      return;
+    }
+
+    const fallbackProvider = providerOptions.find((provider) =>
+      getVerificationProviderClaimCompatibility(provider, humanifyIdBundle.claims)
+    );
+    if (fallbackProvider) {
+      setSelectedProvider(fallbackProvider.id);
+    }
+  }, [humanifyIdBundle.claims, providerOptions, selectedProvider]);
 
   useEffect(() => {
     let active = true;
@@ -258,14 +282,61 @@ function VerificationRoute() {
             <div className="grid gap-4 xl:grid-cols-[1.3fr_0.9fr]">
               <Card>
                 <Card.Header className="gap-2">
-                  <Card.Title>Verification provider choice</Card.Title>
+                  <Card.Title>Choose your proof</Card.Title>
                   <Card.Description>
-                    Pick the option that best matches what you care about: privacy, coverage, or speed.
+                    Start by picking what you want to prove right now. Use the smallest option that gets you through the server's rules.
+                  </Card.Description>
+                </Card.Header>
+                <Card.Content className="space-y-4 text-sm leading-7 text-muted">
+                  {claimBundleOptions.map((bundle) => {
+                    const current = humanifyIdBundle.bundleId === bundle.bundleId;
+                    return (
+                      <div
+                        className={`rounded-2xl border px-4 py-4 ${current ? "border-foreground/20 bg-content2" : "border-content3"}`}
+                        key={bundle.bundleId}
+                      >
+                        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                          <div className="space-y-2">
+                            <p className="font-semibold text-foreground">{bundle.title}</p>
+                            <p>{bundle.summary}</p>
+                            <p className="text-xs leading-6">
+                              <span className="font-semibold text-foreground">Best for:</span> {bundle.bestFor}
+                            </p>
+                            <div className="flex flex-wrap gap-2">
+                              {bundle.claims.map((claim) => (
+                                <span
+                                  className="rounded-full border border-content3 px-3 py-1 text-xs font-semibold tracking-wide text-foreground uppercase"
+                                  key={claim}
+                                >
+                                  {claim}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                          <Button
+                            onPress={() => setSelectedClaimBundleId(bundle.bundleId)}
+                            variant={current ? "primary" : "outline"}
+                          >
+                            {current ? "Selected" : "Choose this proof"}
+                          </Button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </Card.Content>
+              </Card>
+
+              <Card>
+                <Card.Header className="gap-2">
+                  <Card.Title>Choose how to verify</Card.Title>
+                  <Card.Description>
+                    Now pick the provider that fits your privacy and document situation.
                   </Card.Description>
                 </Card.Header>
                 <Card.Content className="space-y-4 text-sm leading-7 text-muted">
                   {providerOptions.map((provider) => {
                     const current = selectedProvider === provider.id;
+                    const compatible = getVerificationProviderClaimCompatibility(provider, humanifyIdBundle.claims);
                     return (
                       <div
                         className={`rounded-2xl border px-4 py-4 ${current ? "border-foreground/20 bg-content2" : "border-content3"}`}
@@ -277,6 +348,9 @@ function VerificationRoute() {
                               <p className="font-semibold text-foreground">{provider.title}</p>
                               <span className="rounded-full border border-content3 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-foreground">
                                 {provider.privacySummary}
+                              </span>
+                              <span className="rounded-full border border-content3 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-foreground">
+                                {compatible ? "Works with this proof" : "Not available for this proof"}
                               </span>
                             </div>
                             <p>{provider.summary}</p>
@@ -304,6 +378,7 @@ function VerificationRoute() {
                             </ul>
                           </div>
                           <Button
+                            isDisabled={!compatible}
                             onPress={() => setSelectedProvider(provider.id)}
                             variant={current ? "primary" : "outline"}
                           >
@@ -318,14 +393,17 @@ function VerificationRoute() {
 
               <Card>
                 <Card.Header className="gap-2">
-                  <Card.Title>Humanify ID bundle</Card.Title>
+                  <Card.Title>What happens with your proof</Card.Title>
                   <Card.Description>
-                    Default reusable claim set for v1: age + nationality, without warehousing the underlying identity data.
+                    Your selected proof stays focused on the claims you picked instead of exposing the full identity document.
                   </Card.Description>
                 </Card.Header>
                 <Card.Content className="space-y-4 text-sm leading-7 text-muted">
                   <p className="font-medium text-foreground">{humanifyIdBundle.title}</p>
                   <p>{humanifyIdBundle.summary}</p>
+                  <p>
+                    <span className="font-medium text-foreground">Best for:</span> {humanifyIdBundle.bestFor}
+                  </p>
                   <div className="flex flex-wrap gap-2">
                     {humanifyIdBundle.claims.map((claim) => (
                       <span
@@ -337,7 +415,7 @@ function VerificationRoute() {
                     ))}
                   </div>
                   <div>
-                    <p className="font-medium text-foreground">What Humanify should store</p>
+                    <p className="font-medium text-foreground">What Humanify stores</p>
                     <ul className="mt-2 list-disc space-y-1 pl-5">
                       {humanifyIdBundle.operatorStorageGuarantees.map((item) => (
                         <li key={item}>{item}</li>
@@ -369,6 +447,9 @@ function VerificationRoute() {
                     The current implementation uses the Bun-issued verifier link itself as the one-time challenge proof. That
                     keeps the first path honest while Discord short-code delivery and OAuth account binding stay explicit
                     future work.
+                  </p>
+                  <p>
+                    Selected proof: <span className="font-semibold text-foreground">{humanifyIdBundle.title}</span>
                   </p>
                   <p>
                     Selected provider: <span className="font-semibold text-foreground">{selectedProviderDefinition.title}</span>

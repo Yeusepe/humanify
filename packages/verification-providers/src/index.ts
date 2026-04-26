@@ -18,10 +18,12 @@
 import { diditVerificationProvider } from "./providers/didit";
 import { selfVerificationProvider } from "./providers/self";
 import { worldIdVerificationProvider } from "./providers/world-id";
+import { type HumanifyClaimKey } from "./claims";
 
 export {
   getDefaultHumanifyIdClaimBundle,
   getHumanifyClaimDefinitions,
+  getHumanifyIdClaimBundles,
   getSupportedHumanifyClaimIds,
   isHumanifyClaimKey,
   type HumanifyClaimDefinition,
@@ -155,6 +157,14 @@ export function resolveVerificationProviderCatalog(input: { enabledProviderIds?:
   return input.enabledProviderIds?.length
     ? humanifyVerificationProviderCatalog.withEnabled(input.enabledProviderIds)
     : humanifyVerificationProviderCatalog;
+}
+
+export function verificationProviderSupportsClaims(
+  provider: Pick<VerificationProviderDefinition, "supportedClaimKeys">,
+  requestedClaims: readonly HumanifyClaimKey[],
+) {
+  const supportedClaimKeySet = new Set<string>(provider.supportedClaimKeys);
+  return requestedClaims.every((claimKey) => supportedClaimKeySet.has(claimKey));
 }
 
 export function resolveVerificationProviderConfiguration(input: {

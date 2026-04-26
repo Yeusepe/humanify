@@ -23,7 +23,7 @@ export const diditVerificationProvider = defineVerificationProvider({
   ],
   defaultRank: 3,
   deletionPolicy:
-    "Humanify should delete the Didit session via DELETE /v3/session/{session_id}/ immediately after normalizing the verification result.",
+    "Humanify deletes the Didit session via DELETE /v3/session/{session_id}/ immediately after normalizing the verification result.",
   goodFor: "People who want speed and broad document support, even if it is less private.",
   id: "didit",
   integration: {
@@ -38,7 +38,7 @@ export const diditVerificationProvider = defineVerificationProvider({
   supportedClaimKeys: ["age_over_18", "nationality"],
   thingsToKnow: [
     "It is the least private option because the provider processes your document data.",
-    "Humanify should keep only the minimum attestation and delete the Didit session afterward.",
+    "Humanify keeps only the minimum attestation and deletes the Didit session afterward.",
     "It is a practical fallback, not the best base for a private reusable identity.",
   ],
   title: "Didit",

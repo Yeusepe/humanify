@@ -91,6 +91,7 @@ import {
   parseVerificationProviderSelection,
   resolveVerificationProviderConfiguration,
   resolveVerificationProviderCatalog,
+  verificationProviderSupportsClaims,
   type HumanifyClaimKey,
   type VerificationProviderConfiguration,
 } from "@humanify/verification-providers";
@@ -1713,6 +1714,14 @@ export function createApiApp(options: ApiAppOptions = {}) {
         const providerId = requireKnownVerificationProvider(body.providerId, "providerId", verificationProviderCatalog.ids());
         const providerDefinition = verificationProviderCatalog.require(providerId);
         const requestedClaims = requireKnownHumanifyClaims(body.requestedClaims, "requestedClaims", supportedHumanifyClaimIds);
+
+        if (!verificationProviderSupportsClaims(providerDefinition, requestedClaims)) {
+          throw new ApiRouteError(
+            400,
+            "validation_failed",
+            `providerId "${providerId}" does not support the requestedClaims set.`,
+          );
+        }
 
         if (verified.challengeId !== params.challengeId) {
           throw new ApiRouteError(400, "validation_failed", "Challenge token does not match the requested challengeId.");

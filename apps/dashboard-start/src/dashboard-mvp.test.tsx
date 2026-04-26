@@ -24,6 +24,7 @@ import { RouterProvider, createMemoryHistory, createRouter } from "@tanstack/rea
 
 import {
   buildCaseQueryPlan,
+  updateVerificationProviderConfiguration,
 } from "./dashboard-mvp";
 import { routeTree } from "./routeTree.gen";
 
@@ -81,7 +82,33 @@ test("verification route renders lifecycle guidance", async () => {
 
   expect(markup).toContain("Verification state");
   expect(markup).toContain("provider_pending");
+  expect(markup).toContain("Provider access for this server");
+  expect(markup).toContain("Guild default");
   expect(markup).toContain("Release rules");
+});
+
+test("verification provider configuration keeps the default provider enabled", () => {
+  const toggled = updateVerificationProviderConfiguration(
+    {
+      availableProviderIds: ["self", "world_id", "didit"],
+      defaultProviderId: "self",
+      enabledProviderIds: ["self", "world_id", "didit"],
+    },
+    {
+      providerId: "self",
+      type: "toggle-provider",
+    },
+  );
+
+  expect(toggled.enabledProviderIds).toEqual(["world_id", "didit"]);
+  expect(toggled.defaultProviderId).toBe("world_id");
+
+  expect(() =>
+    updateVerificationProviderConfiguration(toggled, {
+      providerId: "self",
+      type: "set-default",
+    }),
+  ).toThrow('Default verification provider "self" must be enabled for the guild.');
 });
 
 test("policy route renders Bun-side action clamps", async () => {

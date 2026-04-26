@@ -44,6 +44,11 @@ import {
 
 import { getHumanifyContractSummary, humanifyActionLadder } from "@humanify/contracts";
 import { ProductShell } from "@humanify/ui";
+import {
+  humanifyVerificationProviderCatalog,
+  resolveVerificationProviderConfiguration,
+  type VerificationProviderConfiguration,
+} from "@humanify/verification-providers";
 
 const contractSummary = getHumanifyContractSummary();
 
@@ -137,6 +142,10 @@ const verificationRows = [
   },
 ] as const;
 
+const verificationProviderRows = humanifyVerificationProviderCatalog.list();
+
+const initialVerificationProviderConfiguration = resolveVerificationProviderConfiguration();
+
 const safetyBoundaries = [
   "Bun authoritative",
   "Rust advisory",
@@ -220,6 +229,40 @@ export function buildCaseQueryPlan(input: CaseQueryInputs): CaseQueryPlan {
     scope: `Guild ${guildId}${subjectUserId ? `, subject ${subjectUserId}` : ""}.`,
     summary: "Queue and case-list reads stay projection-pending, so the MVP shows boundaries instead of synthetic rows.",
   };
+}
+
+export function updateVerificationProviderConfiguration(
+  current: VerificationProviderConfiguration,
+  action:
+    | {
+        type: "set-default";
+        providerId: string;
+      }
+    | {
+        type: "toggle-provider";
+        providerId: string;
+      },
+): VerificationProviderConfiguration {
+  if (action.type === "set-default") {
+    return resolveVerificationProviderConfiguration({
+      defaultProviderId: action.providerId,
+      enabledProviderIds: current.enabledProviderIds,
+    });
+  }
+
+  const isEnabled = current.enabledProviderIds.includes(action.providerId);
+  const nextEnabledProviderIds = isEnabled
+    ? current.enabledProviderIds.filter((providerId) => providerId !== action.providerId)
+    : [...current.enabledProviderIds, action.providerId];
+
+  const nextDefaultProviderId = isEnabled && current.defaultProviderId === action.providerId
+    ? nextEnabledProviderIds[0]
+    : current.defaultProviderId;
+
+  return resolveVerificationProviderConfiguration({
+    defaultProviderId: nextDefaultProviderId,
+    enabledProviderIds: nextEnabledProviderIds,
+  });
 }
 
 function statusTone(status: CaseQueryPlan["readModelStatus"] | (typeof honestReadRows)[number]["readState"]) {
@@ -447,7 +490,7 @@ export function DashboardOverviewPage() {
               <Card.Content className="space-y-3 text-sm leading-7 text-muted">
                 <p>Queue delivery does not prove business completion.</p>
                 <p>Electric sync is for read models only.</p>
-                <p>Operators should see pending states instead of synthetic rows.</p>
+                <p>Operators see pending states instead of synthetic rows.</p>
               </Card.Content>
             </Card>
             <Card variant="secondary">
@@ -616,6 +659,10 @@ export function DashboardCasesPage() {
 }
 
 export function DashboardVerificationPage() {
+  const [providerConfiguration, setProviderConfiguration] = useState<VerificationProviderConfiguration>(
+    initialVerificationProviderConfiguration,
+  );
+
   return (
     <DashboardLayout
       currentPath="/verification"
@@ -631,6 +678,88 @@ export function DashboardVerificationPage() {
           </Alert.Description>
         </Alert.Content>
       </Alert>
+
+      <Card>
+        <Card.Header className="gap-2">
+          <Card.Title>Provider access for this server</Card.Title>
+          <Card.Description>
+            Server owners choose which verification options members can use, then mark one enabled provider as the default suggestion.
+          </Card.Description>
+        </Card.Header>
+        <Card.Content className="space-y-4 text-sm leading-7 text-muted">
+          <p>
+            Members still see plain-language tradeoffs in the verifier. This screen controls which providers are available in this guild.
+          </p>
+          <Table variant="secondary">
+            <Table.ScrollContainer>
+              <Table.Content aria-label="Verification provider configuration" className="min-w-[900px]">
+                <Table.Header>
+                  <Table.Column isRowHeader>Provider</Table.Column>
+                  <Table.Column>Good for</Table.Column>
+                  <Table.Column>Privacy</Table.Column>
+                  <Table.Column>Enabled</Table.Column>
+                  <Table.Column>Default</Table.Column>
+                </Table.Header>
+                <Table.Body>
+                  {verificationProviderRows.map((provider) => {
+                    const enabled = providerConfiguration.enabledProviderIds.includes(provider.id);
+                    const isDefault = providerConfiguration.defaultProviderId === provider.id;
+
+                    return (
+                      <Table.Row key={provider.id}>
+                        <Table.Cell>
+                          <div className="space-y-1">
+                            <p className="font-semibold text-foreground">{provider.title}</p>
+                            <p className="text-xs leading-6">{provider.summary}</p>
+                          </div>
+                        </Table.Cell>
+                        <Table.Cell>{provider.goodFor}</Table.Cell>
+                        <Table.Cell>{provider.privacySummary}</Table.Cell>
+                        <Table.Cell>
+                          <Button
+                            onPress={() =>
+                              setProviderConfiguration((current) =>
+                                updateVerificationProviderConfiguration(current, {
+                                  providerId: provider.id,
+                                  type: "toggle-provider",
+                                }))}
+                            variant={enabled ? "primary" : "secondary"}
+                          >
+                            {enabled ? "Enabled" : "Disabled"}
+                          </Button>
+                        </Table.Cell>
+                        <Table.Cell>
+                          <Button
+                            isDisabled={!enabled}
+                            onPress={() =>
+                              setProviderConfiguration((current) =>
+                                updateVerificationProviderConfiguration(current, {
+                                  providerId: provider.id,
+                                  type: "set-default",
+                                }))}
+                            variant={isDefault ? "primary" : "secondary"}
+                          >
+                            {isDefault ? "Guild default" : "Make default"}
+                          </Button>
+                        </Table.Cell>
+                      </Table.Row>
+                    );
+                  })}
+                </Table.Body>
+              </Table.Content>
+            </Table.ScrollContainer>
+          </Table>
+          <Alert status="warning">
+            <Alert.Indicator />
+            <Alert.Content>
+              <Alert.Title>Didit stays an explicit fallback.</Alert.Title>
+              <Alert.Description>
+                It is fast and supports many IDs, but it is less private because the provider processes the document data. Humanify purges the provider session after normalizing the result.
+              </Alert.Description>
+            </Alert.Content>
+          </Alert>
+        </Card.Content>
+      </Card>
 
       <div className="grid gap-4 md:grid-cols-3">
         {verificationRows.map((row) => (
@@ -707,7 +836,7 @@ export function DashboardPolicyPage() {
       <Alert status="warning">
         <Alert.Indicator />
         <Alert.Content>
-          <Alert.Title>No dashboard control should imply direct execution authority.</Alert.Title>
+          <Alert.Title>No dashboard control implies direct execution authority.</Alert.Title>
           <Alert.Description>
             The API can plan writes and clamp moderation actions today, but this MVP intentionally stops short of presenting live execution controls or fabricated moderation history.
           </Alert.Description>

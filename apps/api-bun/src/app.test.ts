@@ -899,6 +899,58 @@ test("challenge completion carries provider choice and Humanify ID claims throug
   expect(json.data.session.state).toBe("provider_pending");
 });
 
+test("challenge completion accepts a consumer-selected age-only proof bundle", async () => {
+  const app = createTestApp();
+  const createResponse = await app.handle(
+    new Request("http://humanify.local/guilds/guild_123/verification/sessions", {
+      body: JSON.stringify({
+        requiredCapabilities: ["captcha", "age_over_18"],
+        userId: "user_123",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    }),
+  );
+  const created = (await createResponse.json()) as {
+    data: {
+      challengeToken: string;
+      session: {
+        challengeId: string;
+        sessionId: string;
+      };
+    };
+  };
+
+  const response = await app.handle(
+    new Request(`http://humanify.local/verification/challenges/${created.data.session.challengeId}/complete`, {
+      body: JSON.stringify({
+        guildId: "guild_123",
+        providerId: "self",
+        requestedClaims: ["age_over_18"],
+        sessionId: created.data.session.sessionId,
+        token: created.data.challengeToken,
+        userId: "user_123",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    }),
+  );
+  const json = (await response.json()) as {
+    data: {
+      providerBoundary: {
+        requestedClaims: string[];
+      };
+    };
+  };
+
+  expect(response.status).toBe(202);
+  expect(json.data.providerBoundary.requestedClaims).toEqual(["age_over_18"]);
+});
+
 test("verification release stays blocked until server-side provider verification can prove a passed session", async () => {
   const app = createTestApp();
   const createResponse = await app.handle(

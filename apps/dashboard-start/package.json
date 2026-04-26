@@ -16,6 +16,7 @@
     "@heroui/styles": "^3.0.3",
     "@humanify/contracts": "workspace:*",
     "@humanify/ui": "workspace:*",
+    "@humanify/verification-providers": "workspace:*",
     "@tanstack/react-router": "^1.168.24",
     "@tanstack/react-start": "^1.167.49",
     "react": "^19.2.5",

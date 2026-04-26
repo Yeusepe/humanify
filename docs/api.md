@@ -50,7 +50,7 @@ The API is not allowed to turn Rust outputs into enforcement without Bun-side po
 
 ## 3. Route inventory
 
-The exact path names may evolve, but the route groups and ownership below should remain stable.
+The exact path names may evolve, but the route groups and ownership below remain stable.
 
 | Group | Representative routes | Notes |
 | --- | --- | --- |
@@ -62,7 +62,7 @@ The exact path names may evolve, but the route groups and ownership below should
 | Verification | `POST /guilds/:guildId/verification/sessions`, `GET /verification/sessions/:sessionId`, `POST /verification/challenges/:challengeId/complete`, `POST /verification/sessions/:sessionId/release` | detailed flow in `docs\verification.md` |
 | Provider callbacks | `POST /callbacks/discord/interactions`, `POST /callbacks/providers/:providerId` | raw-body verification, replay-safe, Postgres-first writes |
 | Moderation | `POST /guilds/:guildId/moderation/approve`, `POST /guilds/:guildId/moderation/quarantine`, `POST /guilds/:guildId/moderation/timeout`, `POST /guilds/:guildId/moderation/kick`, `POST /guilds/:guildId/moderation/ban` | API clamps action against policy before the bot executes |
-| Read models and audit | `GET /guilds/:guildId/audit`, `GET /guilds/:guildId/risk-queue`, `GET /guilds/:guildId/users/:userId/profile` | should read Postgres/Electric-backed views rather than recomputing |
+| Read models and audit | `GET /guilds/:guildId/audit`, `GET /guilds/:guildId/risk-queue`, `GET /guilds/:guildId/users/:userId/profile` | read Postgres/Electric-backed views rather than recomputing |
 
 ## 4. Request and transaction rules
 
@@ -70,7 +70,7 @@ The exact path names may evolve, but the route groups and ownership below should
 2. **Write Postgres first.** If the request creates or changes business state, the canonical Postgres mutation and any matching outbox row happen before queue publication or long-running follow-up work.
 3. **Attach idempotency at the boundary.** Provider callbacks, repeated moderator actions, report submissions with uploads, and retryable verifier steps must write durable idempotency receipts.
 4. **Emit audit rows inside or immediately after the canonical write.** Do not rely on logs as the only explanation trail.
-5. **Return stable error shapes.** API consumers should receive a request-correlated typed error envelope rather than framework-native text blobs.
+5. **Return stable error shapes.** API consumers receive a request-correlated typed error envelope rather than framework-native text blobs.
 
 Recommended error envelope:
 
@@ -165,7 +165,7 @@ Implementation details made concrete by the current spine:
 - verification routes now keep signed session identity explicit:
   - `POST /guilds/:guildId/verification/sessions` accepts an optional originating `caseId` and signs the verifier challenge with `challengeId`, `sessionId`, `guildId`, and `userId`
   - `GET /verification/sessions/:sessionId?token=...` derives honest `challenge_issued` session context from that signed token while canonical reads are still pending and returns a provider-neutral `providerBoundary`
-  - `POST /verification/challenges/:challengeId/complete` re-checks that the token matches `challengeId`, `sessionId`, `guildId`, and `userId`, validates the selected provider against `@humanify/verification-providers`, and carries the chosen provider plus requested Humanify ID predicates through a generic server handoff boundary (`handoffKind`, `serverEndpointPath`, `serverVerificationNote`)
+  - `POST /verification/challenges/:challengeId/complete` re-checks that the token matches `challengeId`, `sessionId`, `guildId`, and `userId`, validates the selected provider against `@humanify/verification-providers`, and carries the consumer-selected Humanify ID claim bundle through a generic server handoff boundary (`handoffKind`, `serverEndpointPath`, `serverVerificationNote`)
   - `POST /verification/sessions/:sessionId/release` now refuses to invent success and returns `409 conflict` until Humanify verifies the selected provider handoff against canonical state
 - `PUT /guilds/:guildId/verification` now validates guild-level provider configuration against the shared provider catalog:
   - the route accepts a server-owner chosen `enabledProviderIds` list plus an optional `defaultProviderId`
@@ -178,7 +178,7 @@ Implementation details made concrete by the current spine:
 - callback routes remain explicitly unavailable until the shared provider template is backed by real signed-webhook or server-proof verification wiring; the API must not invent provider semantics.
 - `apps\dashboard-start` now consumes this boundary honestly through `/`, `/cases`, `/verification`, and `/policy` screens that surface metadata and pending states instead of fake live moderation rows.
 
-## 9. What later implementation should add here
+## 9. What later implementation adds here
 
 - exact auth/session persistence contract once `packages\auth` grows durable session storage helpers
 - Postgres-backed read-model queries for case detail, user profile, verification-session status, audit, and risk-queue routes

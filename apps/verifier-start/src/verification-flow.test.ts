@@ -20,8 +20,10 @@ import {
   completeVerificationChallenge,
   fetchVerificationSession,
   getDefaultHumanifyIdClaimBundle,
+  getHumanifyIdClaimBundles,
   getDefaultVerificationProviderId,
   getVerifierApiBaseUrl,
+  getVerificationProviderClaimCompatibility,
   getVerificationProviderOptions,
   hasVerificationLink,
   parseVerificationSearch,
@@ -212,12 +214,32 @@ test("provider defaults and enablement come from the shared provider catalog", (
   expect(getDefaultVerificationProviderId({ VITE_HUMANIFY_ENABLED_VERIFICATION_PROVIDERS: "didit" })).toBe("didit");
 });
 
+test("claim bundle options expose consumer-facing choices for what to prove", () => {
+  const bundles = getHumanifyIdClaimBundles();
+
+  expect(bundles.map((bundle) => bundle.title)).toEqual([
+    "Only prove age over 18",
+    "Only prove nationality",
+    "Prove age + nationality",
+  ]);
+  expect(bundles[0]?.claims).toEqual(["age_over_18"]);
+  expect(bundles[1]?.claims).toEqual(["nationality"]);
+  expect(bundles[2]?.claims).toEqual(["age_over_18", "nationality"]);
+});
+
+test("provider compatibility is computed from shared claim support", () => {
+  const provider = getVerificationProviderOptions()[0]!;
+
+  expect(getVerificationProviderClaimCompatibility(provider, ["age_over_18"])).toBe(true);
+  expect(getVerificationProviderClaimCompatibility(provider, ["age_over_18", "nationality"])).toBe(true);
+});
+
 test("default Humanify ID bundle stores predicates and nullifier receipts instead of raw identity data", () => {
   const bundle = getDefaultHumanifyIdClaimBundle();
   const storageContract = bundle.operatorStorageGuarantees.join(" ");
 
   expect(bundle.claims).toEqual(["age_over_18", "nationality"]);
   expect(storageContract).toContain("nullifiers");
-  expect(storageContract).toContain("should not store document images");
+  expect(storageContract).toContain("does not store document images");
   expect(storageContract).toContain("birthdates");
 });

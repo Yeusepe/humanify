@@ -17,8 +17,10 @@
 import { createRequestTelemetryContext, injectRequestTelemetryHeaders } from "@humanify/telemetry";
 import {
   getDefaultHumanifyIdClaimBundle as getSharedDefaultHumanifyIdClaimBundle,
+  getHumanifyIdClaimBundles as getSharedHumanifyIdClaimBundles,
   parseVerificationProviderSelection,
   resolveVerificationProviderCatalog,
+  verificationProviderSupportsClaims,
   type HumanifyClaimKey,
   type HumanifyIdClaimBundle,
   type VerificationProviderDefinition,
@@ -144,6 +146,17 @@ export function getVerificationProvider(
 
 export function getDefaultHumanifyIdClaimBundle(): HumanifyIdClaimBundle {
   return getSharedDefaultHumanifyIdClaimBundle();
+}
+
+export function getHumanifyIdClaimBundles(): HumanifyIdClaimBundle[] {
+  return getSharedHumanifyIdClaimBundles();
+}
+
+export function getVerificationProviderClaimCompatibility(
+  provider: VerificationProviderOption,
+  requestedClaims: readonly HumanifyClaimKey[],
+): boolean {
+  return verificationProviderSupportsClaims(provider, requestedClaims);
 }
 
 export function parseVerificationSearch(search: Record<string, unknown>): VerificationRouteSearch {

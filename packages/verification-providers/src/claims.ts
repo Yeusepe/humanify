@@ -20,7 +20,8 @@ export type HumanifyClaimDefinition = {
 };
 
 export type HumanifyIdClaimBundle = {
-  bundleId: "humanify_id_age_and_nationality_v1";
+  bestFor: string;
+  bundleId: string;
   claims: readonly HumanifyClaimKey[];
   futureExtensions: readonly string[];
   operatorStorageGuarantees: readonly string[];
@@ -46,21 +47,73 @@ export type HumanifyClaimKey = (typeof humanifyClaimDefinitions)[number]["id"];
 const supportedClaimIds = humanifyClaimDefinitions.map((claim) => claim.id) as HumanifyClaimKey[];
 const supportedClaimIdSet = new Set<string>(supportedClaimIds);
 
+const humanifyIdClaimBundles = [
+  {
+    bestFor: "The server only needs an age gate and you want to reveal as little as possible.",
+    bundleId: "humanify_id_age_over_18_v1",
+    claims: ["age_over_18"],
+    futureExtensions: [
+      "age-over-21 as a stricter threshold without disclosing a date of birth",
+      "server-specific age thresholds once issuer and verifier support is wired explicitly",
+    ],
+    operatorStorageGuarantees: [
+      "Humanify stores only proof receipts, nullifiers, issuer references, expiry windows, and claim predicates.",
+      "Humanify does not store document images, birthdates, passport numbers, or the full verifiable credential payload.",
+      "The reusable Humanify ID lives with the user as a holder credential; the server verifies proofs instead of warehousing identity data.",
+    ],
+    summary: "Use the smallest age-only proof when you only need to show that you are 18 or older.",
+    title: "Only prove age over 18",
+  },
+  {
+    bestFor: "The server only needs country eligibility and you do not want to add an age proof.",
+    bundleId: "humanify_id_nationality_v1",
+    claims: ["nationality"],
+    futureExtensions: [
+      "regional eligibility predicates once issuer coverage is documented provider-by-provider",
+      "additional residency-style claims without disclosing the full source credential",
+    ],
+    operatorStorageGuarantees: [
+      "Humanify stores only proof receipts, nullifiers, issuer references, expiry windows, and claim predicates.",
+      "Humanify does not store document images, birthdates, passport numbers, or the full verifiable credential payload.",
+      "The reusable Humanify ID lives with the user as a holder credential; the server verifies proofs instead of warehousing identity data.",
+    ],
+    summary: "Use a nationality-only proof when the community only needs a country or citizenship check.",
+    title: "Only prove nationality",
+  },
+  {
+    bestFor: "The server needs both age and nationality, or you want one reusable proof set that covers both.",
+    bundleId: "humanify_id_age_and_nationality_v1",
+    claims: ["age_over_18", "nationality"],
+    futureExtensions: [
+      "unique_person as a separate proof-of-personhood lane once World ID or equivalent coverage is explicitly wired",
+      "additional predicates like sanctions exclusion or age-over-21 without storing the raw source document",
+    ],
+    operatorStorageGuarantees: [
+      "Humanify stores only proof receipts, nullifiers, issuer references, expiry windows, and claim predicates.",
+      "Humanify does not store document images, birthdates, passport numbers, or the full verifiable credential payload.",
+      "The reusable Humanify ID lives with the user as a holder credential; the server verifies proofs instead of warehousing identity data.",
+    ],
+    summary: "Default v1 bundle: prove age and nationality, but keep the underlying document data out of Humanify storage.",
+    title: "Prove age + nationality",
+  },
+] as const satisfies readonly HumanifyIdClaimBundle[];
+
 const defaultHumanifyIdClaimBundle = {
-  bundleId: "humanify_id_age_and_nationality_v1",
-  claims: ["age_over_18", "nationality"],
-  futureExtensions: [
-    "unique_person as a separate proof-of-personhood lane once World ID or equivalent coverage is explicitly wired",
-    "additional predicates like sanctions exclusion or age-over-21 without storing the raw source document",
-  ],
-  operatorStorageGuarantees: [
-    "Humanify should store only proof receipts, nullifiers, issuer references, expiry windows, and claim predicates.",
-    "Humanify should not store document images, birthdates, passport numbers, or the full verifiable credential payload.",
-    "The reusable Humanify ID should live with the user as a holder credential; the server should verify proofs, not warehouse identity data.",
-  ],
-  summary: "Default v1 bundle: prove age and nationality, but keep the underlying document data out of Humanify storage.",
-  title: "Humanify ID / Age + nationality",
+  ...humanifyIdClaimBundles[2],
 } as const satisfies HumanifyIdClaimBundle;
+
+function cloneClaimBundle(bundle: HumanifyIdClaimBundle): HumanifyIdClaimBundle {
+  return {
+    ...bundle,
+    claims: [...bundle.claims],
+    futureExtensions: [...bundle.futureExtensions],
+    operatorStorageGuarantees: [...bundle.operatorStorageGuarantees],
+  };
+}
+
+export function getHumanifyIdClaimBundles(): HumanifyIdClaimBundle[] {
+  return humanifyIdClaimBundles.map((bundle) => cloneClaimBundle(bundle));
+}
 
 export function getHumanifyClaimDefinitions(): HumanifyClaimDefinition[] {
   return humanifyClaimDefinitions.map((definition) => ({ ...definition }));
@@ -75,10 +128,5 @@ export function isHumanifyClaimKey(value: string): value is HumanifyClaimKey {
 }
 
 export function getDefaultHumanifyIdClaimBundle(): HumanifyIdClaimBundle {
-  return {
-    ...defaultHumanifyIdClaimBundle,
-    claims: [...defaultHumanifyIdClaimBundle.claims],
-    futureExtensions: [...defaultHumanifyIdClaimBundle.futureExtensions],
-    operatorStorageGuarantees: [...defaultHumanifyIdClaimBundle.operatorStorageGuarantees],
-  };
+  return cloneClaimBundle(defaultHumanifyIdClaimBundle);
 }
