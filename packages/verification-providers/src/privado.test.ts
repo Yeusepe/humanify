@@ -18,6 +18,7 @@ import { expect, test } from "bun:test";
 
 import {
   buildPrivadoWalletLaunch,
+  createPrivadoReusableCredentialBridge,
   createPrivadoVerificationPlan,
   normalizePrivadoVerificationResult,
 } from "./privado";
@@ -117,4 +118,55 @@ test("Privado status normalization reduces success to predicates, receipt hash, 
   ]);
   expect(result.evidence.proofReceiptRef).toBe("privado:session:backend_123");
   expect(result.evidence.proofReceiptHash).toContain("sha256:");
+});
+
+test("Privado bridge contracts retain only minimal Didit facts while making issuer dependencies explicit", () => {
+  const bridge = createPrivadoReusableCredentialBridge({
+    bridgeTtlSeconds: 900,
+    now: Date.UTC(2026, 0, 1, 0, 0, 0),
+    source: {
+      guildId: "guild_123",
+      providerSessionId: "didit_session_123",
+      sessionId: "session_123",
+      userId: "user_123",
+    },
+    verifiedDiditFacts: {
+      ageOver18: true,
+      documentIdentityVerified: true,
+      faceVerificationPassed: true,
+      faceVerificationPerformed: true,
+      livenessVerified: true,
+      nationality: "ESP",
+      satisfiedClaims: ["age_over_18", "nationality", "document_identity", "liveness"],
+    },
+  });
+  expect(bridge).toBeDefined();
+
+  expect(bridge!.targetProvider).toBe("privado");
+  expect(bridge!.status).toBe("issuer_handoff_required");
+  expect(bridge!.approvedClaims).toEqual(["age_over_18", "nationality"]);
+  expect(bridge!.inputFacts).toEqual({
+    ageOver18: true,
+    faceVerificationPassed: true,
+    faceVerificationPerformed: true,
+    nationality: "ESP",
+  });
+  expect(bridge!.handoff.requestedClaims).toEqual(["age_over_18", "nationality"]);
+  expect(bridge!.handoff.requiredExternalInputs).toEqual([
+    "holderDid",
+    "issuerDid",
+    "credentialSchema",
+    "issuerSigningKeyRef",
+  ]);
+  expect(bridge!.durableAfterHandoff.retainedFacts).toEqual([
+    "sourceAttestationRef",
+    "approvedClaims",
+    "faceVerificationPerformed",
+    "faceVerificationPassed",
+    "targetProvider",
+    "handoffAuditRef",
+  ]);
+  expect(bridge!.custody.storesRawDiditPayload).toBe(false);
+  expect(bridge!.custody.storesFullReusableCredential).toBe(false);
+  expect(bridge!.custody.storesDocumentImages).toBe(false);
 });

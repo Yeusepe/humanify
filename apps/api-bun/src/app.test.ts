@@ -17,6 +17,7 @@
  */
 
 import { createHmac } from "node:crypto";
+import { readFileSync } from "node:fs";
 
 import { expect, test } from "bun:test";
 
@@ -111,6 +112,7 @@ function createFakeDiditClient(): DiditClient {
         decision: {
           idVerifications: [
             {
+              age: 21,
               nationality: "ESP",
               status: "Approved",
             },
@@ -1188,6 +1190,32 @@ test("didit callbacks verify the signature, reconcile the decision server-side, 
         releaseEligible: boolean;
         status: string;
       };
+      reusableCredentialBridge: {
+        approvedClaims: string[];
+        custody: {
+          storesDocumentImages: boolean;
+          storesFullReusableCredential: boolean;
+          storesRawDiditPayload: boolean;
+        };
+        durableAfterHandoff: {
+          retainedFacts: string[];
+        };
+        handoff: {
+          requestedClaims: string[];
+          targetBackend: string;
+        };
+        inputFacts: {
+          ageOver18?: boolean;
+          faceVerificationPassed: boolean;
+          faceVerificationPerformed: boolean;
+          nationality?: string;
+        };
+        status: string;
+        targetProvider: string;
+        temporaryRetention: {
+          expiresAt: string;
+        };
+      };
       session: {
         state: string;
       };
@@ -1203,8 +1231,65 @@ test("didit callbacks verify the signature, reconcile the decision server-side, 
   expect(webhookJson.data.session.state).toBe("passed");
   expect(webhookJson.data.providerBoundary.releaseEligible).toBe(true);
   expect(webhookJson.data.providerBoundary.status).toBe("provider_webhook_verified");
+  expect(webhookJson.data.reusableCredentialBridge.status).toBe("issuer_handoff_required");
+  expect(webhookJson.data.reusableCredentialBridge.targetProvider).toBe("privado");
+  expect(webhookJson.data.reusableCredentialBridge.approvedClaims).toEqual(["age_over_18", "nationality"]);
+  expect(webhookJson.data.reusableCredentialBridge.inputFacts).toEqual({
+    ageOver18: true,
+    faceVerificationPassed: true,
+    faceVerificationPerformed: true,
+    nationality: "ESP",
+  });
+  expect(webhookJson.data.reusableCredentialBridge.handoff.targetBackend).toBe("privado");
+  expect(webhookJson.data.reusableCredentialBridge.handoff.requestedClaims).toEqual(["age_over_18", "nationality"]);
+  expect(webhookJson.data.reusableCredentialBridge.durableAfterHandoff.retainedFacts).toEqual([
+    "sourceAttestationRef",
+    "approvedClaims",
+    "faceVerificationPerformed",
+    "faceVerificationPassed",
+    "targetProvider",
+    "handoffAuditRef",
+  ]);
+  expect(webhookJson.data.reusableCredentialBridge.custody).toEqual({
+    storesDocumentImages: false,
+    storesFullReusableCredential: false,
+    storesRawDiditPayload: false,
+  });
+  expect(new Date(webhookJson.data.reusableCredentialBridge.temporaryRetention.expiresAt).getTime()).toBeGreaterThan(fixedNow);
   expect(webhookJson.data.verification.faceVerificationPerformed).toBe(true);
   expect(webhookJson.data.verification.faceVerificationPassed).toBe(true);
+
+  const persistedRecord = await verificationSessionsRepository.getSession(created.data.session.sessionId);
+  expect(persistedRecord).toMatchObject({
+    providerStatus: {
+      purge: {
+        attemptedAt: new Date(fixedNow).toISOString(),
+        outcome: "deleted",
+      },
+      requestedClaims: ["age_over_18", "nationality"],
+      selectedProvider: "didit",
+      status: "provider_webhook_verified",
+      verifiedWebhook: {
+        providerStatus: "Approved",
+        timestamp: "1735689600",
+        webhookType: "status.updated",
+        workflowId: testEnv.HUMANIFY_DIDIT_WORKFLOW_ID,
+      },
+      workflowId: testEnv.HUMANIFY_DIDIT_WORKFLOW_ID,
+    },
+    resultSummary: {
+      authoritativeSource: "didit_decision_api",
+      faceVerificationPassed: true,
+      faceVerificationPerformed: true,
+      providerReferenceId: "didit_session_123",
+      providerStatus: "Approved",
+      requestedClaims: ["age_over_18", "nationality"],
+      satisfiedClaims: ["document_identity", "age_over_18", "nationality", "liveness"],
+    },
+    state: "passed",
+  });
+  expect(JSON.stringify(persistedRecord)).not.toContain("idVerifications");
+  expect(JSON.stringify(persistedRecord)).not.toContain("livenessChecks");
 
   const statusResponse = await app.handle(
     new Request(
@@ -1216,8 +1301,21 @@ test("didit callbacks verify the signature, reconcile the decision server-side, 
       providerBoundary: {
         releaseEligible: boolean;
       };
+      reusableCredentialBridge: {
+        inputFacts: {
+          nationality?: string;
+        };
+        status: string;
+        targetProvider: string;
+      };
       session: {
         state: string;
+      };
+      verification: {
+        faceVerificationPassed: boolean;
+        faceVerificationPerformed: boolean;
+        providerReferenceId: string;
+        satisfiedClaims: string[];
       };
     };
   };
@@ -1225,6 +1323,88 @@ test("didit callbacks verify the signature, reconcile the decision server-side, 
   expect(statusResponse.status).toBe(200);
   expect(statusJson.data.session.state).toBe("passed");
   expect(statusJson.data.providerBoundary.releaseEligible).toBe(true);
+  expect(statusJson.data.reusableCredentialBridge.status).toBe("issuer_handoff_required");
+  expect(statusJson.data.reusableCredentialBridge.targetProvider).toBe("privado");
+  expect(statusJson.data.reusableCredentialBridge.inputFacts.nationality).toBe("ESP");
+  expect(statusJson.data.verification).toMatchObject({
+    faceVerificationPassed: true,
+    faceVerificationPerformed: true,
+    providerReferenceId: "didit_session_123",
+    satisfiedClaims: ["document_identity", "age_over_18", "nationality", "liveness"],
+  });
+});
+
+test("didit callbacks reject invalid signatures before mutating canonical session state", async () => {
+  const verificationSessionsRepository = createInMemoryVerificationSessionsRepository();
+  const app = createTestApp({
+    verificationSessionsRepository,
+  });
+  const createResponse = await app.handle(
+    new Request("http://humanify.local/guilds/guild_123/verification/sessions", {
+      body: JSON.stringify({
+        requiredCapabilities: ["captcha", "document_identity"],
+        userId: "user_123",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    }),
+  );
+  const created = (await createResponse.json()) as {
+    data: {
+      challengeToken: string;
+      session: {
+        challengeId: string;
+        sessionId: string;
+      };
+    };
+  };
+  await app.handle(
+    new Request(`http://humanify.local/verification/challenges/${created.data.session.challengeId}/complete`, {
+      body: JSON.stringify({
+        guildId: "guild_123",
+        providerId: "didit",
+        requestedClaims: ["age_over_18", "nationality"],
+        sessionId: created.data.session.sessionId,
+        token: created.data.challengeToken,
+        userId: "user_123",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    }),
+  );
+
+  const webhookResponse = await app.handle(
+    new Request("http://humanify.local/callbacks/providers/didit", {
+      body: JSON.stringify({
+        session_id: "didit_session_123",
+        status: "Approved",
+        vendor_data: created.data.session.sessionId,
+      }),
+      headers: {
+        "content-type": "application/json",
+        "x-signature-v2": "not-valid",
+        "x-timestamp": "1735689600",
+      },
+      method: "POST",
+    }),
+  );
+  const webhookJson = await webhookResponse.json() as {
+    errorCode: string;
+  };
+
+  expect(webhookResponse.status).toBe(401);
+  expect(webhookJson.errorCode).toBe("provider_callback_invalid");
+  expect(await verificationSessionsRepository.getSession(created.data.session.sessionId)).toMatchObject({
+    providerStatus: {
+      status: "didit_session_created",
+    },
+    resultSummary: {},
+    state: "provider_pending",
+  });
 });
 
 test("challenge completion accepts a consumer-selected age-only proof bundle", async () => {
@@ -1441,6 +1621,7 @@ test("Privado reusable-proof start returns a wallet launch and signed provider s
 
 test("Privado proof verification reduces backend status to predicates, nullifiers, and minimal receipt refs", async () => {
   let expectedNullifierSessionId = "";
+  const verificationSessionsRepository = createInMemoryVerificationSessionsRepository();
   const app = createTestApp({
     env: privadoEnabledTestEnv,
     privadoVerifierBackendClient: {
@@ -1478,6 +1659,7 @@ test("Privado proof verification reduces backend status to predicates, nullifier
         };
       },
     },
+    verificationSessionsRepository,
   });
   const createResponse = await app.handle(
     new Request("http://humanify.local/guilds/guild_123/verification/sessions", {
@@ -1564,7 +1746,11 @@ test("Privado proof verification reduces backend status to predicates, nullifier
         releaseEligible: boolean;
         status: string;
       };
+      session: {
+        state: string;
+      };
       verification: {
+        nullifierRefs: string[];
         proofReceipt: {
           nullifiers: Array<{
             nullifier: string;
@@ -1572,33 +1758,88 @@ test("Privado proof verification reduces backend status to predicates, nullifier
           proofReceiptHash?: string;
           proofReceiptRef?: string;
         };
+        proofReceiptHash?: string;
+        proofReceiptRef?: string;
         satisfiedClaims: string[];
         status: string;
-      };
-      writePlan: {
-        canonicalMutations: Array<{
-          table: string;
-        }>;
       };
     };
   };
 
-  expect(response.status).toBe(202);
-  expect(json.data.persistence).toBe("planned_not_persisted");
+  expect(response.status).toBe(200);
+  expect(json.data.persistence).toBe("persisted");
   expect(json.data.providerBoundary.releaseEligible).toBe(true);
   expect(json.data.providerBoundary.status).toBe("provider_proof_verified");
+  expect(json.data.session.state).toBe("passed");
   expect(json.data.verification.status).toBe("verified");
   expect(json.data.verification.satisfiedClaims).toEqual(["age_over_18", "nationality"]);
   expect(json.data.verification.proofReceipt.proofReceiptRef).toBe("privado:session:privado_backend_session_123");
   expect(json.data.verification.proofReceipt.proofReceiptHash).toContain("sha256:");
+  expect(json.data.verification.proofReceiptRef).toBe("privado:session:privado_backend_session_123");
+  expect(json.data.verification.proofReceiptHash).toContain("sha256:");
+  expect(json.data.verification.nullifierRefs).toEqual(["nullifier_age", "nullifier_country"]);
   expect(json.data.verification.proofReceipt.nullifiers.map((entry) => entry.nullifier)).toEqual([
     "nullifier_age",
     "nullifier_country",
   ]);
-  expect(json.data.writePlan.canonicalMutations).toEqual(expect.arrayContaining([
-    expect.objectContaining({ table: "verification_sessions" }),
-    expect.objectContaining({ table: "verification_artifacts" }),
-  ]));
+  expect(await verificationSessionsRepository.getSession(created.data.session.sessionId)).toMatchObject({
+    providerStatus: {
+      providerSessionId: "privado_backend_session_123",
+      requestedClaims: ["age_over_18", "nationality"],
+      selectedProvider: "privado",
+      status: "provider_proof_verified",
+    },
+    resultSummary: {
+      authoritativeSource: "privado_verifier_backend_status",
+      nullifierRefs: ["nullifier_age", "nullifier_country"],
+      proofReceiptRef: "privado:session:privado_backend_session_123",
+      providerReferenceId: "privado_backend_session_123",
+      providerStatus: "success",
+      requestedClaims: ["age_over_18", "nationality"],
+      satisfiedClaims: ["age_over_18", "nationality"],
+      trustedIssuerScopes: ["did:issuer:age", "did:issuer:nationality"],
+      verifiablePresentationCount: 2,
+    },
+    state: "passed",
+  });
+
+  const statusResponse = await app.handle(
+    new Request(
+      `http://humanify.local/verification/sessions/${created.data.session.sessionId}?token=${encodeURIComponent(created.data.challengeToken)}`,
+    ),
+  );
+  const statusJson = await statusResponse.json() as {
+    data: {
+      providerBoundary: {
+        handoffKind: string;
+        providerServerEndpoint: string;
+        releaseEligible: boolean;
+        selectedProvider: string;
+        status: string;
+      };
+      session: {
+        state: string;
+      };
+      verification: {
+        nullifierRefs: string[];
+        proofReceiptHash?: string;
+        proofReceiptRef?: string;
+        satisfiedClaims: string[];
+      };
+    };
+  };
+
+  expect(statusResponse.status).toBe(200);
+  expect(statusJson.data.session.state).toBe("passed");
+  expect(statusJson.data.providerBoundary.handoffKind).toBe("server_verified_proof");
+  expect(statusJson.data.providerBoundary.providerServerEndpoint).toBe("/verification/providers/privado/proof");
+  expect(statusJson.data.providerBoundary.releaseEligible).toBe(true);
+  expect(statusJson.data.providerBoundary.selectedProvider).toBe("privado");
+  expect(statusJson.data.providerBoundary.status).toBe("provider_proof_verified");
+  expect(statusJson.data.verification.nullifierRefs).toEqual(["nullifier_age", "nullifier_country"]);
+  expect(statusJson.data.verification.proofReceiptRef).toBe("privado:session:privado_backend_session_123");
+  expect(statusJson.data.verification.proofReceiptHash).toContain("sha256:");
+  expect(statusJson.data.verification.satisfiedClaims).toEqual(["age_over_18", "nationality"]);
 });
 
 test("verification release stays blocked until server-side provider verification can prove a passed session", async () => {
@@ -1705,4 +1946,19 @@ test("contracts summary route exposes the shared schema metadata", async () => {
   expect(response.status).toBe(200);
   expect(json.contractVersion).toBe(humanifyContractVersion);
   expect(json.schemaPath).toBe("docs\\contracts\\humanify-contracts.schema.json");
+});
+
+test("api main file keeps provider-specific branching inside dedicated runtimes", () => {
+  const source = readFileSync(new URL("./app.ts", import.meta.url), "utf8");
+
+  expect(source).not.toContain('providerId === "didit"');
+  expect(source).not.toContain('providerId === "privado"');
+  expect(source).not.toContain('providerId !== "privado"');
+  expect(source).not.toContain('selectedProvider === "didit"');
+  expect(source).not.toContain('selectedProvider === "privado"');
+  expect(source).not.toContain('params.providerId !== "didit"');
+  expect(source).not.toContain("buildPrivadoWalletLaunch");
+  expect(source).not.toContain("createPrivadoReusableCredentialBridge");
+  expect(source).not.toContain("createPrivadoVerificationPlan");
+  expect(source).not.toContain("normalizePrivadoVerificationResult");
 });

@@ -765,9 +765,35 @@ export function createInMemoryVerificationSessionsRepository(): VerificationSess
         ...current.providerStatus,
         purge: input.purge,
         requestedClaims: input.requestedClaims ?? current.providerStatus.requestedClaims ?? [],
+        reusableCredentialBridge: input.reusableCredentialBridge?.summary,
         selectedProvider: "didit",
         status: input.state === "passed" ? "provider_webhook_verified" : "provider_webhook_recorded",
         verifiedWebhook: input.webhook,
+      };
+      current.resultSummary = {
+        ...input.resultSummary,
+      };
+      current.state = input.state;
+      sessions.set(input.sessionId, current);
+      return await this.getSession(input.sessionId);
+    },
+
+    async recordReusableProofResult(input) {
+      const current = sessions.get(input.sessionId);
+      if (!current) {
+        return undefined;
+      }
+
+      current.providerStatus = {
+        ...current.providerStatus,
+        providerSessionId: input.providerSessionId,
+        requestedClaims: [...input.requestedClaims],
+        selectedProvider: input.providerId,
+        status: input.state === "passed"
+          ? "provider_proof_verified"
+          : input.state === "failed"
+            ? "provider_proof_failed"
+            : "pending_provider_verification",
       };
       current.resultSummary = {
         ...input.resultSummary,

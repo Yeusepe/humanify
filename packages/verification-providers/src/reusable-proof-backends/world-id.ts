@@ -14,7 +14,7 @@
 
 import { defineVerificationStrategy } from "../template";
 
-export const worldIdVerificationProvider = defineVerificationStrategy({
+export const worldIdReusableProofBackendStrategy = defineVerificationStrategy({
   benefits: [
     "Strong proof-of-personhood option without handing over a full identity document.",
     "Designed around privacy-preserving nullifiers so uniqueness checks are harder to link together.",

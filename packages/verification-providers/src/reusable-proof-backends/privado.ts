@@ -16,7 +16,7 @@
 
 import { defineVerificationStrategy } from "../template";
 
-export const privadoVerificationProvider = defineVerificationStrategy({
+export const privadoReusableProofBackendStrategy = defineVerificationStrategy({
   benefits: [
     "Primary reusable-proof backend for age and nationality claims in the current Humanify architecture.",
     "Turns verifier requests into wallet-friendly universal links or QR flows instead of forcing fresh document capture.",

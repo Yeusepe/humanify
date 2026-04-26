@@ -1,5 +1,5 @@
 /**
- * Purpose: Registers the Didit capture-provider strategy manifest behind the shared strategy template.
+ * Purpose: Registers the Didit first-time capture-flow strategy manifest behind the shared strategy template.
  * Governing docs:
  * - AGENTS.md
  * - Implementation Plan.txt
@@ -15,7 +15,7 @@
 
 import { defineVerificationStrategy } from "../template";
 
-export const diditVerificationProvider = defineVerificationStrategy({
+export const diditCaptureFlowStrategy = defineVerificationStrategy({
   benefits: [
     "Default first-time capture lane for users who need a fresh browser-based document flow.",
     "Supports the broadest range of common IDs and countries.",
@@ -40,7 +40,7 @@ export const diditVerificationProvider = defineVerificationStrategy({
   thingsToKnow: [
     "Browser completion is only a UX step; Humanify still waits for a verified server receipt before release stays possible.",
     "Humanify keeps only normalized attestation facts and deletes the Didit session afterward.",
-    "Didit is a capture provider, not Humanify's reusable-proof backend.",
+    "Didit is a capture flow, not Humanify's reusable-proof backend.",
   ],
   title: "Didit",
   whatYouNeed: "A supported government ID or other document that Didit can verify in its hosted browser flow.",

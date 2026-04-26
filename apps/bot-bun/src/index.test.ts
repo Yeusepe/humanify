@@ -18,9 +18,9 @@
 
 import { expect, test } from "bun:test";
 
-import { MessageFlags } from "discord.js";
+import { GatewayIntentBits, MessageFlags } from "discord.js";
 
-import { parseComponentCustomId } from "@humanify/discord-core";
+import { createBotGatewayIntents, parseComponentCustomId } from "@humanify/discord-core";
 
 import {
   createBotApiClient,
@@ -263,4 +263,14 @@ test("bot API client propagates request and trace headers to the Bun API", async
   expect(requests).toHaveLength(1);
   expect(requests[0]?.headers.get("x-request-id")).toBeTruthy();
   expect(requests[0]?.headers.get("traceparent")).toBeTruthy();
+});
+
+test("default bot runtime keeps automatic message-content bot scoring disabled", () => {
+  const defaultIntents = createBotGatewayIntents();
+  const messageSignalIntents = createBotGatewayIntents({ includeMessageSignals: true });
+
+  expect(defaultIntents).not.toContain(GatewayIntentBits.GuildMessages);
+  expect(defaultIntents).not.toContain(GatewayIntentBits.MessageContent);
+  expect(messageSignalIntents).toContain(GatewayIntentBits.GuildMessages);
+  expect(messageSignalIntents).toContain(GatewayIntentBits.MessageContent);
 });

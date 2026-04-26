@@ -24,7 +24,7 @@ import { RouterProvider, createMemoryHistory, createRouter } from "@tanstack/rea
 
 import {
   buildCaseQueryPlan,
-  updateVerificationProviderConfiguration,
+  updateVerificationOptionConfiguration,
 } from "./dashboard-mvp";
 import { routeTree } from "./routeTree.gen";
 
@@ -81,47 +81,57 @@ test("verification route renders lifecycle guidance", async () => {
   const markup = await renderRoute("/verification");
 
   expect(markup).toContain("Verification state");
-  expect(markup).toContain("provider_pending");
-  expect(markup).toContain("Provider access for this server");
-  expect(markup).toContain("Guild default");
+  expect(markup).toContain("First-time capture flows");
+  expect(markup).toContain("Reusable proof backends");
+  expect(markup).toContain("Required proof bundles");
+  expect(markup).toContain("Face verification policy");
+  expect(markup).toContain("Default reusable proof");
   expect(markup).toContain("Release rules");
 });
 
-test("verification provider configuration keeps the default provider enabled", () => {
-  const toggled = updateVerificationProviderConfiguration(
+test("verification option configuration keeps the default capture flow enabled", () => {
+  const toggled = updateVerificationOptionConfiguration(
     {
+      availableOptionIds: ["didit", "privado", "self", "world_id"],
       availablePipelineIds: [
         "humanify_didit_capture_v1",
         "humanify_privado_reusable_v1",
         "humanify_self_reusable_v1",
         "humanify_world_id_uniqueness_v1",
       ],
-      availableProviderIds: ["didit", "privado", "self", "world_id"],
-      defaultProviderId: "didit",
+      defaultOptionId: "didit",
       enabledPipelineIds: [
         "humanify_didit_capture_v1",
         "humanify_privado_reusable_v1",
         "humanify_self_reusable_v1",
         "humanify_world_id_uniqueness_v1",
       ],
-      enabledProviderIds: ["didit", "privado", "self", "world_id"],
+      enabledOptionIds: ["didit", "privado", "self", "world_id"],
       policyConsumerId: "humanify",
     },
     {
-      providerId: "self",
-      type: "toggle-provider",
+      optionId: "self",
+      type: "toggle-option",
     },
   );
 
-  expect(toggled.enabledProviderIds).toEqual(["didit", "privado", "world_id"]);
-  expect(toggled.defaultProviderId).toBe("didit");
+  expect(toggled.enabledOptionIds).toEqual(["didit", "privado", "world_id"]);
+  expect(toggled.defaultOptionId).toBe("didit");
 
   expect(() =>
-    updateVerificationProviderConfiguration(toggled, {
-      providerId: "self",
+    updateVerificationOptionConfiguration(toggled, {
+      optionId: "self",
       type: "set-default",
     }),
-  ).toThrow('Unknown verification strategy "self".');
+  ).toThrow('Unknown verification option "self".');
+
+  const reusableDefault = updateVerificationOptionConfiguration(toggled, {
+    optionId: "world_id",
+    type: "set-default-reusable",
+  });
+
+  expect(reusableDefault.defaultOptionId).toBe("didit");
+  expect(reusableDefault.defaultReusableProofBackendId).toBe("world_id");
 });
 
 test("policy route renders Bun-side action clamps", async () => {

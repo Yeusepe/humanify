@@ -17,11 +17,18 @@ import {
   getDefaultVerificationClaimBundle,
   getVerificationClaimBundles,
   getSupportedVerificationClaimIds,
+  humanifyVerificationOptionCatalog,
   humanifyVerificationStrategyCatalog,
   humanifyVerificationStrategyPipelineCatalog,
+  parseVerificationOptionSelection,
   parseVerificationStrategySelection,
+  registeredVerificationCaptureFlowStrategies,
+  registeredVerificationPolicyConsumerStrategies,
+  registeredVerificationReusableProofBackendStrategies,
+  resolveVerificationOptionConfiguration,
   resolveVerificationStrategyCatalog,
   resolveVerificationStrategyConfiguration,
+  verificationOptionSupportsClaims,
   verificationStrategySupportsClaims,
 } from "./index";
 
@@ -45,6 +52,21 @@ test("strategy selection parsing trims, deduplicates, and ignores blanks", () =>
     "world_id",
   ]);
   expect(parseVerificationStrategySelection("   ")).toBeUndefined();
+  expect(parseVerificationOptionSelection(" didit, privado , didit ,, world_id ")).toEqual([
+    "didit",
+    "privado",
+    "world_id",
+  ]);
+});
+
+test("role-split manifests keep capture flows, reusable backends, and policy consumers separate", () => {
+  expect(registeredVerificationCaptureFlowStrategies.map((strategy) => strategy.id)).toEqual(["didit"]);
+  expect(registeredVerificationReusableProofBackendStrategies.map((strategy) => strategy.id)).toEqual([
+    "privado",
+    "self",
+    "world_id",
+  ]);
+  expect(registeredVerificationPolicyConsumerStrategies.map((strategy) => strategy.id)).toEqual(["humanify"]);
 });
 
 test("the shared strategy template rejects unsupported claims and duplicate strategy ids", () => {
@@ -118,6 +140,9 @@ test("strategy capability checks stay generic and role-based", () => {
   expect(
     verificationStrategySupportsClaims(humanifyVerificationStrategyCatalog.require("world_id"), ["age_over_18"]),
   ).toBe(false);
+  expect(
+    verificationOptionSupportsClaims(humanifyVerificationOptionCatalog.require("privado"), ["age_over_18"]),
+  ).toBe(true);
 });
 
 test("pipeline catalogs describe first-time capture, reusable proof, and uniqueness lanes against the same policy consumer", () => {
@@ -166,4 +191,32 @@ test("strategy configuration resolves enabled strategies, role defaults, and ena
       enabledStrategyIds: [],
     }),
   ).toThrow("At least one verification strategy must remain enabled for the guild.");
+});
+
+test("option configuration stays aligned with the strategy catalog without treating capture flows as reusable backends", () => {
+  expect(
+    resolveVerificationOptionConfiguration({
+      enabledOptionIds: ["didit", "privado"],
+    }),
+  ).toEqual({
+    availableOptionIds: ["didit", "privado", "self", "world_id"],
+    availablePipelineIds: [
+      "humanify_didit_capture_v1",
+      "humanify_privado_reusable_v1",
+      "humanify_self_reusable_v1",
+      "humanify_world_id_uniqueness_v1",
+    ],
+    defaultOptionId: "didit",
+    defaultReusableProofBackendId: "privado",
+    enabledOptionIds: ["didit", "privado"],
+    enabledPipelineIds: ["humanify_didit_capture_v1", "humanify_privado_reusable_v1"],
+    policyConsumerId: "humanify",
+  });
+
+  expect(
+    resolveVerificationOptionConfiguration({
+      defaultReusableProofBackendId: "world_id",
+      enabledOptionIds: ["didit", "privado", "world_id"],
+    }).defaultReusableProofBackendId,
+  ).toBe("world_id");
 });

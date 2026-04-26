@@ -97,6 +97,7 @@ import {
 } from "@humanify/telemetry";
 import {
   buildPrivadoWalletLaunch,
+  createPrivadoReusableCredentialBridge,
   createPrivadoVerificationPlan,
   getSupportedHumanifyClaimIds,
   isHumanifyClaimKey,
@@ -320,25 +321,48 @@ function buildVerificationSessionFromRecord(record: VerificationSessionRecord) {
 function buildProviderBoundaryFromRecord(record: VerificationSessionRecord) {
   const status = record.providerStatus as {
     launch?: Record<string, unknown>;
+    providerSessionId?: string;
     requestedClaims?: string[];
     selectedProvider?: string;
     status?: string;
   };
+  const selectedProvider = status.selectedProvider;
+  const isDidit = selectedProvider === "didit";
+  const isPrivado = selectedProvider === "privado";
 
   return {
-    handoffKind: status.selectedProvider === "didit" ? "signed_webhook" : undefined,
+    handoffKind: isDidit ? "signed_webhook" : isPrivado ? "server_verified_proof" : undefined,
     launch: status.launch,
-    nextStep: record.state === "passed" ? "release_available" : status.selectedProvider ? "provider_verification_required" : "complete_challenge",
-    providerFlowConfigured: Boolean(status.launch),
-    providerServerEndpoint: status.selectedProvider === "didit" ? "/callbacks/providers/didit" : undefined,
+    nextStep: record.state === "passed" ? "release_available" : selectedProvider ? "provider_verification_required" : "complete_challenge",
+    providerFlowConfigured: Boolean(status.launch) || Boolean(selectedProvider),
+    providerServerEndpoint: isDidit
+      ? "/callbacks/providers/didit"
+      : isPrivado
+        ? "/verification/providers/privado/proof"
+        : undefined,
+    providerSessionId: status.providerSessionId,
     releaseEligible: record.state === "passed",
     requestedClaims: status.requestedClaims,
-    selectedProvider: status.selectedProvider,
-    serverVerificationNote: status.selectedProvider === "didit"
+    selectedProvider,
+    serverVerificationNote: isDidit
       ? "Humanify only trusts the Didit result after a signed webhook triggers a server-side decision reconciliation."
+      : isPrivado
+        ? "Humanify only trusts the Privado result after a server-side proof status read reduces it to minimal receipts, nullifiers, and satisfied predicates."
       : undefined,
     status: status.status ?? "challenge_link_verified",
   };
+}
+
+function readReusableCredentialBridgeFromRecord(record: VerificationSessionRecord) {
+  const bridge = (record.providerStatus as {
+    reusableCredentialBridge?: Record<string, unknown>;
+  }).reusableCredentialBridge;
+
+  return bridge && typeof bridge === "object" ? bridge : undefined;
+}
+
+function readVerificationSummaryFromRecord(record: VerificationSessionRecord) {
+  return Object.keys(record.resultSummary).length > 0 ? record.resultSummary : undefined;
 }
 
 function readDiditDecisionArray(decision: Record<string, unknown>, key: string) {
@@ -374,16 +398,20 @@ function normalizeDiditDecision(input: {
   const satisfiedClaims: string[] = [];
   const faceVerificationPerformed = livenessChecks.length > 0;
   const faceVerificationPassed = approvedLivenessChecks.length > 0;
+  const primaryIdVerification = approvedIdVerifications[0];
+  const nationality = typeof primaryIdVerification?.nationality === "string" && primaryIdVerification.nationality.trim().length > 0
+    ? primaryIdVerification.nationality.trim()
+    : undefined;
+  const ageValue = Number(primaryIdVerification?.age);
+  const ageOver18 = Number.isFinite(ageValue) && ageValue >= 18;
 
   if (approvedIdVerifications.length > 0) {
     satisfiedClaims.push("document_identity");
-    const primaryIdVerification = approvedIdVerifications[0]!;
-    const ageValue = Number(primaryIdVerification.age);
-    if (Number.isFinite(ageValue) && ageValue >= 18) {
+    if (ageOver18) {
       satisfiedClaims.push("age_over_18");
     }
 
-    if (typeof primaryIdVerification.nationality === "string" && primaryIdVerification.nationality.trim().length > 0) {
+    if (nationality) {
       satisfiedClaims.push("nationality");
     }
   }
@@ -405,6 +433,15 @@ function normalizeDiditDecision(input: {
             : "provider_pending";
 
   return {
+    bridgeFacts: {
+      ageOver18,
+      documentIdentityVerified: approvedIdVerifications.length > 0,
+      faceVerificationPassed,
+      faceVerificationPerformed,
+      livenessVerified: approvedLivenessChecks.length > 0,
+      nationality,
+      satisfiedClaims: Array.from(new Set(satisfiedClaims)) as HumanifyClaimKey[],
+    },
     resultSummary: {
       authoritativeSource: "didit_decision_api",
       faceVerificationPassed,
@@ -2271,7 +2308,9 @@ export function createApiApp(options: ApiAppOptions = {}) {
           return buildEnvelope(requestContext.requestId, {
             providerBoundary: buildProviderBoundaryFromRecord(persistedSession),
             persistence: "persisted",
+            reusableCredentialBridge: readReusableCredentialBridgeFromRecord(persistedSession),
             session: buildVerificationSessionFromRecord(persistedSession),
+            verification: readVerificationSummaryFromRecord(persistedSession),
           });
         }
 
@@ -2294,7 +2333,7 @@ export function createApiApp(options: ApiAppOptions = {}) {
     )
     .post(
       "/verification/providers/:providerId/proof",
-      async ({ body, params, request, requestContext, set }) => {
+      async ({ body, params, requestContext, set }) => {
         const verifiedSession = verifyReusableProofSessionToken(body.providerSessionToken, sessionConfig.sessionSecret, now());
         const providerId = requireKnownVerificationProvider(params.providerId, "providerId", verificationProviderCatalog.ids());
         const providerDefinition = verificationProviderCatalog.require(providerId);
@@ -2335,93 +2374,56 @@ export function createApiApp(options: ApiAppOptions = {}) {
           status: providerStatus,
           trustedIssuers: privadoVerifierConfig.trustedIssuers,
         });
+        const resultSummary = {
+          authoritativeSource: "privado_verifier_backend_status",
+          message: normalizedResult.message,
+          nullifierRefs: normalizedResult.evidence.nullifiers.map((entry) => entry.nullifier),
+          proofReceiptHash: normalizedResult.evidence.proofReceiptHash,
+          proofReceiptRef: normalizedResult.evidence.proofReceiptRef,
+          providerReferenceId: verifiedSession.providerSessionId,
+          providerStatus: providerStatus.status,
+          requestedClaims,
+          satisfiedClaims: normalizedResult.satisfiedClaims,
+          trustedIssuerScopes: normalizedResult.evidence.trustedIssuerScopes,
+          verifiablePresentationCount: normalizedResult.evidence.verifiablePresentationCount,
+        };
+        const updatedSession = await verificationSessionsRepository.recordReusableProofResult({
+          providerId,
+          providerSessionId: verifiedSession.providerSessionId,
+          requestedClaims,
+          resultSummary,
+          sessionId: verifiedSession.sessionId,
+          state: normalizedResult.status === "verified"
+            ? "passed"
+            : normalizedResult.status === "failed"
+              ? "failed"
+              : "provider_pending",
+        });
+        if (!updatedSession) {
+          throw new ApiRouteError(404, "not_found", "Verification session was not found while recording the proof result.");
+        }
 
-        const responseBody = {
-          persistence: normalizedResult.status === "verified" ? "planned_not_persisted" : "provider_status_only",
+        set.status = 200;
+        return buildEnvelope(requestContext.requestId, {
+          persistence: "persisted",
           providerBoundary: {
+            ...buildProviderBoundaryFromRecord(updatedSession),
             handoffKind: providerDefinition.integration.handoffKind,
-            nextStep: normalizedResult.status === "verified" ? "release_available" : "provider_verification_required",
             providerFlowConfigured: true,
             providerServerEndpoint: providerDefinition.integration.serverEndpointPath,
             providerSessionToken: body.providerSessionToken,
-            releaseEligible: normalizedResult.status === "verified",
-            requestedClaims,
             requiredCapabilities: verifiedSession.requiredCapabilities,
-            selectedProvider: providerId,
             serverVerificationNote: providerDefinition.integration.serverVerificationNote,
-            status: normalizedResult.status === "verified"
-              ? "provider_proof_verified"
-              : normalizedResult.status === "failed"
-                ? "provider_proof_failed"
-                : "pending_provider_verification",
           },
-          session: {
-            challengeExpiresAt: new Date(verifiedSession.exp * 1_000).toISOString(),
-            challengeId: verifiedSession.challengeId,
-            guildId: verifiedSession.guildId,
-            releaseEligible: normalizedResult.status === "verified",
-            requiredCapabilities: verifiedSession.requiredCapabilities,
-            sessionId: verifiedSession.sessionId,
-            source: "signed_reusable_proof_session_token",
-            state: "provider_pending",
-            userId: verifiedSession.userId,
-          },
+          session: buildVerificationSessionFromRecord(updatedSession),
           verification: {
-            message: normalizedResult.message,
+            ...readVerificationSummaryFromRecord(updatedSession),
             proofReceipt: normalizedResult.evidence,
             providerId,
             providerSessionId: verifiedSession.providerSessionId,
-            satisfiedClaims: normalizedResult.satisfiedClaims,
             status: normalizedResult.status,
           },
-        } as Record<string, unknown>;
-
-        if (normalizedResult.status === "verified") {
-          const artifacts = buildWriteArtifacts({
-            aggregateId: verifiedSession.sessionId,
-            aggregateType: "verification_session",
-            auditRefs: [createAuditRef(requestContext.requestId, "verification_session", "verify_reusable_proof")],
-            canonicalMutations: [
-              {
-                dataRef: `${verifiedSession.sessionId}:session`,
-                operation: "update",
-                primaryKey: "session_id",
-                table: "verification_sessions",
-              },
-              {
-                dataRef: `${verifiedSession.sessionId}:privado-proof`,
-                operation: "insert",
-                primaryKey: "artifact_id",
-                table: "verification_artifacts",
-              },
-            ],
-            idempotencyKey:
-              request.headers.get("x-idempotency-key") ?? `verification-proof:${providerId}:${verifiedSession.providerSessionId}`,
-            kind: "verification.provider.proof.verified",
-            payload: {
-              nullifierRefs: normalizedResult.evidence.nullifiers.map((entry) => entry.nullifier),
-              proofReceiptHash: normalizedResult.evidence.proofReceiptHash,
-              proofReceiptRef: normalizedResult.evidence.proofReceiptRef,
-              providerId,
-              providerSessionId: verifiedSession.providerSessionId,
-              satisfiedClaims: normalizedResult.satisfiedClaims,
-              sessionId: verifiedSession.sessionId,
-              trustedIssuerScopes: normalizedResult.evidence.trustedIssuerScopes,
-            },
-            requestContext,
-            scope: `verification-proof:${providerId}:${verifiedSession.providerSessionId}`,
-            stream: "verification.events",
-            transactionName: "verification_provider_proof_verify",
-          });
-
-          Object.assign(responseBody, {
-            queueEnvelope: artifacts.queueEnvelope,
-            writePlan: artifacts.writePlan,
-          });
-        }
-
-        set.status = normalizedResult.status === "verified" ? 202 : 200;
-        return buildEnvelope(requestContext.requestId, responseBody);
+        });
       },
       {
         body: t.Object({
@@ -2525,6 +2527,17 @@ export function createApiApp(options: ApiAppOptions = {}) {
             requestedClaims,
             status: decision.status,
           });
+          const reusableCredentialBridge = normalizedDecision.state === "passed"
+            ? createPrivadoReusableCredentialBridge({
+              source: {
+                guildId: persistedSession.guildId,
+                providerSessionId: payload.session_id,
+                sessionId: internalSessionId,
+                userId: persistedSession.userId,
+              },
+              verifiedDiditFacts: normalizedDecision.bridgeFacts,
+            })
+            : undefined;
           const purge = await diditClient.deleteSession(payload.session_id);
           const updatedSession = await verificationSessionsRepository.recordDiditResult({
             providerSessionId: payload.session_id,
@@ -2534,6 +2547,16 @@ export function createApiApp(options: ApiAppOptions = {}) {
               ...purge,
             },
             requestedClaims,
+            reusableCredentialBridge: reusableCredentialBridge
+              ? {
+                artifactPayload: reusableCredentialBridge,
+                artifactStatus: reusableCredentialBridge.status,
+                bridgeId: reusableCredentialBridge.bridgeId,
+                expiresAt: reusableCredentialBridge.temporaryRetention.expiresAt,
+                summary: reusableCredentialBridge,
+                targetProvider: reusableCredentialBridge.targetProvider,
+              }
+              : undefined,
             resultSummary: normalizedDecision.resultSummary,
             sessionId: internalSessionId,
             state: normalizedDecision.state === "provider_pending" ? "provider_pending" : normalizedDecision.state,
@@ -2552,6 +2575,7 @@ export function createApiApp(options: ApiAppOptions = {}) {
           return buildEnvelope(requestContext.requestId, {
             persistence: "persisted",
             providerBoundary: buildProviderBoundaryFromRecord(updatedSession),
+            reusableCredentialBridge: readReusableCredentialBridgeFromRecord(updatedSession),
             session: buildVerificationSessionFromRecord(updatedSession),
             verification: updatedSession.resultSummary,
           });

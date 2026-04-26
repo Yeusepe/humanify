@@ -1,5 +1,5 @@
 /**
- * Purpose: Renders the first real verifier flow: load signed-link session context, confirm the Discord-bound challenge, and stop before unsupported provider handoffs.
+ * Purpose: Renders the verifier flow with user-facing proof choices, role-split capture/reusable options, and honest server-verification boundaries.
  * Governing docs:
  * - AGENTS.md
  * - Implementation Plan.txt
@@ -40,6 +40,7 @@ import {
   startReusableProofFlow,
   verifyReusableProofResult,
   type VerificationProviderId,
+  type VerificationProviderOption,
   type VerificationChallengeData,
   type ReusableProofStartData,
   type ReusableProofVerificationData,
@@ -78,6 +79,7 @@ function VerificationRoute() {
     () => getVerificationProvider(selectedProvider, providerEnv),
     [providerEnv, selectedProvider],
   );
+  const providerRoleGroups = useMemo(() => splitVerificationProviderOptions(providerOptions), [providerOptions]);
   const humanifyIdBundle = useMemo(
     () =>
       claimBundleOptions.find((bundle) => bundle.bundleId === selectedClaimBundleId) ?? getDefaultHumanifyIdClaimBundle(),
@@ -173,6 +175,20 @@ function VerificationRoute() {
         releaseEligible,
       }),
     [challengeCompleted, providerFlowConfigured, releaseEligible],
+  );
+  const selectedClaims = activeProviderBoundary?.requestedClaims ?? humanifyIdBundle.claims;
+  const humanifyKnowledge = useMemo(
+    () => buildHumanifyKnowledgeSummary(selectedClaims, selectedProviderDefinition.role),
+    [selectedClaims, selectedProviderDefinition.role],
+  );
+  const faceVerificationSummary = useMemo(
+    () =>
+      buildFaceVerificationSummary({
+        providerRole: selectedProviderDefinition.role,
+        requestedClaims: selectedClaims,
+        requiredCapabilities: activeProviderBoundary?.requiredCapabilities ?? effectiveSession?.requiredCapabilities ?? [],
+      }),
+    [activeProviderBoundary?.requiredCapabilities, effectiveSession?.requiredCapabilities, selectedClaims, selectedProviderDefinition.role],
   );
 
   async function refreshSessionStatus() {
@@ -399,12 +415,12 @@ function VerificationRoute() {
               </Card>
             </div>
 
-            <div className="grid gap-4 xl:grid-cols-[1.3fr_0.9fr]">
+            <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
               <Card>
                 <Card.Header className="gap-2">
-                  <Card.Title>Choose your proof</Card.Title>
+                  <Card.Title>Choose what to prove</Card.Title>
                   <Card.Description>
-                    Start by picking what you want to prove right now. Use the smallest option that gets you through the server's rules.
+                    Pick the smallest proof bundle that satisfies the server's rules. Humanify keeps this focused on the claims you selected.
                   </Card.Description>
                 </Card.Header>
                 <Card.Content className="space-y-4 text-sm leading-7 text-muted">
@@ -428,7 +444,7 @@ function VerificationRoute() {
                                   className="rounded-full border border-content3 px-3 py-1 text-xs font-semibold tracking-wide text-foreground uppercase"
                                   key={claim}
                                 >
-                                  {claim}
+                                  {formatVerificationLabel(claim)}
                                 </span>
                               ))}
                             </div>
@@ -448,112 +464,56 @@ function VerificationRoute() {
 
               <Card>
                 <Card.Header className="gap-2">
-                  <Card.Title>Choose how to verify</Card.Title>
+                  <Card.Title>What Humanify learns</Card.Title>
                   <Card.Description>
-                    Now pick the provider that fits your privacy and document situation.
+                    Humanify stores only the minimum proof facts needed to apply the server's verification policy.
                   </Card.Description>
                 </Card.Header>
                 <Card.Content className="space-y-4 text-sm leading-7 text-muted">
-                  {providerOptions.map((provider) => {
-                    const current = selectedProvider === provider.id;
-                    const compatible = getVerificationProviderClaimCompatibility(provider, humanifyIdBundle.claims);
-                    return (
-                      <div
-                        className={`rounded-2xl border px-4 py-4 ${current ? "border-foreground/20 bg-content2" : "border-content3"}`}
-                        key={provider.id}
-                      >
-                        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                          <div className="space-y-2">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <p className="font-semibold text-foreground">{provider.title}</p>
-                              <span className="rounded-full border border-content3 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-foreground">
-                                {provider.privacySummary}
-                              </span>
-                              <span className="rounded-full border border-content3 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-foreground">
-                                {compatible ? "Works with this proof" : "Not available for this proof"}
-                              </span>
-                            </div>
-                            <p>{provider.summary}</p>
-                            <p className="text-xs leading-6">
-                              <span className="font-semibold text-foreground">Good for:</span> {provider.goodFor}
-                            </p>
-                            <p className="text-xs leading-6">
-                              <span className="font-semibold text-foreground">What you need:</span> {provider.whatYouNeed}
-                            </p>
-                            <ul className="list-disc space-y-1 pl-5">
-                              {provider.benefits.map((reason) => (
-                                <li key={reason}>{reason}</li>
-                              ))}
-                            </ul>
-                             <p className="text-xs leading-6 text-foreground">
-                               <span className="font-semibold">Privacy:</span> {provider.id === "didit"
-                                 ? "Didit sees your document and selfie during the check. Humanify keeps only the small proof outcome it needs, then asks Didit to delete the session."
-                                 : provider.privacyDetails}
-                             </p>
-                            {provider.deletionPolicy ? (
-                              <p className="text-xs leading-6 text-foreground">{provider.deletionPolicy}</p>
-                            ) : null}
-                            <ul className="list-disc space-y-1 pl-5 text-xs leading-6">
-                              {provider.thingsToKnow.map((limitation) => (
-                                <li key={limitation}>{limitation}</li>
-                              ))}
-                            </ul>
-                          </div>
-                          <Button
-                            isDisabled={!compatible}
-                            onPress={() => setSelectedProvider(provider.id)}
-                            variant={current ? "primary" : "outline"}
-                          >
-                            {current ? "Selected" : "Use this option"}
-                          </Button>
-                        </div>
-                      </div>
-                    );
-                  })}
+                  <div>
+                    <p className="font-medium text-foreground">What Humanify learns</p>
+                    <ul className="mt-2 list-disc space-y-1 pl-5">
+                      {humanifyKnowledge.learns.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div>
+                    <p className="font-medium text-foreground">What Humanify does not learn</p>
+                    <ul className="mt-2 list-disc space-y-1 pl-5">
+                      {humanifyKnowledge.doesNotLearn.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div className="rounded-2xl border border-content3 px-4 py-4">
+                    <p className="font-medium text-foreground">Face verification</p>
+                    <p className="mt-2">{faceVerificationSummary.title}</p>
+                    <p className="mt-1 text-xs leading-6">{faceVerificationSummary.detail}</p>
+                  </div>
                 </Card.Content>
               </Card>
+            </div>
 
-              <Card>
-                <Card.Header className="gap-2">
-                  <Card.Title>What happens with your proof</Card.Title>
-                  <Card.Description>
-                    Your selected proof stays focused on the claims you picked instead of exposing the full identity document.
-                  </Card.Description>
-                </Card.Header>
-                <Card.Content className="space-y-4 text-sm leading-7 text-muted">
-                  <p className="font-medium text-foreground">{humanifyIdBundle.title}</p>
-                  <p>{humanifyIdBundle.summary}</p>
-                  <p>
-                    <span className="font-medium text-foreground">Best for:</span> {humanifyIdBundle.bestFor}
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    {humanifyIdBundle.claims.map((claim) => (
-                      <span
-                        className="rounded-full border border-content3 px-3 py-1 text-xs font-semibold tracking-wide text-foreground uppercase"
-                        key={claim}
-                      >
-                        {claim}
-                      </span>
-                    ))}
-                  </div>
-                  <div>
-                    <p className="font-medium text-foreground">What Humanify stores</p>
-                    <ul className="mt-2 list-disc space-y-1 pl-5">
-                      {humanifyIdBundle.operatorStorageGuarantees.map((item) => (
-                        <li key={item}>{item}</li>
-                      ))}
-                    </ul>
-                  </div>
-                  <div>
-                    <p className="font-medium text-foreground">Later extensions</p>
-                    <ul className="mt-2 list-disc space-y-1 pl-5">
-                      {humanifyIdBundle.futureExtensions.map((item) => (
-                        <li key={item}>{item}</li>
-                      ))}
-                    </ul>
-                  </div>
-                </Card.Content>
-              </Card>
+            <div className="grid gap-4 xl:grid-cols-2">
+              <ProviderLaneCard
+                description="Use a fresh capture flow when you do not already hold a reusable proof. Humanify keeps the app generic by reading these options from the shared strategy catalog."
+                emptyState="This server has not enabled a first-time capture flow."
+                providers={providerRoleGroups.captureProviders}
+                selectedBundleClaims={humanifyIdBundle.claims}
+                selectedProvider={selectedProvider}
+                setSelectedProvider={setSelectedProvider}
+                title="First-time capture options"
+              />
+              <ProviderLaneCard
+                description="Use a reusable proof when you already have a wallet credential. The credential stays with you while Humanify verifies only the required proof."
+                emptyState="This server has not enabled a reusable proof backend."
+                providers={providerRoleGroups.reusableProofBackends}
+                selectedBundleClaims={humanifyIdBundle.claims}
+                selectedProvider={selectedProvider}
+                setSelectedProvider={setSelectedProvider}
+                title="Reusable proof options"
+              />
             </div>
 
             <div className="grid gap-4 lg:grid-cols-2">
@@ -604,7 +564,7 @@ function VerificationRoute() {
                         key={capability}
                         className="rounded-full border border-content3 px-3 py-1 text-xs font-semibold tracking-wide text-foreground uppercase"
                       >
-                        {capability}
+                        {formatVerificationLabel(capability)}
                       </span>
                     ))}
                   </div>
@@ -624,6 +584,11 @@ function VerificationRoute() {
                     </code>
                   </p>
                   <p>{activeProviderBoundary?.serverVerificationNote ?? selectedProviderDefinition.integration.serverVerificationNote}</p>
+                  <div className="rounded-2xl border border-content3 px-4 py-4">
+                    <p className="font-semibold text-foreground">Face verification</p>
+                    <p className="mt-2">{faceVerificationSummary.title}</p>
+                    <p className="mt-1 text-xs leading-6">{faceVerificationSummary.detail}</p>
+                  </div>
                   <p>
                     Humanify never treats a browser-only provider screen as verified. Only the signed server handoff can move
                     the canonical session forward.
@@ -735,6 +700,162 @@ function DetailRow({ label, value }: Readonly<{ label: string; value: string }>)
       <span className="break-all text-muted">{value}</span>
     </div>
   );
+}
+
+function ProviderLaneCard({
+  description,
+  emptyState,
+  providers,
+  selectedBundleClaims,
+  selectedProvider,
+  setSelectedProvider,
+  title,
+}: Readonly<{
+  description: string;
+  emptyState: string;
+  providers: readonly VerificationProviderOption[];
+  selectedBundleClaims: Parameters<typeof getVerificationProviderClaimCompatibility>[1];
+  selectedProvider: VerificationProviderId;
+  setSelectedProvider: (providerId: VerificationProviderId) => void;
+  title: string;
+}>) {
+  if (providers.length === 0) {
+    return (
+      <Card>
+        <Card.Header className="gap-2">
+          <Card.Title>{title}</Card.Title>
+          <Card.Description>{description}</Card.Description>
+        </Card.Header>
+        <Card.Content className="text-sm leading-7 text-muted">
+          <p>{emptyState}</p>
+        </Card.Content>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <Card.Header className="gap-2">
+        <Card.Title>{title}</Card.Title>
+        <Card.Description>{description}</Card.Description>
+      </Card.Header>
+      <Card.Content className="space-y-4 text-sm leading-7 text-muted">
+        {providers.map((provider) => {
+          const current = selectedProvider === provider.id;
+          const compatible = getVerificationProviderClaimCompatibility(provider, selectedBundleClaims);
+          return (
+            <div
+              className={`rounded-2xl border px-4 py-4 ${current ? "border-foreground/20 bg-content2" : "border-content3"}`}
+              key={provider.id}
+            >
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="font-semibold text-foreground">{provider.title}</p>
+                    <span className="rounded-full border border-content3 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-foreground">
+                      {provider.privacySummary}
+                    </span>
+                    <span className="rounded-full border border-content3 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-foreground">
+                      {compatible ? "Works with this proof" : "Not available for this proof"}
+                    </span>
+                  </div>
+                  <p>{provider.summary}</p>
+                  <p className="text-xs leading-6">
+                    <span className="font-semibold text-foreground">Good for:</span> {provider.goodFor}
+                  </p>
+                  <p className="text-xs leading-6">
+                    <span className="font-semibold text-foreground">What you need:</span> {provider.whatYouNeed}
+                  </p>
+                  <ul className="list-disc space-y-1 pl-5">
+                    {provider.benefits.map((reason) => (
+                      <li key={reason}>{reason}</li>
+                    ))}
+                  </ul>
+                  <p className="text-xs leading-6 text-foreground">
+                    <span className="font-semibold">Privacy:</span> {provider.privacyDetails}
+                  </p>
+                  {provider.deletionPolicy ? (
+                    <p className="text-xs leading-6 text-foreground">{provider.deletionPolicy}</p>
+                  ) : null}
+                  <ul className="list-disc space-y-1 pl-5 text-xs leading-6">
+                    {provider.thingsToKnow.map((limitation) => (
+                      <li key={limitation}>{limitation}</li>
+                    ))}
+                  </ul>
+                </div>
+                <Button
+                  isDisabled={!compatible}
+                  onPress={() => setSelectedProvider(provider.id)}
+                  variant={current ? "primary" : "outline"}
+                >
+                  {current ? "Selected" : "Use this option"}
+                </Button>
+              </div>
+            </div>
+          );
+        })}
+      </Card.Content>
+    </Card>
+  );
+}
+
+function splitVerificationProviderOptions(providers: readonly VerificationProviderOption[]) {
+  return {
+    captureProviders: providers.filter((provider) => provider.role === "capture_provider"),
+    reusableProofBackends: providers.filter((provider) => provider.role === "reusable_proof_backend"),
+  };
+}
+
+function buildHumanifyKnowledgeSummary(selectedClaims: readonly string[], providerRole: string) {
+  const readableClaims = selectedClaims.map((claim) => formatVerificationLabel(claim)).join(", ");
+
+  return {
+    doesNotLearn: [
+      "Your raw document images or selfie capture files.",
+      "Passport, ID-card, or document numbers.",
+      "Your date of birth or a full copy of a reusable wallet credential.",
+    ],
+    learns: [
+      `Whether these checks passed for this session: ${readableClaims || "the selected proof bundle"}.`,
+      providerRole === "capture_provider"
+        ? "Minimal attestation facts, expiry windows, and whether a face or liveness step ran and passed."
+        : "Minimal proof receipt refs, trusted issuer scopes, expiry windows, and replay-safe nullifiers.",
+    ],
+  };
+}
+
+function buildFaceVerificationSummary(input: {
+  providerRole: string;
+  requestedClaims: readonly string[];
+  requiredCapabilities: readonly string[];
+}) {
+  const faceCheckRequired = input.requiredCapabilities.includes("human_presence") || input.requestedClaims.includes("liveness");
+
+  if (input.providerRole !== "capture_provider") {
+    return {
+      detail:
+        "Reusable proof backends do not ask you for a new selfie in Humanify's current flow. If the server still needs liveness, pick a first-time capture option instead.",
+      title: "Not part of this reusable proof",
+    };
+  }
+
+  if (faceCheckRequired) {
+    return {
+      detail:
+        "This server currently asks for a live selfie or liveness step before release. Humanify stores only whether that check ran and whether it passed.",
+      title: "Required for this first-time capture",
+    };
+  }
+
+  return {
+    detail:
+      "This first-time capture flow can still include a face or liveness step when the provider workflow needs it. Humanify only keeps the normalized pass/fail facts.",
+    title: "Possible during first-time capture",
+  };
+}
+
+function formatVerificationLabel(value: string) {
+  return value.replace(/_/g, " ");
 }
 
 function providerHandoffLabel(handoffKind: "server_verified_proof" | "signed_webhook") {

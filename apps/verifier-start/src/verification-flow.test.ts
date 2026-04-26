@@ -13,7 +13,12 @@
  * - apps/verifier-start/src/verification-flow.test.ts
  */
 
+import { readFileSync } from "node:fs";
+
 import { expect, test } from "bun:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { RouterProvider, createMemoryHistory, createRouter } from "@tanstack/react-router";
 
 import {
   buildVerificationChecklist,
@@ -32,6 +37,18 @@ import {
   startDiditVerification,
   verifyReusableProofResult,
 } from "./verification-flow";
+import { routeTree } from "./routeTree.gen";
+
+async function renderRoute(path: "/" | `/verify?${string}`) {
+  const router = createRouter({
+    history: createMemoryHistory({ initialEntries: [path] }),
+    routeTree,
+  });
+
+  await router.load();
+
+  return renderToStaticMarkup(createElement(RouterProvider, { router }));
+}
 
 test("verification search parsing only keeps meaningful signed-link fields", () => {
   const parsed = parseVerificationSearch({
@@ -510,4 +527,28 @@ test("default Humanify ID bundle stores predicates and nullifier receipts instea
   expect(storageContract).toContain("nullifiers");
   expect(storageContract).toContain("does not store document images");
   expect(storageContract).toContain("birthdates");
+});
+
+test("verification route separates first-time capture from reusable proofs with privacy copy", async () => {
+  const markup = await renderRoute("/verify?sessionId=session_123&token=signed.token");
+
+  expect(markup).toContain("First-time capture options");
+  expect(markup).toContain("Reusable proof options");
+  expect(markup).toContain("What Humanify learns");
+  expect(markup).toContain("What Humanify does not learn");
+  expect(markup).toContain("Face verification");
+});
+
+test("verifier main files stay option-driven instead of hard-coding provider brands", () => {
+  const verificationFlowSource = readFileSync(new URL("./verification-flow.ts", import.meta.url), "utf8");
+  const routeSource = readFileSync(new URL("./routes/verify.tsx", import.meta.url), "utf8");
+
+  expect(verificationFlowSource).not.toContain("@didit-protocol/sdk-web");
+  expect(verificationFlowSource).not.toContain("getDiditLaunchContract");
+  expect(verificationFlowSource).not.toContain("DiditProviderLaunch");
+
+  expect(routeSource).not.toContain("@didit-protocol/sdk-web");
+  expect(routeSource).not.toContain("Didit");
+  expect(routeSource).not.toContain("Privado");
+  expect(routeSource).not.toContain("selectedProvider === \"privado\"");
 });

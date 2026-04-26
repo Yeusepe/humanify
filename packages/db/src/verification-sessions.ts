@@ -75,10 +75,26 @@ export type VerificationSessionsRepository = {
     providerStatus: string;
     purge: Record<string, unknown>;
     requestedClaims?: string[];
+    reusableCredentialBridge?: {
+      artifactPayload: Record<string, unknown>;
+      artifactStatus: string;
+      bridgeId: string;
+      expiresAt: string;
+      summary: Record<string, unknown>;
+      targetProvider: string;
+    };
     resultSummary: Record<string, unknown>;
     sessionId: string;
     state: Exclude<VerificationSessionState, "challenge_issued" | "released">;
     webhook: Record<string, unknown>;
+  }): Promise<VerificationSessionRecord | undefined>;
+  recordReusableProofResult(input: {
+    providerId: string;
+    providerSessionId: string;
+    requestedClaims: string[];
+    resultSummary: Record<string, unknown>;
+    sessionId: string;
+    state: Exclude<VerificationSessionState, "challenge_issued" | "released">;
   }): Promise<VerificationSessionRecord | undefined>;
   close(): Promise<void>;
 };
@@ -259,6 +275,7 @@ export function createPostgresVerificationSessionsRepository(input: {
           launch: current.providerStatus.launch,
           purge: input.purge,
           requestedClaims: input.requestedClaims ?? current.providerStatus.requestedClaims ?? [],
+          reusableCredentialBridge: input.reusableCredentialBridge?.summary,
           selectedProvider: "didit",
           status: input.state === "passed" ? "provider_webhook_verified" : "provider_webhook_recorded",
           verifiedWebhook: input.webhook,
@@ -284,6 +301,14 @@ export function createPostgresVerificationSessionsRepository(input: {
         `;
 
         await transaction`
+          DELETE FROM verification_artifacts
+          WHERE
+            session_id = ${input.sessionId}::uuid
+            AND provider_name = ${"privado"}
+            AND artifact_kind = ${"reusable_credential_bridge"}
+        `;
+
+        await transaction`
           INSERT INTO verification_artifacts (
             session_id,
             guild_id,
@@ -300,6 +325,99 @@ export function createPostgresVerificationSessionsRepository(input: {
             ${current.userId},
             ${"didit"},
             ${"capture_attestation"},
+            ${input.providerSessionId},
+            ${input.state},
+            ${transaction.json(toJsonCompatible(input.resultSummary))}
+          )
+        `;
+
+        if (input.reusableCredentialBridge) {
+          await transaction`
+            INSERT INTO verification_artifacts (
+              session_id,
+              guild_id,
+              user_id,
+              provider_name,
+              artifact_kind,
+              provider_reference_id,
+              attestation_status,
+              expires_at,
+              redacted_payload
+            )
+            VALUES (
+              ${input.sessionId}::uuid,
+              ${current.guildId},
+              ${current.userId},
+              ${input.reusableCredentialBridge.targetProvider},
+              ${"reusable_credential_bridge"},
+              ${input.reusableCredentialBridge.bridgeId},
+              ${input.reusableCredentialBridge.artifactStatus},
+              ${input.reusableCredentialBridge.expiresAt},
+              ${transaction.json(toJsonCompatible(input.reusableCredentialBridge.artifactPayload))}
+            )
+          `;
+        }
+      });
+
+      return await readSession(sql, input.sessionId);
+    },
+
+    async recordReusableProofResult(input) {
+      const current = await readSession(sql, input.sessionId);
+      if (!current) {
+        return undefined;
+      }
+
+      await sql.begin(async (transaction) => {
+        const providerStatus = {
+          ...current.providerStatus,
+          launch: current.providerStatus.launch,
+          providerSessionId: input.providerSessionId,
+          requestedClaims: input.requestedClaims,
+          selectedProvider: input.providerId,
+          status: input.state === "passed"
+            ? "provider_proof_verified"
+            : input.state === "failed"
+              ? "provider_proof_failed"
+              : "pending_provider_verification",
+        };
+
+        await transaction`
+          UPDATE verification_sessions
+          SET
+            state = ${input.state},
+            provider_status = ${transaction.json(toJsonCompatible(providerStatus))},
+            result_summary = ${transaction.json(toJsonCompatible(input.resultSummary))},
+            passed_at = ${input.state === "passed" ? new Date().toISOString() : null},
+            updated_at = now()
+          WHERE session_id = ${input.sessionId}::uuid
+        `;
+
+        await transaction`
+          DELETE FROM verification_artifacts
+          WHERE
+            session_id = ${input.sessionId}::uuid
+            AND provider_name = ${input.providerId}
+            AND artifact_kind = ${"reusable_proof_receipt"}
+        `;
+
+        await transaction`
+          INSERT INTO verification_artifacts (
+            session_id,
+            guild_id,
+            user_id,
+            provider_name,
+            artifact_kind,
+            provider_reference_id,
+            attestation_status,
+            redacted_payload
+          )
+          VALUES (
+            ${input.sessionId}::uuid,
+            ${current.guildId},
+            ${current.userId},
+            ${input.providerId},
+            ${"reusable_proof_receipt"},
             ${input.providerSessionId},
             ${input.state},
             ${transaction.json(toJsonCompatible(input.resultSummary))}

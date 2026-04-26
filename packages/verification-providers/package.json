@@ -28,6 +28,6 @@
       "https://www.w3.org/TR/vc-data-model/",
       "https://semaphore.appliedzkp.org/docs/concepts/nullifiers"
     ],
-    "notes": "Verification providers are registered behind a shared Bun package so apps consume a catalog and provider template rather than embedding provider-specific conditionals."
+    "notes": "Verification strategy manifests are split into capture flows, reusable-proof backends, and policy-consumer glue so apps consume a generic catalog instead of embedding provider-specific conditionals."
   }
 }

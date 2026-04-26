@@ -226,6 +226,19 @@ Required controls:
 5. Store only the minimum callback/proof material needed for explainability and retries: receipt refs, attestation refs, nullifiers/replay guards, verified predicates, and auditable reject reasons.
 6. Direct provider session imports, raw document custody, and full reusable credential storage are out of bounds.
 
+### 9.2.1 Verification audit evidence runbook
+
+For the current verification spine, durable audit evidence means the following minimal facts are recoverable from canonical state and correlated logs/traces:
+
+| Flow | Required evidence |
+| --- | --- |
+| Didit webhook accepted | request correlation (`requestId`, `traceId`), verified webhook receipt summary (`webhookType`, timestamp, workflow id, provider status), normalized result summary (`providerReferenceId`, satisfied claims, `faceVerificationPerformed`, `faceVerificationPassed`), and purge outcome (`attemptedAt`, provider delete outcome) |
+| Didit webhook rejected | request correlation, reject reason (`provider_callback_invalid`, missing `vendor_data`, mismatched provider session, or mismatched decision `vendorData`), and no canonical session mutation |
+| Privado proof verified | request correlation, provider session ref, proof receipt ref/hash, nullifier refs, trusted issuer scopes, satisfied claims, and the persisted `provider_proof_verified` session/artifact status |
+| Privado proof pending or failed | request correlation, provider session ref, normalized status message, zero-or-more receipt refs, and the persisted `pending_provider_verification` or `provider_proof_failed` state |
+
+This evidence is intentionally receipt-oriented. It must not include raw webhook bodies, Didit decision arrays, JWZ values, full verifiable presentations, holder DIDs, or document imagery.
+
 Discord-specific rule: any HTTP interaction endpoint must validate the Discord signature and timestamp per the official interactions security docs before processing the body.
 
 ### 9.3 Service-to-service trust
@@ -280,6 +293,15 @@ Rules:
 4. Deletion and expiration must be observable, auditable, and replay-safe.
 5. Legal holds or investigation holds must override ordinary deletion, with explicit audit attribution.
 6. Humanify must not keep raw identity documents, full reusable credential payloads, or direct Didit full-session exports as part of ordinary operations.
+
+### 9.6.1 Verification retention boundaries
+
+The current verification runbook draws the retention line here:
+
+- Humanify keeps the Didit purge receipt but not the deleted provider session payload.
+- Humanify keeps bridge facts only until `temporaryRetention.expiresAt`; after that window, only the durable post-handoff refs remain relevant.
+- Humanify keeps Privado proof refs/hashes/nullifiers/issuer scopes and predicate outcomes, not the proof token or wallet-held credential.
+- Face-verification outcomes remain durable because Bun policy may depend on them, but only as normalized booleans rather than reusable biometric payloads.
 
 ## 10. Implementation gate for future work
 

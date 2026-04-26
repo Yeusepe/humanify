@@ -1,5 +1,5 @@
 /**
- * Purpose: Defines the first operator-facing moderation dashboard MVP with honest read-model boundaries and HeroUI v3 composition patterns.
+ * Purpose: Defines the operator-facing dashboard MVP with honest read-model boundaries and role-split verification configuration language.
  * Governing docs:
  * - AGENTS.md
  * - Implementation Plan.txt
@@ -27,7 +27,7 @@
  * - apps/dashboard-start package build
  */
 
-import { useState, type FormEvent } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 
 import { Link } from "@tanstack/react-router";
 import {
@@ -45,9 +45,12 @@ import {
 import { getHumanifyContractSummary, humanifyActionLadder } from "@humanify/contracts";
 import { ProductShell } from "@humanify/ui";
 import {
-  humanifyVerificationProviderCatalog,
-  resolveVerificationProviderConfiguration,
-  type VerificationProviderConfiguration,
+  getDefaultHumanifyIdClaimBundle,
+  getHumanifyIdClaimBundles,
+  humanifyVerificationOptionCatalog,
+  resolveVerificationOptionConfiguration,
+  type VerificationOptionConfiguration,
+  type VerificationOptionDefinition,
 } from "@humanify/verification-providers";
 
 const contractSummary = getHumanifyContractSummary();
@@ -142,9 +145,21 @@ const verificationRows = [
   },
 ] as const;
 
-const verificationProviderRows = humanifyVerificationProviderCatalog.list();
+const verificationOptionRows = humanifyVerificationOptionCatalog.list();
 
-const initialVerificationProviderConfiguration = resolveVerificationProviderConfiguration();
+const initialVerificationOptionConfiguration = resolveVerificationOptionConfiguration();
+const verificationClaimBundleRows = getHumanifyIdClaimBundles();
+const defaultVerificationClaimBundle = getDefaultHumanifyIdClaimBundle();
+
+type VerificationRequirementDraft = {
+  faceVerificationRequired: boolean;
+  requiredBundleIds: string[];
+};
+
+const initialVerificationRequirementDraft: VerificationRequirementDraft = {
+  faceVerificationRequired: true,
+  requiredBundleIds: [defaultVerificationClaimBundle.bundleId],
+};
 
 const safetyBoundaries = [
   "Bun authoritative",
@@ -231,38 +246,69 @@ export function buildCaseQueryPlan(input: CaseQueryInputs): CaseQueryPlan {
   };
 }
 
-export function updateVerificationProviderConfiguration(
-  current: VerificationProviderConfiguration,
+export function updateVerificationOptionConfiguration(
+  current: VerificationOptionConfiguration,
   action:
     | {
         type: "set-default";
-        providerId: string;
+        optionId: string;
       }
     | {
-        type: "toggle-provider";
-        providerId: string;
+        type: "set-default-reusable";
+        optionId: string;
+      }
+    | {
+        type: "toggle-option";
+        optionId: string;
       },
-): VerificationProviderConfiguration {
+): VerificationOptionConfiguration {
   if (action.type === "set-default") {
-    return resolveVerificationProviderConfiguration({
-      defaultProviderId: action.providerId,
-      enabledProviderIds: current.enabledProviderIds,
+    return resolveVerificationOptionConfiguration({
+      defaultOptionId: action.optionId,
+      defaultReusableProofBackendId: current.defaultReusableProofBackendId,
+      enabledOptionIds: current.enabledOptionIds,
     });
   }
 
-  const isEnabled = current.enabledProviderIds.includes(action.providerId);
-  const nextEnabledProviderIds = isEnabled
-    ? current.enabledProviderIds.filter((providerId) => providerId !== action.providerId)
-    : [...current.enabledProviderIds, action.providerId];
+  if (action.type === "set-default-reusable") {
+    return resolveVerificationOptionConfiguration({
+      defaultOptionId: current.defaultOptionId,
+      defaultReusableProofBackendId: action.optionId,
+      enabledOptionIds: current.enabledOptionIds,
+    });
+  }
 
-  const nextDefaultProviderId = isEnabled && current.defaultProviderId === action.providerId
-    ? nextEnabledProviderIds[0]
-    : current.defaultProviderId;
+  const isEnabled = current.enabledOptionIds.includes(action.optionId);
+  const nextEnabledOptionIds = isEnabled
+    ? current.enabledOptionIds.filter((optionId) => optionId !== action.optionId)
+    : [...current.enabledOptionIds, action.optionId];
 
-  return resolveVerificationProviderConfiguration({
-    defaultProviderId: nextDefaultProviderId,
-    enabledProviderIds: nextEnabledProviderIds,
+  const nextReusableOptions = verificationOptionRows.filter((option) =>
+    option.role === "reusable_proof_backend" && nextEnabledOptionIds.includes(option.id)
+  );
+  const nextDefaultOptionId = isEnabled && current.defaultOptionId === action.optionId
+    ? nextEnabledOptionIds[0]
+    : current.defaultOptionId;
+  const nextDefaultReusableProofBackendId = isEnabled && current.defaultReusableProofBackendId === action.optionId
+    ? nextReusableOptions[0]?.id
+    : current.defaultReusableProofBackendId;
+
+  return resolveVerificationOptionConfiguration({
+    defaultOptionId: nextDefaultOptionId,
+    defaultReusableProofBackendId: nextDefaultReusableProofBackendId,
+    enabledOptionIds: nextEnabledOptionIds,
   });
+}
+
+function splitVerificationOptionsByRole(options: readonly VerificationOptionDefinition[]) {
+  return {
+    captureFlows: options.filter((option) => option.role === "capture_provider"),
+    reusableProofBackends: options.filter((option) => option.role === "reusable_proof_backend"),
+  };
+}
+
+function formatClaimKey(claim: string) {
+  return claim.replace(/_/g, " ");
 }
 
 function statusTone(status: CaseQueryPlan["readModelStatus"] | (typeof honestReadRows)[number]["readState"]) {
@@ -377,6 +423,111 @@ function ReadStateTable({
         </Table.Content>
       </Table.ScrollContainer>
     </Table>
+  );
+}
+
+function VerificationOptionRoleTable({
+  configuration,
+  defaultButtonLabel,
+  description,
+  emptyState,
+  onOptionAction,
+  options,
+  title,
+}: Readonly<{
+  configuration: VerificationOptionConfiguration;
+  defaultButtonLabel: string;
+  description: string;
+  emptyState: string;
+  onOptionAction: (action:
+    | { optionId: string; type: "set-default" | "set-default-reusable" | "toggle-option" }
+  ) => void;
+  options: readonly VerificationOptionDefinition[];
+  title: string;
+}>) {
+  if (options.length === 0) {
+    return (
+      <Card>
+        <Card.Header className="gap-2">
+          <Card.Title>{title}</Card.Title>
+          <Card.Description>{description}</Card.Description>
+        </Card.Header>
+        <Card.Content className="text-sm leading-7 text-muted">
+          <p>{emptyState}</p>
+        </Card.Content>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <Card.Header className="gap-2">
+        <Card.Title>{title}</Card.Title>
+        <Card.Description>{description}</Card.Description>
+      </Card.Header>
+      <Card.Content className="space-y-4 text-sm leading-7 text-muted">
+        <Table variant="secondary">
+          <Table.ScrollContainer>
+            <Table.Content aria-label={title} className="min-w-[980px]">
+              <Table.Header>
+                <Table.Column isRowHeader>Option</Table.Column>
+                <Table.Column>Best for</Table.Column>
+                <Table.Column>What members need</Table.Column>
+                <Table.Column>Privacy</Table.Column>
+                <Table.Column>Enabled</Table.Column>
+                <Table.Column>{defaultButtonLabel}</Table.Column>
+              </Table.Header>
+              <Table.Body>
+                {options.map((option) => {
+                  const enabled = configuration.enabledOptionIds.includes(option.id);
+                  const isCaptureFlow = option.role === "capture_provider";
+                  const isDefault = isCaptureFlow
+                    ? configuration.defaultOptionId === option.id
+                    : configuration.defaultReusableProofBackendId === option.id;
+
+                  return (
+                    <Table.Row key={option.id}>
+                      <Table.Cell>
+                        <div className="space-y-1">
+                          <p className="font-semibold text-foreground">{option.title}</p>
+                          <p className="text-xs leading-6">{option.summary}</p>
+                        </div>
+                      </Table.Cell>
+                      <Table.Cell>{option.goodFor}</Table.Cell>
+                      <Table.Cell>{option.whatYouNeed}</Table.Cell>
+                      <Table.Cell>{option.privacySummary}</Table.Cell>
+                      <Table.Cell>
+                        <Button
+                          onPress={() => onOptionAction({
+                            optionId: option.id,
+                            type: "toggle-option",
+                          })}
+                          variant={enabled ? "primary" : "secondary"}
+                        >
+                          {enabled ? "Enabled" : "Disabled"}
+                        </Button>
+                      </Table.Cell>
+                      <Table.Cell>
+                        <Button
+                          isDisabled={!enabled}
+                          onPress={() => onOptionAction({
+                            optionId: option.id,
+                            type: isCaptureFlow ? "set-default" : "set-default-reusable",
+                          })}
+                          variant={isDefault ? "primary" : "secondary"}
+                        >
+                          {isDefault ? defaultButtonLabel : `Make ${defaultButtonLabel.toLowerCase()}`}
+                        </Button>
+                      </Table.Cell>
+                    </Table.Row>
+                  );
+                })}
+              </Table.Body>
+            </Table.Content>
+          </Table.ScrollContainer>
+        </Table>
+      </Card.Content>
+    </Card>
   );
 }
 
@@ -539,7 +690,7 @@ export function DashboardCasesPage() {
       </Alert>
 
       <div className="grid gap-4 xl:grid-cols-[1.1fr_1fr]">
-        <Card>
+      <Card>
           <Card.Header className="gap-2">
             <Card.Title>Projection filter prep</Card.Title>
             <Card.Description>Capture future query scope now without implying that read models already exist.</Card.Description>
@@ -659,8 +810,25 @@ export function DashboardCasesPage() {
 }
 
 export function DashboardVerificationPage() {
-  const [providerConfiguration, setProviderConfiguration] = useState<VerificationProviderConfiguration>(
-    initialVerificationProviderConfiguration,
+  const [optionConfiguration, setOptionConfiguration] = useState<VerificationOptionConfiguration>(
+    initialVerificationOptionConfiguration,
+  );
+  const [requirementDraft, setRequirementDraft] = useState<VerificationRequirementDraft>(
+    initialVerificationRequirementDraft,
+  );
+  const optionGroups = useMemo(() => splitVerificationOptionsByRole(verificationOptionRows), []);
+  const enabledCaptureFlows = optionGroups.captureFlows.filter((option) =>
+    optionConfiguration.enabledOptionIds.includes(option.id)
+  );
+  const enabledReusableProofBackends = optionGroups.reusableProofBackends.filter((option) =>
+    optionConfiguration.enabledOptionIds.includes(option.id)
+  );
+  const currentDefaultCaptureFlow = verificationOptionRows.find((option) => optionConfiguration.defaultOptionId === option.id);
+  const currentDefaultReusableProof = verificationOptionRows.find((option) =>
+    optionConfiguration.defaultReusableProofBackendId === option.id
+  );
+  const requiredBundles = verificationClaimBundleRows.filter((bundle) =>
+    requirementDraft.requiredBundleIds.includes(bundle.bundleId)
   );
 
   return (
@@ -679,87 +847,170 @@ export function DashboardVerificationPage() {
         </Alert.Content>
       </Alert>
 
-      <Card>
-        <Card.Header className="gap-2">
-          <Card.Title>Provider access for this server</Card.Title>
-          <Card.Description>
-            Server owners choose which verification options members can use, then mark one enabled provider as the default suggestion.
-          </Card.Description>
-        </Card.Header>
-        <Card.Content className="space-y-4 text-sm leading-7 text-muted">
-          <p>
-            Members still see plain-language tradeoffs in the verifier. This screen controls which providers are available in this guild.
-          </p>
-          <Table variant="secondary">
-            <Table.ScrollContainer>
-              <Table.Content aria-label="Verification provider configuration" className="min-w-[900px]">
-                <Table.Header>
-                  <Table.Column isRowHeader>Provider</Table.Column>
-                  <Table.Column>Good for</Table.Column>
-                  <Table.Column>Privacy</Table.Column>
-                  <Table.Column>Enabled</Table.Column>
-                  <Table.Column>Default</Table.Column>
-                </Table.Header>
-                <Table.Body>
-                  {verificationProviderRows.map((provider) => {
-                    const enabled = providerConfiguration.enabledProviderIds.includes(provider.id);
-                    const isDefault = providerConfiguration.defaultProviderId === provider.id;
+      <div className="grid gap-4 md:grid-cols-4">
+        <Card>
+          <Card.Header className="gap-2">
+            <Card.Title>First-time capture flows</Card.Title>
+            <Card.Description>Fresh document-check paths members can start in Humanify.</Card.Description>
+          </Card.Header>
+          <Card.Content className="space-y-2 text-sm leading-7 text-muted">
+            <p>{enabledCaptureFlows.length} enabled</p>
+            <p>Default capture: {currentDefaultCaptureFlow?.title ?? "Not set"}</p>
+          </Card.Content>
+        </Card>
+        <Card variant="secondary">
+          <Card.Header className="gap-2">
+            <Card.Title>Reusable proof backends</Card.Title>
+            <Card.Description>Privacy-preserving proof paths for people who already hold a credential.</Card.Description>
+          </Card.Header>
+          <Card.Content className="space-y-2 text-sm leading-7 text-muted">
+            <p>{enabledReusableProofBackends.length} enabled</p>
+            <p>Default reusable proof: {currentDefaultReusableProof?.title ?? "Not set"}</p>
+          </Card.Content>
+        </Card>
+        <Card variant="secondary">
+          <Card.Header className="gap-2">
+            <Card.Title>Required proof bundles</Card.Title>
+            <Card.Description>Member-facing proof choices built from Humanify claim bundles.</Card.Description>
+          </Card.Header>
+          <Card.Content className="space-y-2 text-sm leading-7 text-muted">
+            <p>{requiredBundles.length} required option(s)</p>
+            <p>{requiredBundles.map((bundle) => bundle.title).join(", ")}</p>
+          </Card.Content>
+        </Card>
+        <Card variant="tertiary">
+          <Card.Header className="gap-2">
+            <Card.Title>Face verification policy</Card.Title>
+            <Card.Description>Only applies to first-time capture flows, never reusable proof backends.</Card.Description>
+          </Card.Header>
+          <Card.Content className="space-y-2 text-sm leading-7 text-muted">
+            <p>{requirementDraft.faceVerificationRequired ? "Required for first-time capture" : "Not required"}</p>
+            <p>Humanify stores only whether the face check ran and whether it passed.</p>
+          </Card.Content>
+        </Card>
+      </div>
 
-                    return (
-                      <Table.Row key={provider.id}>
-                        <Table.Cell>
-                          <div className="space-y-1">
-                            <p className="font-semibold text-foreground">{provider.title}</p>
-                            <p className="text-xs leading-6">{provider.summary}</p>
-                          </div>
-                        </Table.Cell>
-                        <Table.Cell>{provider.goodFor}</Table.Cell>
-                        <Table.Cell>{provider.privacySummary}</Table.Cell>
-                        <Table.Cell>
-                          <Button
-                            onPress={() =>
-                              setProviderConfiguration((current) =>
-                                updateVerificationProviderConfiguration(current, {
-                                  providerId: provider.id,
-                                  type: "toggle-provider",
-                                }))}
-                            variant={enabled ? "primary" : "secondary"}
+      <Alert status="warning">
+        <Alert.Indicator />
+        <Alert.Content>
+          <Alert.Title>Current contract honesty</Alert.Title>
+          <Alert.Description>
+            The shared provider catalog already drives enabled flows and default selections. Proof-bundle and face-verification controls remain dashboard draft state until the verification settings route persists them server-side.
+          </Alert.Description>
+        </Alert.Content>
+      </Alert>
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <VerificationOptionRoleTable
+          configuration={optionConfiguration}
+          defaultButtonLabel="Default capture"
+          description="Server owners decide which first-time capture flows members can use when they need a fresh check."
+          emptyState="No first-time capture flow is enabled for this server."
+          onOptionAction={(action) =>
+            setOptionConfiguration((current) => updateVerificationOptionConfiguration(current, action))}
+          options={optionGroups.captureFlows}
+          title="First-time capture flows"
+        />
+
+        <VerificationOptionRoleTable
+          configuration={optionConfiguration}
+          defaultButtonLabel="Default reusable proof"
+          description="Reusable proof backends stay separate from first-time capture so members can reuse a credential when they already have one."
+          emptyState="No reusable proof backend is enabled for this server."
+          onOptionAction={(action) =>
+            setOptionConfiguration((current) => updateVerificationOptionConfiguration(current, action))}
+          options={optionGroups.reusableProofBackends}
+          title="Reusable proof backends"
+        />
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+        <Card>
+          <Card.Header className="gap-2">
+            <Card.Title>Required proof bundles</Card.Title>
+            <Card.Description>
+              Pick the member-facing proof bundles this server accepts. These bundles stay grounded in the shared Humanify claim catalog.
+            </Card.Description>
+          </Card.Header>
+          <Card.Content className="space-y-4 text-sm leading-7 text-muted">
+            {verificationClaimBundleRows.map((bundle) => {
+              const required = requirementDraft.requiredBundleIds.includes(bundle.bundleId);
+
+              return (
+                <div className="rounded-3xl border border-border/60 px-4 py-4" key={bundle.bundleId}>
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                    <div className="space-y-2">
+                      <p className="font-semibold text-foreground">{bundle.title}</p>
+                      <p>{bundle.summary}</p>
+                      <p className="text-xs leading-6">
+                        <span className="font-semibold text-foreground">Best for:</span> {bundle.bestFor}
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {bundle.claims.map((claim) => (
+                          <span
+                            className="rounded-full border border-border/60 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-foreground"
+                            key={claim}
                           >
-                            {enabled ? "Enabled" : "Disabled"}
-                          </Button>
-                        </Table.Cell>
-                        <Table.Cell>
-                          <Button
-                            isDisabled={!enabled}
-                            onPress={() =>
-                              setProviderConfiguration((current) =>
-                                updateVerificationProviderConfiguration(current, {
-                                  providerId: provider.id,
-                                  type: "set-default",
-                                }))}
-                            variant={isDefault ? "primary" : "secondary"}
-                          >
-                            {isDefault ? "Guild default" : "Make default"}
-                          </Button>
-                        </Table.Cell>
-                      </Table.Row>
-                    );
-                  })}
-                </Table.Body>
-              </Table.Content>
-            </Table.ScrollContainer>
-          </Table>
-          <Alert status="warning">
-            <Alert.Indicator />
-            <Alert.Content>
-              <Alert.Title>Didit stays an explicit fallback.</Alert.Title>
-              <Alert.Description>
-                It is fast and supports many IDs, but it is less private because the provider processes the document data. Humanify purges the provider session after normalizing the result.
-              </Alert.Description>
-            </Alert.Content>
-          </Alert>
-        </Card.Content>
-      </Card>
+                            {formatClaimKey(claim)}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    <Button
+                      onPress={() =>
+                        setRequirementDraft((current) => {
+                          const alreadyRequired = current.requiredBundleIds.includes(bundle.bundleId);
+                          if (alreadyRequired && current.requiredBundleIds.length === 1) {
+                            return current;
+                          }
+
+                          return {
+                            ...current,
+                            requiredBundleIds: alreadyRequired
+                              ? current.requiredBundleIds.filter((bundleId) => bundleId !== bundle.bundleId)
+                              : [...current.requiredBundleIds, bundle.bundleId],
+                          };
+                        })}
+                      variant={required ? "primary" : "secondary"}
+                    >
+                      {required ? "Required" : "Optional"}
+                    </Button>
+                  </div>
+                </div>
+              );
+            })}
+          </Card.Content>
+        </Card>
+
+        <Card variant="secondary">
+          <Card.Header className="gap-2">
+            <Card.Title>Face verification policy</Card.Title>
+            <Card.Description>
+              Apply this only to first-time capture flows when the server needs a liveness or selfie check.
+            </Card.Description>
+          </Card.Header>
+          <Card.Content className="space-y-4 text-sm leading-7 text-muted">
+            <p>
+              Reusable proof backends stay document-free at the Humanify boundary. A face check belongs only to first-time capture.
+            </p>
+            <Button
+              onPress={() =>
+                setRequirementDraft((current) => ({
+                  ...current,
+                  faceVerificationRequired: !current.faceVerificationRequired,
+                }))}
+              variant={requirementDraft.faceVerificationRequired ? "primary" : "secondary"}
+            >
+              {requirementDraft.faceVerificationRequired ? "Face verification required" : "Face verification optional"}
+            </Button>
+            <ul className="list-disc space-y-1 pl-5">
+              <li>Use this when the server needs a live selfie or liveness step before release.</li>
+              <li>Humanify keeps only the normalized pass/fail facts, not raw biometric captures.</li>
+              <li>Members who use reusable proofs do not repeat a fresh face capture in the current flow.</li>
+            </ul>
+          </Card.Content>
+        </Card>
+      </div>
 
       <div className="grid gap-4 md:grid-cols-3">
         {verificationRows.map((row) => (

@@ -104,6 +104,22 @@ Notes:
 - Electric sync exposes policy and verification summaries needed by the dashboard and verifier, not raw provider payloads, raw document captures, or reusable credential bodies.
 - Direct Didit full-session import into Postgres or R2 is out of scope for this architecture.
 
+### 3.2.1 Verification storage runbook
+
+The current canonical tables carry the following exact verification fields:
+
+| Table / column | Stored fields |
+| --- | --- |
+| `verification_sessions.provider_status` after Didit reconciliation | `selectedProvider`, `status`, `requestedClaims`, Didit launch refs, `verifiedWebhook.{webhookType,timestamp,workflowId,providerStatus}`, `purge.{attemptedAt,outcome}`, optional `reusableCredentialBridge` summary |
+| `verification_sessions.result_summary` after Didit reconciliation | `authoritativeSource`, `providerReferenceId`, `providerStatus`, `requestedClaims`, `satisfiedClaims`, `faceVerificationPerformed`, `faceVerificationPassed` |
+| `verification_sessions.provider_status` after Privado proof read | `selectedProvider`, `providerSessionId`, `requestedClaims`, `status` |
+| `verification_sessions.result_summary` after Privado proof read | `authoritativeSource`, `providerReferenceId`, `providerStatus`, `requestedClaims`, `satisfiedClaims`, `message`, `proofReceiptRef`, optional `proofReceiptHash`, `nullifierRefs`, `trustedIssuerScopes`, `verifiablePresentationCount` |
+| `verification_artifacts` Didit row | `provider_name = didit`, `artifact_kind = capture_attestation`, `provider_reference_id = <didit session id>`, `redacted_payload =` the normalized Didit summary above |
+| `verification_artifacts` Privado bridge row | `provider_name = privado`, `artifact_kind = reusable_credential_bridge`, `provider_reference_id = <bridgeId>`, `expires_at = temporaryRetention.expiresAt`, `redacted_payload =` bridge contract summary only |
+| `verification_artifacts` Privado proof row | `provider_name = privado`, `artifact_kind = reusable_proof_receipt`, `provider_reference_id = <backend session id>`, `redacted_payload =` the normalized Privado proof summary above |
+
+These tables must not contain raw Didit callback bodies, full Didit decision arrays, JWZ payloads, full verifiable presentations, document images, or imported reusable credentials.
+
 ### 3.3 Observation and scoring
 
 | Entity | Stored in | Core fields |
@@ -174,6 +190,12 @@ Postgres should own:
 3. Durable embeddings and their ownership metadata.
 4. Outbox events, idempotency receipts, and projection state that lets other systems be rebuilt.
 5. Blob metadata, hash identity, retention metadata, redaction state, and minimal verification proof receipts/attestation summaries.
+
+For verification specifically, retention means:
+
+- Didit purge outcomes are retained as minimal receipt metadata in Postgres after provider-side deletion is requested.
+- bridge rows expire on `verification_artifacts.expires_at` and are bounded to the external-handoff window only.
+- reusable proof rows retain only redacted summary fields; they never become a second credential wallet.
 
 Recommended supporting table families:
 

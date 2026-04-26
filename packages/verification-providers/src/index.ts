@@ -1,5 +1,5 @@
 /**
- * Purpose: Exposes the shared verification strategy registry, pipeline catalog, strategy template, and claim helpers so apps never bake provider details into their own control flow.
+ * Purpose: Exposes the shared verification strategy registry, role-split manifests, pipeline catalog, strategy template, and claim helpers so apps never bake provider details into their own control flow.
  * Governing docs:
  * - AGENTS.md
  * - Implementation Plan.txt
@@ -27,11 +27,11 @@ import {
   type VerificationStrategyPathway,
   type VerificationStrategyPipelineDefinition,
 } from "./pipelines";
-import { diditVerificationProvider } from "./providers/didit";
-import { humanifyPolicyConsumerStrategy } from "./providers/humanify";
-import { privadoVerificationProvider } from "./providers/privado";
-import { selfVerificationProvider } from "./providers/self";
-import { worldIdVerificationProvider } from "./providers/world-id";
+import { diditCaptureFlowStrategy } from "./capture-flows/didit";
+import { humanifyPolicyConsumerStrategy } from "./policy-consumers/humanify";
+import { privadoReusableProofBackendStrategy } from "./reusable-proof-backends/privado";
+import { selfReusableProofBackendStrategy } from "./reusable-proof-backends/self";
+import { worldIdReusableProofBackendStrategy } from "./reusable-proof-backends/world-id";
 import {
   cloneVerificationStrategyDefinition,
   isUserSelectableVerificationStrategyRole,
@@ -60,8 +60,10 @@ export {
 } from "./claims";
 export {
   buildPrivadoWalletLaunch,
+  createPrivadoReusableCredentialBridge,
   createPrivadoVerificationPlan,
   normalizePrivadoVerificationResult,
+  type PrivadoReusableCredentialBridge,
   type PrivadoNormalizedVerificationResult,
   type PrivadoVerifierBackendQRCodeMessage,
   type PrivadoVerifierBackendSignInRequest,
@@ -97,6 +99,11 @@ export {
   type VerificationStrategyPathway,
   type VerificationStrategyPipelineDefinition,
 } from "./pipelines";
+export { diditCaptureFlowStrategy } from "./capture-flows/didit";
+export { humanifyPolicyConsumerStrategy } from "./policy-consumers/humanify";
+export { privadoReusableProofBackendStrategy } from "./reusable-proof-backends/privado";
+export { selfReusableProofBackendStrategy } from "./reusable-proof-backends/self";
+export { worldIdReusableProofBackendStrategy } from "./reusable-proof-backends/world-id";
 
 const roleSortOrder: Record<VerificationStrategyRole, number> = {
   capture_provider: 1,
@@ -110,12 +117,24 @@ const pathwaySortOrder: Record<VerificationStrategyPathway, number> = {
   proof_of_personhood: 3,
 };
 
-const registeredVerificationStrategies = [
-  diditVerificationProvider,
-  privadoVerificationProvider,
-  selfVerificationProvider,
-  worldIdVerificationProvider,
+export const registeredVerificationCaptureFlowStrategies = [
+  diditCaptureFlowStrategy,
+] as const satisfies readonly VerificationStrategyDefinition[];
+
+export const registeredVerificationReusableProofBackendStrategies = [
+  privadoReusableProofBackendStrategy,
+  selfReusableProofBackendStrategy,
+  worldIdReusableProofBackendStrategy,
+] as const satisfies readonly VerificationStrategyDefinition[];
+
+export const registeredVerificationPolicyConsumerStrategies = [
   humanifyPolicyConsumerStrategy,
+] as const satisfies readonly VerificationStrategyDefinition[];
+
+const registeredVerificationStrategies = [
+  ...registeredVerificationCaptureFlowStrategies,
+  ...registeredVerificationReusableProofBackendStrategies,
+  ...registeredVerificationPolicyConsumerStrategies,
 ] as const satisfies readonly VerificationStrategyDefinition[];
 
 const registeredVerificationStrategyPipelines = [
@@ -471,15 +490,129 @@ export function resolveVerificationStrategyConfiguration(input: {
   };
 }
 
-export type VerificationProviderCatalog = {
-  defaultProvider(): VerificationProviderDefinition;
-  get(providerId: string): VerificationProviderDefinition | undefined;
-  has(providerId: string): boolean;
+export type VerificationOptionDefinition = VerificationProviderDefinition;
+
+export type VerificationOptionCatalog = {
+  defaultOption(): VerificationOptionDefinition;
+  defaultProvider(): VerificationOptionDefinition;
+  get(optionId: string): VerificationOptionDefinition | undefined;
+  has(optionId: string): boolean;
   ids(): string[];
-  list(): VerificationProviderDefinition[];
-  require(providerId: string): VerificationProviderDefinition;
-  withEnabled(enabledProviderIds: readonly string[]): VerificationProviderCatalog;
+  list(): VerificationOptionDefinition[];
+  require(optionId: string): VerificationOptionDefinition;
+  withEnabled(enabledOptionIds: readonly string[]): VerificationOptionCatalog;
 };
+
+export type VerificationOptionConfiguration = {
+  availableOptionIds: string[];
+  availablePipelineIds: string[];
+  defaultOptionId: string;
+  defaultReusableProofBackendId?: string;
+  enabledOptionIds: string[];
+  enabledPipelineIds: string[];
+  policyConsumerId: string;
+};
+
+function createOptionCatalogFromStrategyCatalog(strategyCatalog: VerificationStrategyCatalog): VerificationOptionCatalog {
+  return {
+    defaultOption() {
+      return toVerificationProviderDefinition(strategyCatalog.defaultForRole("capture_provider"));
+    },
+    defaultProvider() {
+      return this.defaultOption();
+    },
+    get(optionId) {
+      const strategy = strategyCatalog.get(optionId);
+      return strategy && isUserSelectableVerificationStrategyRole(strategy.role)
+        ? toVerificationProviderDefinition(strategy)
+        : undefined;
+    },
+    has(optionId) {
+      const strategy = strategyCatalog.get(optionId);
+      return Boolean(strategy && isUserSelectableVerificationStrategyRole(strategy.role));
+    },
+    ids() {
+      return strategyCatalog.selectableIds();
+    },
+    list() {
+      return strategyCatalog.selectable().map((strategy) => toVerificationProviderDefinition(strategy));
+    },
+    require(optionId) {
+      const strategy = strategyCatalog.require(optionId);
+      if (!isUserSelectableVerificationStrategyRole(strategy.role)) {
+        throw new Error(`Unknown verification option "${optionId}".`);
+      }
+
+      return toVerificationProviderDefinition(strategy);
+    },
+    withEnabled(enabledOptionIds) {
+      return createOptionCatalogFromStrategyCatalog(strategyCatalog.withEnabled(enabledOptionIds));
+    },
+  };
+}
+
+export function createVerificationOptionCatalog(
+  options: readonly VerificationOptionDefinition[],
+): VerificationOptionCatalog {
+  return createOptionCatalogFromStrategyCatalog(createVerificationStrategyCatalog(options));
+}
+
+export const humanifyVerificationOptionCatalog = createOptionCatalogFromStrategyCatalog(humanifyVerificationStrategyCatalog);
+
+export function resolveVerificationOptionCatalog(input: { enabledOptionIds?: readonly string[] } = {}) {
+  return input.enabledOptionIds?.length
+    ? humanifyVerificationOptionCatalog.withEnabled(input.enabledOptionIds)
+    : humanifyVerificationOptionCatalog;
+}
+
+export const parseVerificationOptionSelection = parseVerificationStrategySelection;
+export const verificationOptionSupportsClaims = verificationStrategySupportsClaims;
+
+export function resolveVerificationOptionConfiguration(input: {
+  availableCatalog?: VerificationOptionCatalog;
+  defaultOptionId?: string;
+  defaultReusableProofBackendId?: string;
+  enabledOptionIds?: readonly string[];
+} = {}): VerificationOptionConfiguration {
+  try {
+    const availableStrategyCatalog = input.availableCatalog
+      ? createVerificationStrategyCatalog([
+          ...input.availableCatalog.list(),
+          humanifyVerificationStrategyCatalog.require("humanify"),
+        ])
+      : humanifyVerificationStrategyCatalog;
+    const strategyConfiguration = resolveVerificationStrategyConfiguration({
+      availableCatalog: availableStrategyCatalog,
+      defaultCaptureProviderId: input.defaultOptionId,
+      defaultReusableProofBackendId: input.defaultReusableProofBackendId,
+      enabledStrategyIds: input.enabledOptionIds,
+    });
+
+    return {
+      availableOptionIds: strategyConfiguration.availableStrategyIds,
+      availablePipelineIds: strategyConfiguration.availablePipelineIds,
+      defaultOptionId: strategyConfiguration.defaultCaptureProviderId,
+      defaultReusableProofBackendId: strategyConfiguration.defaultReusableProofBackendId,
+      enabledOptionIds: strategyConfiguration.enabledStrategyIds,
+      enabledPipelineIds: strategyConfiguration.enabledPipelineIds,
+      policyConsumerId: strategyConfiguration.policyConsumerId,
+    };
+  } catch (error) {
+    if (error instanceof Error) {
+      if (error.message.startsWith('Unknown verification strategy "')) {
+        throw new Error(error.message.replace("verification strategy", "verification option"));
+      }
+
+      if (error.message.startsWith('Enabled verification strategies include unknown strategy "')) {
+        throw new Error(error.message.replace("verification strategies", "verification options").replace("strategy", "option"));
+      }
+    }
+
+    throw error;
+  }
+}
+
+export type VerificationProviderCatalog = VerificationOptionCatalog;
 
 export type VerificationProviderConfiguration = {
   availablePipelineIds: string[];
@@ -491,82 +624,41 @@ export type VerificationProviderConfiguration = {
   policyConsumerId: string;
 };
 
-function createProviderCatalogFromStrategyCatalog(strategyCatalog: VerificationStrategyCatalog): VerificationProviderCatalog {
-  return {
-    defaultProvider() {
-      return toVerificationProviderDefinition(strategyCatalog.defaultForRole("capture_provider"));
-    },
-    get(providerId) {
-      const strategy = strategyCatalog.get(providerId);
-      return strategy && isUserSelectableVerificationStrategyRole(strategy.role)
-        ? toVerificationProviderDefinition(strategy)
-        : undefined;
-    },
-    has(providerId) {
-      const strategy = strategyCatalog.get(providerId);
-      return Boolean(strategy && isUserSelectableVerificationStrategyRole(strategy.role));
-    },
-    ids() {
-      return strategyCatalog.selectableIds();
-    },
-    list() {
-      return strategyCatalog.selectable().map((strategy) => toVerificationProviderDefinition(strategy));
-    },
-    require(providerId) {
-      const strategy = strategyCatalog.require(providerId);
-      if (!isUserSelectableVerificationStrategyRole(strategy.role)) {
-        throw new Error(`Unknown verification provider "${providerId}".`);
-      }
-
-      return toVerificationProviderDefinition(strategy);
-    },
-    withEnabled(enabledProviderIds) {
-      return createProviderCatalogFromStrategyCatalog(strategyCatalog.withEnabled(enabledProviderIds));
-    },
-  };
-}
-
 export function createVerificationProviderCatalog(
   providers: readonly VerificationProviderDefinition[],
 ): VerificationProviderCatalog {
-  return createProviderCatalogFromStrategyCatalog(createVerificationStrategyCatalog(providers));
+  return createVerificationOptionCatalog(providers);
 }
 
-export const humanifyVerificationProviderCatalog = createProviderCatalogFromStrategyCatalog(humanifyVerificationStrategyCatalog);
+export const humanifyVerificationProviderCatalog = humanifyVerificationOptionCatalog;
 
 export function resolveVerificationProviderCatalog(input: { enabledProviderIds?: readonly string[] } = {}) {
-  return input.enabledProviderIds?.length
-    ? humanifyVerificationProviderCatalog.withEnabled(input.enabledProviderIds)
-    : humanifyVerificationProviderCatalog;
+  return resolveVerificationOptionCatalog({
+    enabledOptionIds: input.enabledProviderIds,
+  });
 }
 
-export const parseVerificationProviderSelection = parseVerificationStrategySelection;
-export const verificationProviderSupportsClaims = verificationStrategySupportsClaims;
+export const parseVerificationProviderSelection = parseVerificationOptionSelection;
+export const verificationProviderSupportsClaims = verificationOptionSupportsClaims;
 
 export function resolveVerificationProviderConfiguration(input: {
   availableCatalog?: VerificationProviderCatalog;
   defaultProviderId?: string;
   enabledProviderIds?: readonly string[];
 } = {}): VerificationProviderConfiguration {
-  const availableStrategyCatalog = input.availableCatalog
-    ? createVerificationStrategyCatalog([
-        ...input.availableCatalog.list(),
-        humanifyVerificationStrategyCatalog.require("humanify"),
-      ])
-    : humanifyVerificationStrategyCatalog;
-  const strategyConfiguration = resolveVerificationStrategyConfiguration({
-    availableCatalog: availableStrategyCatalog,
-    defaultCaptureProviderId: input.defaultProviderId,
-    enabledStrategyIds: input.enabledProviderIds,
+  const optionConfiguration = resolveVerificationOptionConfiguration({
+    availableCatalog: input.availableCatalog,
+    defaultOptionId: input.defaultProviderId,
+    enabledOptionIds: input.enabledProviderIds,
   });
 
   return {
-    availablePipelineIds: strategyConfiguration.availablePipelineIds,
-    availableProviderIds: strategyConfiguration.availableStrategyIds,
-    defaultProviderId: strategyConfiguration.defaultCaptureProviderId,
-    defaultReusableProofBackendId: strategyConfiguration.defaultReusableProofBackendId,
-    enabledPipelineIds: strategyConfiguration.enabledPipelineIds,
-    enabledProviderIds: strategyConfiguration.enabledStrategyIds,
-    policyConsumerId: strategyConfiguration.policyConsumerId,
+    availablePipelineIds: optionConfiguration.availablePipelineIds,
+    availableProviderIds: optionConfiguration.availableOptionIds,
+    defaultProviderId: optionConfiguration.defaultOptionId,
+    defaultReusableProofBackendId: optionConfiguration.defaultReusableProofBackendId,
+    enabledPipelineIds: optionConfiguration.enabledPipelineIds,
+    enabledProviderIds: optionConfiguration.enabledOptionIds,
+    policyConsumerId: optionConfiguration.policyConsumerId,
   };
 }

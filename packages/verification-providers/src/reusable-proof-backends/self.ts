@@ -14,7 +14,7 @@
 
 import { defineVerificationStrategy } from "../template";
 
-export const selfVerificationProvider = defineVerificationStrategy({
+export const selfReusableProofBackendStrategy = defineVerificationStrategy({
   benefits: [
     "Alternative reusable-proof backend when supported issuer coverage matches the community's policy.",
     "Shows only the claims you need instead of exposing the whole document.",
@@ -36,7 +36,7 @@ export const selfVerificationProvider = defineVerificationStrategy({
   supportedClaimKeys: ["age_over_18", "nationality"],
   thingsToKnow: [
     "You usually need a biometric passport, NFC national ID, or another attestation Self can read.",
-    "Coverage is narrower than a broad first-time capture provider such as Didit.",
+    "Coverage is narrower than a broad first-time capture flow such as Didit.",
     "Privado remains Humanify's primary reusable-proof backend for the current architecture.",
   ],
   title: "Self.xyz",
