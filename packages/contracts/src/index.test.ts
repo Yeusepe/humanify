@@ -35,9 +35,12 @@ test("contract summary stays aligned with the documented baseline", () => {
 });
 
 test("typed contract constants stay aligned with the canonical JSON schema", () => {
-  expect(humanifyActionLadder).toEqual([...getHumanifyContractSummary().actions]);
-  expect(humanifyActionLadder).toEqual([...schema.$defs.Action.enum]);
-  expect(humanifyInferenceEventKinds).toEqual([...schema.$defs.InferenceEvent.properties.kind.enum]);
+  const documentedActions = [...schema.$defs.Action.enum];
+  const documentedEventKinds = [...schema.$defs.InferenceEvent.properties.kind.enum];
+
+  expect([...humanifyActionLadder] as string[]).toEqual([...getHumanifyContractSummary().actions]);
+  expect([...humanifyActionLadder] as string[]).toEqual(documentedActions);
+  expect([...humanifyInferenceEventKinds] as string[]).toEqual(documentedEventKinds);
   expect(isHumanifyAction("quarantine")).toBe(true);
   expect(isHumanifyAction("delete")).toBe(false);
 });

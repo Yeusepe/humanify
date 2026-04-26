@@ -74,7 +74,15 @@ export function parseTraceParent(value: string): TraceContext | undefined {
   };
 }
 
-export function injectTraceContext(headers: Headers | Record<string, string>, traceContext: TraceContext) {
+export function injectTraceContext(headers: Headers, traceContext: TraceContext): Headers;
+export function injectTraceContext(
+  headers: Record<string, string>,
+  traceContext: TraceContext,
+): Record<string, string>;
+export function injectTraceContext(
+  headers: Headers | Record<string, string>,
+  traceContext: TraceContext,
+): Headers | Record<string, string> {
   const traceparent = formatTraceParent(traceContext);
 
   if (headers instanceof Headers) {
@@ -101,7 +109,10 @@ export function redactSensitiveHeaders(headers: Headers | Record<string, string 
   );
 }
 
-export function createStructuredLogFields(context: StructuredLogContext, fields: Record<string, unknown> = {}) {
+export function createStructuredLogFields<TFields extends Record<string, unknown>>(
+  context: StructuredLogContext,
+  fields: TFields = {} as TFields,
+) {
   return {
     environment: context.environment,
     requestId: context.requestId,

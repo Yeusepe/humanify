@@ -29,7 +29,9 @@ test("postgres connection parsing keeps canonical connection details typed", () 
     username: "humanify",
   });
 
-  expect(redactPostgresConnectionString("postgres://humanify:secret@localhost:5432/humanify")).toContain("[redacted]");
+  expect(
+    decodeURIComponent(new URL(redactPostgresConnectionString("postgres://humanify:secret@localhost:5432/humanify")).password),
+  ).toBe("[redacted]");
 });
 
 test("canonical write plans require at least one postgres mutation before outbox publish", () => {
