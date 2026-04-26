@@ -85,6 +85,15 @@ import {
   type RequestTelemetryContext,
   type TraceContext,
 } from "@humanify/telemetry";
+import {
+  getSupportedHumanifyClaimIds,
+  isHumanifyClaimKey,
+  parseVerificationProviderSelection,
+  resolveVerificationProviderConfiguration,
+  resolveVerificationProviderCatalog,
+  type HumanifyClaimKey,
+  type VerificationProviderConfiguration,
+} from "@humanify/verification-providers";
 
 const routeGroups = [
   "health",
@@ -202,6 +211,36 @@ function requireKnownAction(value: string, fieldName: string): HumanifyAction {
   }
 
   return value;
+}
+
+function requireKnownVerificationProvider(value: string, fieldName: string, providerIds: readonly string[]) {
+  if (!isKnownValue(value, providerIds)) {
+    throw new ApiRouteError(
+      400,
+      "validation_failed",
+      `${fieldName} must be one of: ${providerIds.join(", ")}.`,
+    );
+  }
+
+  return value;
+}
+
+function requireKnownHumanifyClaims(values: string[], fieldName: string, supportedClaimIds: readonly HumanifyClaimKey[]) {
+  if (values.length === 0) {
+    throw new ApiRouteError(400, "validation_failed", `${fieldName} must contain at least one supported claim.`);
+  }
+
+  return values.map((value) => {
+    if (!isHumanifyClaimKey(value)) {
+      throw new ApiRouteError(
+        400,
+        "validation_failed",
+        `${fieldName} must only include supported claims: ${supportedClaimIds.join(", ")}.`,
+      );
+    }
+
+    return value;
+  });
 }
 
 function buildEnvelope<TData>(requestId: string, data: TData): ApiEnvelope<TData> {
@@ -558,6 +597,10 @@ export function createApiApp(options: ApiAppOptions = {}) {
     connectionString: dataPlaneConfig.postgresUrl,
   });
   const sessionConfig = loadSessionConfig(env);
+  const verificationProviderCatalog = resolveVerificationProviderCatalog({
+    enabledProviderIds: parseVerificationProviderSelection(env.HUMANIFY_ENABLED_VERIFICATION_PROVIDERS),
+  });
+  const supportedHumanifyClaimIds = getSupportedHumanifyClaimIds();
   const telemetry = createTelemetryBootstrap({
     ...identity,
     sentryDsn: observability.sentryDsn,
@@ -629,6 +672,14 @@ export function createApiApp(options: ApiAppOptions = {}) {
     initiatedBy: t.Optional(t.String({ minLength: 1 })),
     requiredCapabilities: t.Array(t.String({ minLength: 1 })),
     userId: t.String({ minLength: 1 }),
+  });
+
+  const verificationConfigSchema = t.Object({
+    actorUserId: t.String({ minLength: 1 }),
+    defaultProviderId: t.Optional(t.String({ minLength: 1 })),
+    enabledProviderIds: t.Array(t.String({ minLength: 1 })),
+    suspiciousRoleIds: t.Optional(t.Array(t.String({ minLength: 1 }))),
+    trustedRoleIds: t.Optional(t.Array(t.String({ minLength: 1 }))),
   });
 
   const evidenceSchema = t.Object({
@@ -925,6 +976,20 @@ export function createApiApp(options: ApiAppOptions = {}) {
           "/verification",
           ({ body, params, request, set }) => {
             const requestContext = ensureResponseContext(request, set);
+            let providerConfig: VerificationProviderConfiguration;
+            try {
+              providerConfig = resolveVerificationProviderConfiguration({
+                availableCatalog: verificationProviderCatalog,
+                defaultProviderId: body.defaultProviderId,
+                enabledProviderIds: body.enabledProviderIds,
+              });
+            } catch (error) {
+              throw new ApiRouteError(
+                400,
+                "validation_failed",
+                error instanceof Error ? error.message : "Verification provider configuration is invalid.",
+              );
+            }
             const artifacts = buildWriteArtifacts({
               aggregateId: params.guildId,
               aggregateType: "verification_requirement",
@@ -948,8 +1013,11 @@ export function createApiApp(options: ApiAppOptions = {}) {
               kind: "guild.verification.updated",
               payload: {
                 actorUserId: body.actorUserId,
+                defaultProviderId: providerConfig.defaultProviderId,
+                enabledProviderIds: providerConfig.enabledProviderIds,
                 guildId: params.guildId,
-                requiredCapabilities: body.suspiciousRoleIds ?? [],
+                suspiciousRoleIds: body.suspiciousRoleIds ?? [],
+                trustedRoleIds: body.trustedRoleIds ?? [],
               },
               requestContext,
               scope: `guild-verification:${params.guildId}`,
@@ -962,6 +1030,9 @@ export function createApiApp(options: ApiAppOptions = {}) {
               persistence: "planned_not_persisted",
               queueEnvelope: artifacts.queueEnvelope,
               verificationConfig: {
+                availableProviderIds: providerConfig.availableProviderIds,
+                defaultProviderId: providerConfig.defaultProviderId,
+                enabledProviderIds: providerConfig.enabledProviderIds,
                 fallbackRoles: body.trustedRoleIds ?? [],
                 guildId: params.guildId,
                 suspiciousRoleIds: body.suspiciousRoleIds ?? [],
@@ -969,7 +1040,7 @@ export function createApiApp(options: ApiAppOptions = {}) {
               writePlan: artifacts.writePlan,
             });
           },
-          { body: policyBodySchema },
+          { body: verificationConfigSchema },
         )
         .put("/channels", ({ request, set }) => {
           ensureResponseContext(request, set);
@@ -1639,6 +1710,9 @@ export function createApiApp(options: ApiAppOptions = {}) {
       "/verification/challenges/:challengeId/complete",
       ({ body, params, request, requestContext, set }) => {
         const verified = verifyVerifierChallengeToken(body.token, sessionConfig.sessionSecret, now());
+        const providerId = requireKnownVerificationProvider(body.providerId, "providerId", verificationProviderCatalog.ids());
+        const providerDefinition = verificationProviderCatalog.require(providerId);
+        const requestedClaims = requireKnownHumanifyClaims(body.requestedClaims, "requestedClaims", supportedHumanifyClaimIds);
 
         if (verified.challengeId !== params.challengeId) {
           throw new ApiRouteError(400, "validation_failed", "Challenge token does not match the requested challengeId.");
@@ -1674,6 +1748,8 @@ export function createApiApp(options: ApiAppOptions = {}) {
           payload: {
             challengeId: params.challengeId,
             guildId: body.guildId,
+            providerId,
+            requestedClaims,
             sessionId: body.sessionId,
             userId: body.userId,
           },
@@ -1694,11 +1770,16 @@ export function createApiApp(options: ApiAppOptions = {}) {
           },
           persistence: "planned_not_persisted",
           providerBoundary: {
-            nextStep: "provider_callback_required",
-            providerCallbacksConfigured: false,
+            handoffKind: providerDefinition.integration.handoffKind,
+            nextStep: providerDefinition.integration.completionMode,
+            providerFlowConfigured: false,
+            providerServerEndpoint: providerDefinition.integration.serverEndpointPath,
             releaseEligible: false,
+            requestedClaims,
             requiredCapabilities: verified.requiredCapabilities,
-            status: "pending_provider_callback",
+            selectedProvider: providerId,
+            serverVerificationNote: providerDefinition.integration.serverVerificationNote,
+            status: "pending_provider_verification",
           },
           queueEnvelope: artifacts.queueEnvelope,
           session: buildDerivedVerificationSession(verified, "provider_pending"),
@@ -1708,6 +1789,8 @@ export function createApiApp(options: ApiAppOptions = {}) {
       {
         body: t.Object({
           guildId: t.String({ minLength: 1 }),
+          providerId: t.String({ minLength: 1 }),
+          requestedClaims: t.Array(t.String({ minLength: 1 })),
           sessionId: t.String({ minLength: 1 }),
           token: t.String({ minLength: 1 }),
           userId: t.String({ minLength: 1 }),
@@ -1724,9 +1807,9 @@ export function createApiApp(options: ApiAppOptions = {}) {
         }
 
         return buildEnvelope(requestContext.requestId, {
-          callbackBoundary: {
+          providerBoundary: {
             nextStep: "complete_challenge",
-            providerCallbacksConfigured: false,
+            providerFlowConfigured: false,
             releaseEligible: false,
             status: "challenge_link_verified",
           },
@@ -1752,7 +1835,7 @@ export function createApiApp(options: ApiAppOptions = {}) {
         throw new ApiRouteError(
           409,
           "conflict",
-          "Verification release stays blocked until a server-verified provider callback marks the session as passed in canonical state.",
+          "Verification release stays blocked until Humanify verifies the selected provider handoff against canonical state.",
         );
       },
       {

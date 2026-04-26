@@ -195,13 +195,15 @@ test("message-context intake, verifier signed links, and moderation planning sta
     apiBaseUrl: "http://humanify.local",
     challengeId: verification.session.challengeId,
     guildId: "guild_123",
+    providerId: "self",
+    requestedClaims: ["age_over_18", "nationality"],
     sessionId: verification.session.sessionId,
     token: verification.challengeToken,
     userId,
   });
 
   expect(completed.persistence).toBe("planned_not_persisted");
-  expect(completed.providerBoundary.status).toBe("pending_provider_callback");
+  expect(completed.providerBoundary.status).toBe("pending_provider_verification");
 
   const releaseResponse = await app.handle(
     new Request(`http://humanify.local/verification/sessions/${verification.session.sessionId}/release`, {
@@ -223,7 +225,7 @@ test("message-context intake, verifier signed links, and moderation planning sta
 
   expect(releaseResponse.status).toBe(409);
   expect(releaseError.errorCode).toBe("conflict");
-  expect(releaseError.message).toContain("provider callback");
+  expect(releaseError.message).toContain("provider handoff");
 
   const moderationResponse = await app.handle(
     new Request("http://humanify.local/guilds/guild_123/moderation/quarantine", {

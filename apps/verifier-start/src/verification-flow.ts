@@ -15,6 +15,15 @@
  */
 
 import { createRequestTelemetryContext, injectRequestTelemetryHeaders } from "@humanify/telemetry";
+import {
+  getDefaultHumanifyIdClaimBundle as getSharedDefaultHumanifyIdClaimBundle,
+  parseVerificationProviderSelection,
+  resolveVerificationProviderCatalog,
+  type HumanifyClaimKey,
+  type HumanifyIdClaimBundle,
+  type VerificationProviderDefinition,
+  type VerificationProviderHandoffKind,
+} from "@humanify/verification-providers";
 
 export type VerificationRouteSearch = {
   serverName?: string;
@@ -22,6 +31,9 @@ export type VerificationRouteSearch = {
   token?: string;
   username?: string;
 };
+
+export type VerificationProviderId = VerificationProviderDefinition["id"];
+export type VerificationProviderOption = VerificationProviderDefinition;
 
 export type VerificationSessionSnapshot = {
   challengeExpiresAt: string;
@@ -35,19 +47,21 @@ export type VerificationSessionSnapshot = {
   userId: string;
 };
 
-export type VerificationCallbackBoundary = {
+export type VerificationProviderBoundary = {
+  handoffKind?: VerificationProviderHandoffKind;
   nextStep: string;
-  providerCallbacksConfigured: boolean;
+  providerFlowConfigured: boolean;
+  providerServerEndpoint?: string;
   releaseEligible: boolean;
+  requestedClaims?: HumanifyClaimKey[];
+  requiredCapabilities?: string[];
+  selectedProvider?: VerificationProviderId;
+  serverVerificationNote?: string;
   status: string;
 };
 
-export type VerificationProviderBoundary = VerificationCallbackBoundary & {
-  requiredCapabilities: string[];
-};
-
 export type VerificationSessionData = {
-  callbackBoundary: VerificationCallbackBoundary;
+  providerBoundary: VerificationProviderBoundary;
   persistence: string;
   session: VerificationSessionSnapshot;
 };
@@ -105,6 +119,31 @@ export class VerifierApiError extends Error {
     super(message);
     this.name = "VerifierApiError";
   }
+}
+
+export function getVerificationProviderCatalog(env: Record<string, string | undefined> = {}) {
+  return resolveVerificationProviderCatalog({
+    enabledProviderIds: parseVerificationProviderSelection(env.VITE_HUMANIFY_ENABLED_VERIFICATION_PROVIDERS),
+  });
+}
+
+export function getDefaultVerificationProviderId(env: Record<string, string | undefined> = {}) {
+  return getVerificationProviderCatalog(env).defaultProvider().id;
+}
+
+export function getVerificationProviderOptions(env: Record<string, string | undefined> = {}): VerificationProviderOption[] {
+  return getVerificationProviderCatalog(env).list();
+}
+
+export function getVerificationProvider(
+  providerId: VerificationProviderId,
+  env: Record<string, string | undefined> = {},
+): VerificationProviderOption {
+  return getVerificationProviderCatalog(env).require(providerId);
+}
+
+export function getDefaultHumanifyIdClaimBundle(): HumanifyIdClaimBundle {
+  return getSharedDefaultHumanifyIdClaimBundle();
 }
 
 export function parseVerificationSearch(search: Record<string, unknown>): VerificationRouteSearch {
@@ -178,6 +217,8 @@ export async function completeVerificationChallenge(
     apiBaseUrl: string;
     challengeId: string;
     guildId: string;
+    providerId: VerificationProviderId;
+    requestedClaims: readonly HumanifyClaimKey[];
     sessionId: string;
     token: string;
     userId: string;
@@ -189,6 +230,8 @@ export async function completeVerificationChallenge(
     {
       body: JSON.stringify({
         guildId: input.guildId,
+        providerId: input.providerId,
+        requestedClaims: input.requestedClaims,
         sessionId: input.sessionId,
         token: input.token,
         userId: input.userId,
@@ -207,7 +250,7 @@ export async function completeVerificationChallenge(
 
 export function buildVerificationChecklist(input: {
   challengeCompleted: boolean;
-  providerCallbacksConfigured: boolean;
+  providerFlowConfigured: boolean;
   releaseEligible: boolean;
 }) {
   const items: VerificationChecklistItem[] = [
@@ -224,16 +267,16 @@ export function buildVerificationChecklist(input: {
       title: "Discord-bound challenge",
     },
     {
-      detail: input.providerCallbacksConfigured
-        ? "Provider callbacks are configured and can advance the session."
-        : "Provider callbacks remain disabled until Humanify documents a concrete provider signature and replay contract.",
-      status: input.providerCallbacksConfigured ? "pending" : "blocked",
-      title: "Provider callback verification",
+      detail: input.providerFlowConfigured
+        ? "The selected provider's server verification flow is configured and can advance the session."
+        : "Provider verification remains disabled until Humanify wires the selected provider's server-side proof or webhook contract.",
+      status: input.providerFlowConfigured ? "pending" : "blocked",
+      title: "Provider verification",
     },
     {
       detail: input.releaseEligible
         ? "The session is eligible for Bun-side release orchestration."
-        : "Release-to-role stays blocked until a provider callback marks the session passed in canonical Postgres state.",
+        : "Release-to-role stays blocked until Humanify verifies the selected provider handoff in canonical Postgres state.",
       status: input.releaseEligible ? "pending" : "blocked",
       title: "Release-to-role",
     },

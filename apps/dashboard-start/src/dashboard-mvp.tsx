@@ -124,13 +124,13 @@ const verificationRows = [
     state: "challenge_issued",
   },
   {
-    meaning: "Challenge completion planned a canonical write, but provider callback is still required.",
-    nextStep: "Wait for a signed provider callback before any release decision.",
+    meaning: "Challenge completion planned a canonical write, but server-side provider verification is still required.",
+    nextStep: "Wait for the selected provider handoff to be verified server-side before any release decision.",
     route: "POST /verification/challenges/:challengeId/complete",
     state: "provider_pending",
   },
   {
-    meaning: "Release stays blocked until Bun sees canonical passed state from a verified provider callback.",
+    meaning: "Release stays blocked until Bun sees canonical passed state from a verified provider handoff.",
     nextStep: "Keep quarantine or review state intact.",
     route: "POST /verification/sessions/:sessionId/release",
     state: "release_blocked",
@@ -627,7 +627,7 @@ export function DashboardVerificationPage() {
         <Alert.Content>
           <Alert.Title>Verification is designed to release legitimate users safely.</Alert.Title>
           <Alert.Description>
-            The dashboard reflects challenge, provider callback, and release gates explicitly so operators can see where sessions stop without assuming provider success equals release.
+            The dashboard reflects challenge, provider-verification, and release gates explicitly so operators can see where sessions stop without assuming provider success equals release.
           </Alert.Description>
         </Alert.Content>
       </Alert>
@@ -681,7 +681,7 @@ export function DashboardVerificationPage() {
               </Modal.Header>
               <Modal.Body className="space-y-4">
                 <p>A browser success message is never enough.</p>
-                <p>Provider callback verification and replay protection must pass server-side first.</p>
+                <p>Provider verification and replay protection must pass server-side first.</p>
                 <p>Only Bun can decide whether release-to-role or quarantine removal is currently allowed for the guild.</p>
               </Modal.Body>
               <Modal.Footer>

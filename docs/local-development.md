@@ -43,6 +43,8 @@ It performs the following in order:
 
 This is local development orchestration, not a production deployment model.
 
+If startup fails before the managed app processes are attached (for example, during migrations), the launcher now tears Docker Compose back down instead of leaving infra half-running.
+
 ## 2. Local infrastructure services
 
 The local infrastructure stack currently includes:
@@ -88,6 +90,7 @@ Before Docker or any child process starts, `bun run dev` checks that every requi
 
 - This prevents stale listeners from satisfying readiness probes and causing a later false "stack is ready" message.
 - It also keeps the command honest on shared machines: if the port map is already occupied, the stack does not partially boot.
+- On Windows, the launcher first attempts to reap **repo-owned stale listeners** still bound to managed stack ports before failing preflight.
 
 On Windows, use this PowerShell command to find the conflicting process for one or more ports:
 
@@ -116,6 +119,7 @@ Important variables:
 | --- | --- |
 | `DISCORD_BOT_TOKEN` | required for the bot unless explicitly skipped |
 | `HUMANIFY_SKIP_BOT` | explicit opt-out for botless local work |
+| `HUMANIFY_ENABLED_VERIFICATION_PROVIDERS` | comma-separated provider ids enabled in the Bun API (`self,world_id,didit` by default) |
 | `HUMANIFY_API_PORT` | Bun API port |
 | `HUMANIFY_DATABASE_URL` | optional full Postgres connection string for Bun-side migration/bootstrap tooling |
 | `HUMANIFY_POSTGRES_HOST` | host used by host-run Bun tooling when `HUMANIFY_DATABASE_URL` is unset |
@@ -127,11 +131,15 @@ Important variables:
 | `HUMANIFY_MINIO_*` | MinIO local credentials and ports |
 | `HUMANIFY_QDRANT_*` | Qdrant local ports |
 | `HUMANIFY_GRAFANA_*` | Grafana local credentials and port |
+| `VITE_HUMANIFY_ENABLED_VERIFICATION_PROVIDERS` | comma-separated provider ids shown in the verifier UI; keep this aligned with the API variable above |
 
 SQLite/libSQL-based local prediction state remains file-backed and does not require a separate container yet.
 
 ## 7. Stopping the stack
 
 The root command stops the managed Bun and Rust processes on `SIGINT`/`SIGTERM` and then runs Docker Compose down for the local infrastructure.
+
+On Windows, the launcher now stops each managed child with `taskkill /PID <pid> /T /F` so `Ctrl+C` tears down the full spawned process tree instead of leaving nested Bun, Cargo, or Vite processes behind.
+It also performs one last pass over the managed port map to reap any remaining repo-owned listeners that survived after their parent process exited.
 
 Named Docker volumes persist between runs, so local development data is not discarded unless you remove the volumes yourself.

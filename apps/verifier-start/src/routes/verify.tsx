@@ -1,5 +1,5 @@
 /**
- * Purpose: Renders the first real verifier flow: load signed-link session context, confirm the Discord-bound challenge, and stop before unsupported provider callbacks.
+ * Purpose: Renders the first real verifier flow: load signed-link session context, confirm the Discord-bound challenge, and stop before unsupported provider handoffs.
  * Governing docs:
  * - AGENTS.md
  * - Implementation Plan.txt
@@ -17,7 +17,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-import { Card } from "@heroui/react";
+import { Button, Card } from "@heroui/react";
 import { createFileRoute } from "@tanstack/react-router";
 
 import { ProductShell } from "@humanify/ui";
@@ -26,9 +26,14 @@ import {
   buildVerificationChecklist,
   completeVerificationChallenge,
   fetchVerificationSession,
+  getDefaultHumanifyIdClaimBundle,
+  getDefaultVerificationProviderId,
+  getVerificationProvider,
   getVerifierApiBaseUrl,
+  getVerificationProviderOptions,
   hasVerificationLink,
   parseVerificationSearch,
+  type VerificationProviderId,
   type VerificationChallengeData,
   type VerificationSessionData,
 } from "../verification-flow";
@@ -42,13 +47,23 @@ function VerificationRoute() {
   const search = Route.useSearch();
   const [sessionData, setSessionData] = useState<VerificationSessionData | null>(null);
   const [challengeData, setChallengeData] = useState<VerificationChallengeData | null>(null);
+  const providerEnv = import.meta.env as Record<string, string | undefined>;
+  const [selectedProvider, setSelectedProvider] = useState<VerificationProviderId>(() =>
+    getDefaultVerificationProviderId(providerEnv),
+  );
   const [loadState, setLoadState] = useState<"error" | "idle" | "loading" | "ready">(
     hasVerificationLink(search) ? "loading" : "idle",
   );
   const [actionState, setActionState] = useState<"error" | "idle" | "submitting" | "success">("idle");
   const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
 
-  const apiBaseUrl = getVerifierApiBaseUrl(import.meta.env as Record<string, string | undefined>);
+  const apiBaseUrl = getVerifierApiBaseUrl(providerEnv);
+  const providerOptions = useMemo(() => getVerificationProviderOptions(providerEnv), [providerEnv]);
+  const selectedProviderDefinition = useMemo(
+    () => getVerificationProvider(selectedProvider, providerEnv),
+    [providerEnv, selectedProvider],
+  );
+  const humanifyIdBundle = useMemo(() => getDefaultHumanifyIdClaimBundle(), []);
 
   useEffect(() => {
     let active = true;
@@ -96,21 +111,20 @@ function VerificationRoute() {
   }, [apiBaseUrl, search.sessionId, search.token]);
 
   const effectiveSession = challengeData?.session ?? sessionData?.session ?? null;
-  const providerCallbacksConfigured =
-    challengeData?.providerBoundary.providerCallbacksConfigured ??
-    sessionData?.callbackBoundary.providerCallbacksConfigured ??
+  const providerFlowConfigured =
+    challengeData?.providerBoundary.providerFlowConfigured ??
+    sessionData?.providerBoundary.providerFlowConfigured ??
     false;
-  const releaseEligible =
-    challengeData?.providerBoundary.releaseEligible ?? sessionData?.callbackBoundary.releaseEligible ?? false;
+  const releaseEligible = challengeData?.providerBoundary.releaseEligible ?? sessionData?.providerBoundary.releaseEligible ?? false;
   const challengeCompleted = challengeData?.challenge.verified ?? false;
   const checklist = useMemo(
     () =>
       buildVerificationChecklist({
         challengeCompleted,
-        providerCallbacksConfigured,
+        providerFlowConfigured,
         releaseEligible,
       }),
-    [challengeCompleted, providerCallbacksConfigured, releaseEligible],
+    [challengeCompleted, providerFlowConfigured, releaseEligible],
   );
 
   async function handleChallengeConfirmation() {
@@ -126,6 +140,8 @@ function VerificationRoute() {
         apiBaseUrl,
         challengeId: effectiveSession.challengeId,
         guildId: effectiveSession.guildId,
+        providerId: selectedProvider,
+        requestedClaims: humanifyIdBundle.claims,
         sessionId: effectiveSession.sessionId,
         token: search.token,
         userId: effectiveSession.userId,
@@ -134,7 +150,7 @@ function VerificationRoute() {
       setChallengeData(data);
       setActionState("success");
       setFeedbackMessage(
-        "Challenge accepted. The session is now waiting for a server-verified provider callback before release can happen.",
+        `Challenge accepted. ${selectedProviderDefinition.title} is now the selected verification path, but release still waits for Humanify's server-side provider verification contract.`,
       );
     } catch (error) {
       setActionState("error");
@@ -159,7 +175,7 @@ function VerificationRoute() {
           variant: "secondary",
         },
         {
-          description: "Provider callbacks remain explicit until Bun documents and verifies a concrete provider contract.",
+          description: "Provider verification remains explicit until Bun documents and wires a concrete server-side provider contract.",
           title: "Release status",
           value: releaseEligible ? "eligible" : "blocked",
           variant: "tertiary",
@@ -178,8 +194,8 @@ function VerificationRoute() {
             </Card.Header>
             <Card.Content className="space-y-3 text-sm leading-7 text-muted">
               <p>
-                This first real verifier path does not fake Discord OAuth, provider success, or role release. It only accepts
-                a signed link from the API, confirms the challenge, and then waits for future provider callback wiring.
+                 This first real verifier path does not fake Discord OAuth, provider success, or role release. It only accepts
+                 a signed link from the API, confirms the challenge, and then waits for future server-side provider wiring.
               </p>
               <p className="font-medium text-foreground">
                 Expected query params: <code className="rounded bg-content2 px-2 py-1 text-xs">sessionId</code> and{" "}
@@ -239,6 +255,107 @@ function VerificationRoute() {
               </Card>
             </div>
 
+            <div className="grid gap-4 xl:grid-cols-[1.3fr_0.9fr]">
+              <Card>
+                <Card.Header className="gap-2">
+                  <Card.Title>Verification provider choice</Card.Title>
+                  <Card.Description>
+                    Pick the option that best matches what you care about: privacy, coverage, or speed.
+                  </Card.Description>
+                </Card.Header>
+                <Card.Content className="space-y-4 text-sm leading-7 text-muted">
+                  {providerOptions.map((provider) => {
+                    const current = selectedProvider === provider.id;
+                    return (
+                      <div
+                        className={`rounded-2xl border px-4 py-4 ${current ? "border-foreground/20 bg-content2" : "border-content3"}`}
+                        key={provider.id}
+                      >
+                        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                          <div className="space-y-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="font-semibold text-foreground">{provider.title}</p>
+                              <span className="rounded-full border border-content3 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-foreground">
+                                {provider.privacySummary}
+                              </span>
+                            </div>
+                            <p>{provider.summary}</p>
+                            <p className="text-xs leading-6">
+                              <span className="font-semibold text-foreground">Good for:</span> {provider.goodFor}
+                            </p>
+                            <p className="text-xs leading-6">
+                              <span className="font-semibold text-foreground">What you need:</span> {provider.whatYouNeed}
+                            </p>
+                            <ul className="list-disc space-y-1 pl-5">
+                              {provider.benefits.map((reason) => (
+                                <li key={reason}>{reason}</li>
+                              ))}
+                            </ul>
+                            <p className="text-xs leading-6 text-foreground">
+                              <span className="font-semibold">Privacy:</span> {provider.privacyDetails}
+                            </p>
+                            {provider.deletionPolicy ? (
+                              <p className="text-xs leading-6 text-foreground">{provider.deletionPolicy}</p>
+                            ) : null}
+                            <ul className="list-disc space-y-1 pl-5 text-xs leading-6">
+                              {provider.thingsToKnow.map((limitation) => (
+                                <li key={limitation}>{limitation}</li>
+                              ))}
+                            </ul>
+                          </div>
+                          <Button
+                            onPress={() => setSelectedProvider(provider.id)}
+                            variant={current ? "primary" : "outline"}
+                          >
+                            {current ? "Selected" : "Use this option"}
+                          </Button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </Card.Content>
+              </Card>
+
+              <Card>
+                <Card.Header className="gap-2">
+                  <Card.Title>Humanify ID bundle</Card.Title>
+                  <Card.Description>
+                    Default reusable claim set for v1: age + nationality, without warehousing the underlying identity data.
+                  </Card.Description>
+                </Card.Header>
+                <Card.Content className="space-y-4 text-sm leading-7 text-muted">
+                  <p className="font-medium text-foreground">{humanifyIdBundle.title}</p>
+                  <p>{humanifyIdBundle.summary}</p>
+                  <div className="flex flex-wrap gap-2">
+                    {humanifyIdBundle.claims.map((claim) => (
+                      <span
+                        className="rounded-full border border-content3 px-3 py-1 text-xs font-semibold tracking-wide text-foreground uppercase"
+                        key={claim}
+                      >
+                        {claim}
+                      </span>
+                    ))}
+                  </div>
+                  <div>
+                    <p className="font-medium text-foreground">What Humanify should store</p>
+                    <ul className="mt-2 list-disc space-y-1 pl-5">
+                      {humanifyIdBundle.operatorStorageGuarantees.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div>
+                    <p className="font-medium text-foreground">Later extensions</p>
+                    <ul className="mt-2 list-disc space-y-1 pl-5">
+                      {humanifyIdBundle.futureExtensions.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                </Card.Content>
+              </Card>
+            </div>
+
             <div className="grid gap-4 lg:grid-cols-2">
               <Card>
                 <Card.Header className="gap-2">
@@ -253,18 +370,20 @@ function VerificationRoute() {
                     keeps the first path honest while Discord short-code delivery and OAuth account binding stay explicit
                     future work.
                   </p>
-                  <button
-                    className="inline-flex min-h-11 items-center justify-center rounded-full bg-foreground px-5 py-2 text-sm font-semibold text-background disabled:cursor-not-allowed disabled:opacity-60"
-                    disabled={!effectiveSession || actionState === "submitting" || challengeCompleted}
-                    onClick={handleChallengeConfirmation}
-                    type="button"
+                  <p>
+                    Selected provider: <span className="font-semibold text-foreground">{selectedProviderDefinition.title}</span>
+                  </p>
+                  <Button
+                    isDisabled={!effectiveSession || actionState === "submitting" || challengeCompleted}
+                    onPress={handleChallengeConfirmation}
+                    variant="primary"
                   >
                     {challengeCompleted
                       ? "Challenge confirmed"
                       : actionState === "submitting"
                         ? "Confirming challenge…"
                         : "Confirm Discord-bound challenge"}
-                  </button>
+                  </Button>
                   {feedbackMessage ? <p className="text-sm leading-6 text-foreground">{feedbackMessage}</p> : null}
                 </Card.Content>
               </Card>
@@ -273,7 +392,7 @@ function VerificationRoute() {
                 <Card.Header className="gap-2">
                   <Card.Title>Provider boundary</Card.Title>
                   <Card.Description>
-                    Required assurance capabilities are visible, but no browser-only provider success is trusted.
+                    Required assurance capabilities are visible, but Humanify only trusts the selected provider's server handoff.
                   </Card.Description>
                 </Card.Header>
                 <Card.Content className="space-y-4 text-sm leading-7 text-muted">
@@ -288,9 +407,24 @@ function VerificationRoute() {
                     ))}
                   </div>
                   <p>
-                    Provider callbacks are still disabled in the Bun API. This page therefore stops at{" "}
-                    <span className="font-semibold text-foreground">provider_pending</span> and does not attempt release,
-                    fake completion, or invented callback polling.
+                    Server handoff:{" "}
+                    <span className="font-semibold text-foreground">
+                      {providerHandoffLabel(
+                        challengeData?.providerBoundary.handoffKind ?? selectedProviderDefinition.integration.handoffKind,
+                      )}
+                    </span>
+                  </p>
+                  <p>
+                    Server endpoint:{" "}
+                    <code className="rounded bg-content2 px-2 py-1 text-xs">
+                      {challengeData?.providerBoundary.providerServerEndpoint ??
+                        selectedProviderDefinition.integration.serverEndpointPath}
+                    </code>
+                  </p>
+                  <p>{challengeData?.providerBoundary.serverVerificationNote ?? selectedProviderDefinition.integration.serverVerificationNote}</p>
+                  <p>
+                    The current Bun API still blocks release until this provider-neutral server verification contract is
+                    implemented against canonical Postgres state. No browser-only provider status is trusted.
                   </p>
                 </Card.Content>
               </Card>
@@ -309,4 +443,13 @@ function DetailRow({ label, value }: Readonly<{ label: string; value: string }>)
       <span className="break-all text-muted">{value}</span>
     </div>
   );
+}
+
+function providerHandoffLabel(handoffKind: "server_verified_proof" | "signed_webhook") {
+  switch (handoffKind) {
+    case "server_verified_proof":
+      return "server-verified proof";
+    case "signed_webhook":
+      return "signed webhook";
+  }
 }

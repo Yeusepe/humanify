@@ -19,7 +19,10 @@ import {
   buildVerificationChecklist,
   completeVerificationChallenge,
   fetchVerificationSession,
+  getDefaultHumanifyIdClaimBundle,
+  getDefaultVerificationProviderId,
   getVerifierApiBaseUrl,
+  getVerificationProviderOptions,
   hasVerificationLink,
   parseVerificationSearch,
 } from "./verification-flow";
@@ -57,9 +60,9 @@ test("fetchVerificationSession calls the Bun API status route with the signed to
       JSON.stringify({
         contractVersion: "0.1.0",
         data: {
-          callbackBoundary: {
+          providerBoundary: {
             nextStep: "complete_challenge",
-            providerCallbacksConfigured: false,
+            providerFlowConfigured: false,
             releaseEligible: false,
             status: "challenge_link_verified",
           },
@@ -98,6 +101,7 @@ test("fetchVerificationSession calls the Bun API status route with the signed to
   expect(requests[0]?.headers.get("x-request-id")).toBeTruthy();
   expect(requests[0]?.headers.get("traceparent")).toBeTruthy();
   expect(result.session.requiredCapabilities).toEqual(["captcha"]);
+  expect(result.providerBoundary.providerFlowConfigured).toBe(false);
 });
 
 test("completeVerificationChallenge posts the signed session identity back to the Bun API", async () => {
@@ -117,11 +121,16 @@ test("completeVerificationChallenge posts the signed session identity back to th
           },
           persistence: "planned_not_persisted",
           providerBoundary: {
-            nextStep: "provider_callback_required",
-            providerCallbacksConfigured: false,
+            handoffKind: "server_verified_proof",
+            nextStep: "provider_verification_required",
+            providerFlowConfigured: false,
+            providerServerEndpoint: "/verification/providers/self/proof",
+            requestedClaims: ["age_over_18", "nationality"],
             releaseEligible: false,
             requiredCapabilities: ["captcha"],
-            status: "pending_provider_callback",
+            selectedProvider: "self",
+            serverVerificationNote: "Humanify must verify a Self-issued proof server-side; browser success alone is never sufficient.",
+            status: "pending_provider_verification",
           },
           session: {
             challengeExpiresAt: "2026-01-01T00:05:00.000Z",
@@ -150,6 +159,8 @@ test("completeVerificationChallenge posts the signed session identity back to th
     apiBaseUrl: "http://127.0.0.1:3211",
     challengeId: "challenge_123",
     guildId: "guild_123",
+    providerId: "self",
+    requestedClaims: ["age_over_18", "nationality"],
     sessionId: "session_123",
     token: "signed.token",
     userId: "user_123",
@@ -161,24 +172,52 @@ test("completeVerificationChallenge posts the signed session identity back to th
   expect(requests[0]?.headers.get("traceparent")).toBeTruthy();
   expect(await requests[0]?.json()).toEqual({
     guildId: "guild_123",
+    providerId: "self",
+    requestedClaims: ["age_over_18", "nationality"],
     sessionId: "session_123",
     token: "signed.token",
     userId: "user_123",
   });
-  expect(result.providerBoundary.status).toBe("pending_provider_callback");
+  expect(result.providerBoundary.status).toBe("pending_provider_verification");
+  expect(result.providerBoundary.selectedProvider).toBe("self");
+  expect(result.providerBoundary.handoffKind).toBe("server_verified_proof");
 });
 
 test("buildVerificationChecklist keeps provider verification and release explicitly blocked", () => {
   expect(
     buildVerificationChecklist({
       challengeCompleted: true,
-      providerCallbacksConfigured: false,
+      providerFlowConfigured: false,
       releaseEligible: false,
     }),
   ).toEqual([
     expect.objectContaining({ status: "complete", title: "Signed verifier link" }),
     expect.objectContaining({ status: "complete", title: "Discord-bound challenge" }),
-    expect.objectContaining({ status: "blocked", title: "Provider callback verification" }),
+    expect.objectContaining({ status: "blocked", title: "Provider verification" }),
     expect.objectContaining({ status: "blocked", title: "Release-to-role" }),
   ]);
+});
+
+test("provider options rank Self first and keep Didit as the process-and-purge fallback", () => {
+  const providers = getVerificationProviderOptions();
+
+  expect(providers.map((provider) => provider.id)).toEqual(["self", "world_id", "didit"]);
+  expect(providers[0]?.privacySummary).toContain("Most private");
+  expect(providers[0]?.integration.handoffKind).toBe("server_verified_proof");
+  expect(providers[2]?.deletionPolicy).toContain("DELETE /v3/session/{session_id}/");
+});
+
+test("provider defaults and enablement come from the shared provider catalog", () => {
+  expect(getDefaultVerificationProviderId()).toBe("self");
+  expect(getDefaultVerificationProviderId({ VITE_HUMANIFY_ENABLED_VERIFICATION_PROVIDERS: "didit" })).toBe("didit");
+});
+
+test("default Humanify ID bundle stores predicates and nullifier receipts instead of raw identity data", () => {
+  const bundle = getDefaultHumanifyIdClaimBundle();
+  const storageContract = bundle.operatorStorageGuarantees.join(" ");
+
+  expect(bundle.claims).toEqual(["age_over_18", "nationality"]);
+  expect(storageContract).toContain("nullifiers");
+  expect(storageContract).toContain("should not store document images");
+  expect(storageContract).toContain("birthdates");
 });

@@ -20,6 +20,7 @@
         "@humanify/policy-engine": "workspace:*",
         "@humanify/queue": "workspace:*",
         "@humanify/telemetry": "workspace:*",
+        "@humanify/verification-providers": "workspace:*",
         "elysia": "^1.4.28",
       },
       "devDependencies": {
@@ -76,6 +77,7 @@
         "@humanify/contracts": "workspace:*",
         "@humanify/telemetry": "workspace:*",
         "@humanify/ui": "workspace:*",
+        "@humanify/verification-providers": "workspace:*",
         "@tanstack/react-router": "^1.168.24",
         "@tanstack/react-start": "^1.167.49",
         "react": "^19.2.5",
@@ -151,6 +153,10 @@
         "@heroui/react": "^3.0.3",
         "react": "^19.2.5",
       },
+    },
+    "packages/verification-providers": {
+      "name": "@humanify/verification-providers",
+      "version": "0.1.0",
     },
   },
   "packages": {
@@ -259,6 +265,8 @@
     "@humanify/telemetry": ["@humanify/telemetry@workspace:packages/telemetry"],
 
     "@humanify/ui": ["@humanify/ui@workspace:packages/ui"],
+
+    "@humanify/verification-providers": ["@humanify/verification-providers@workspace:packages/verification-providers"],
 
     "@humanify/verifier-start": ["@humanify/verifier-start@workspace:apps/verifier-start"],
 

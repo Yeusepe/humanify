@@ -14,6 +14,7 @@
  * - https://bun.sh/docs/runtime/env
  * - https://docs.docker.com/reference/cli/docker/compose/up/
  * - https://doc.rust-lang.org/cargo/commands/cargo-run.html
+ * - https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/taskkill
  * Tests:
  * - tooling/dev-stack.test.ts
  */
@@ -64,6 +65,17 @@ type DevStackPlan = {
   setupCommands: SetupCommandSpec[];
   ports: DevStackPortMap;
   requiredPorts: RequiredPortSpec[];
+};
+
+type ManagedSubprocess = Pick<Bun.Subprocess, "exitCode" | "exited" | "kill" | "pid">;
+
+type SpawnSyncLike = typeof Bun.spawnSync;
+
+type ListeningProcessInfo = {
+  commandLine?: string;
+  name?: string;
+  processId: number;
+  port: number;
 };
 
 const rootDirectory = process.cwd();
@@ -324,6 +336,155 @@ function sleep(milliseconds: number) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+function readSpawnedText(output: Buffer | Uint8Array | null | undefined) {
+  if (!output) {
+    return "";
+  }
+
+  return Buffer.from(output).toString("utf8");
+}
+
+function readWindowsListeningProcesses(
+  ports: readonly number[],
+  spawnSync: SpawnSyncLike = Bun.spawnSync,
+): ListeningProcessInfo[] {
+  if (ports.length === 0) {
+    return [];
+  }
+
+  const portList = ports.join(",");
+  const script = [
+    `$ports = @(${portList});`,
+    '$listeners = Get-NetTCPConnection -State Listen -LocalPort $ports -ErrorAction SilentlyContinue | Select-Object -Unique LocalPort,OwningProcess;',
+    '$listeners | ForEach-Object {',
+    '  $proc = Get-CimInstance Win32_Process -Filter ("ProcessId = " + $_.OwningProcess) -ErrorAction SilentlyContinue;',
+    '  [pscustomobject]@{',
+    '    LocalPort = $_.LocalPort;',
+    '    ProcessId = $_.OwningProcess;',
+    '    Name = $proc.Name;',
+    '    CommandLine = $proc.CommandLine',
+    '  }',
+    '} | ConvertTo-Json -Compress',
+  ].join(" ");
+  const result = spawnSync(["powershell", "-NoProfile", "-Command", script], {
+    cwd: rootDirectory,
+    stderr: "pipe",
+    stdout: "pipe",
+  });
+
+  if (result.exitCode !== 0) {
+    return [];
+  }
+
+  const text = readSpawnedText(result.stdout).trim();
+  if (!text) {
+    return [];
+  }
+
+  const parsed = JSON.parse(text) as
+    | {
+        CommandLine?: string;
+        LocalPort: number;
+        Name?: string;
+        ProcessId: number;
+      }
+    | Array<{
+        CommandLine?: string;
+        LocalPort: number;
+        Name?: string;
+        ProcessId: number;
+      }>;
+  const entries = Array.isArray(parsed) ? parsed : [parsed];
+
+  return entries.map((entry) => ({
+    commandLine: entry.CommandLine,
+    name: entry.Name,
+    port: entry.LocalPort,
+    processId: entry.ProcessId,
+  }));
+}
+
+export function isRepoOwnedManagedListener(
+  listener: ListeningProcessInfo,
+  options: {
+    rootDir?: string;
+  } = {},
+) {
+  const rootDir = (options.rootDir ?? rootDirectory).toLowerCase();
+  const commandLine = listener.commandLine?.toLowerCase() ?? "";
+
+  return commandLine.includes(rootDir);
+}
+
+function cleanupRepoOwnedManagedListeners(
+  plan: DevStackPlan,
+  options: {
+    log?: (message: string) => void;
+    platform?: NodeJS.Platform;
+    spawnSync?: SpawnSyncLike;
+  } = {},
+) {
+  const platform = options.platform ?? process.platform;
+  if (platform !== "win32") {
+    return [];
+  }
+
+  const spawnSync = options.spawnSync ?? Bun.spawnSync;
+  const log = options.log ?? console.warn;
+  const listeners = readWindowsListeningProcesses(
+    plan.requiredPorts.map((portSpec) => portSpec.port),
+    spawnSync,
+  );
+  const repoOwnedListeners = listeners.filter((listener) => isRepoOwnedManagedListener(listener));
+  const uniqueProcessIds = [...new Set(repoOwnedListeners.map((listener) => listener.processId))];
+
+  for (const processId of uniqueProcessIds) {
+    const result = spawnSync(["taskkill", "/pid", String(processId), "/t", "/f"], {
+      cwd: rootDirectory,
+      stderr: "ignore",
+      stdout: "ignore",
+    });
+
+    if (result.exitCode === 0) {
+      const listenerPorts = repoOwnedListeners
+        .filter((listener) => listener.processId === processId)
+        .map((listener) => listener.port)
+        .join(", ");
+      log(`[dev-stack] Reaped stale repo-owned listener PID ${processId} on managed ports ${listenerPorts}.`);
+    }
+  }
+
+  return repoOwnedListeners;
+}
+
+export function terminateManagedSubprocess(
+  subprocess: ManagedSubprocess,
+  options: {
+    platform?: NodeJS.Platform;
+    spawnSync?: SpawnSyncLike;
+  } = {},
+) {
+  if (subprocess.exitCode !== null) {
+    return;
+  }
+
+  const platform = options.platform ?? process.platform;
+  if (platform === "win32") {
+    const spawnSync = options.spawnSync ?? Bun.spawnSync;
+    const result = spawnSync(["taskkill", "/pid", String(subprocess.pid), "/t", "/f"], {
+      cwd: rootDirectory,
+      stderr: "ignore",
+      stdout: "ignore",
+    });
+
+    if (result.exitCode === 0) {
+      return;
+    }
+  }
+
+  subprocess.kill();
+}
+
 async function waitForReadiness(name: string, url: string, timeoutMs = readinessTimeoutMs) {
   const deadline = Date.now() + timeoutMs;
 
@@ -439,13 +600,28 @@ async function pipeOutput(
 async function runDevStack() {
   const plan = createDevStackPlan();
   const environment = readEnvironment();
+  let infrastructureStarted = false;
+  cleanupRepoOwnedManagedListeners(plan, {
+    log: (message) => console.warn(message),
+  });
   await assertRequiredPortsAvailable(plan);
   console.log("[dev-stack] Starting local infrastructure with Docker Compose.");
   runComposeCommand(plan, environment, ["up", "-d", "--wait", "--remove-orphans"]);
-  console.log("[dev-stack] Applying canonical Postgres migrations.");
+  infrastructureStarted = true;
 
-  for (const setupCommand of plan.setupCommands) {
-    runSetupCommand(setupCommand, environment);
+  try {
+    console.log("[dev-stack] Applying canonical Postgres migrations.");
+
+    for (const setupCommand of plan.setupCommands) {
+      runSetupCommand(setupCommand, environment);
+    }
+  } catch (error) {
+    if (infrastructureStarted) {
+      console.log("[dev-stack] Startup failed before app processes were attached. Stopping local infrastructure.");
+      runComposeCommand(plan, environment, ["down", "--remove-orphans"], true);
+    }
+
+    throw error;
   }
 
   const children = plan.processes.map((processSpec) => {
@@ -476,7 +652,7 @@ async function runDevStack() {
     console.log(`\n[dev-stack] ${reason}`);
 
     for (const child of children) {
-      child.subprocess.kill();
+      terminateManagedSubprocess(child.subprocess);
     }
 
     await Promise.allSettled([
@@ -484,6 +660,10 @@ async function runDevStack() {
       ...children.map((child) => child.stdoutTask),
       ...children.map((child) => child.stderrTask),
     ]);
+
+    cleanupRepoOwnedManagedListeners(plan, {
+      log: (message) => console.warn(message),
+    });
 
     console.log("[dev-stack] Stopping local infrastructure.");
     try {
@@ -501,6 +681,10 @@ async function runDevStack() {
 
   process.on("SIGTERM", () => {
     void shutdown("Received SIGTERM. Stopping the local development stack.", 0);
+  });
+
+  process.on("SIGBREAK", () => {
+    void shutdown("Received SIGBREAK. Stopping the local development stack.", 0);
   });
 
   console.log("[dev-stack] Starting the Humanify local development stack.");

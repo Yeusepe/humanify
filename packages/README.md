@@ -26,4 +26,5 @@ Shared Bun/TypeScript packages currently scaffolded here:
 - `policy-engine`: authoritative Bun-side policy clamps from advisory risk to allowed actions
 - `queue`: Redis Streams envelope, trace propagation, and consumer recovery helpers
 - `telemetry`: traceparent, redaction, and structured log bootstrap helpers
+- `verification-providers`: provider template, shared provider catalog, and Humanify ID claim bundle helpers
 - `ui`: shared HeroUI-based shell components for Start apps

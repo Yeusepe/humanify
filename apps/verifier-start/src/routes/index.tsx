@@ -30,7 +30,7 @@ export const Route = createFileRoute("/")({
 function VerifierHome() {
   return (
     <ProductShell
-      description="A Bun-hosted verification shell for signed challenge sessions, explicit provider callback boundaries, and release decisions that remain constrained by Bun-side policy and audit rules."
+      description="A Bun-hosted verification shell for signed challenge sessions, explicit provider-verification boundaries, and release decisions that remain constrained by Bun-side policy and audit rules."
       eyebrow="HUMANIFY / VERIFIER"
       panels={[
         {
@@ -45,7 +45,7 @@ function VerifierHome() {
           variant: "secondary",
         },
         {
-          description: "Inbound provider callbacks stay untrusted until signatures, replay checks, and retention rules are enforced server-side.",
+          description: "Inbound provider handoffs stay untrusted until the selected server-side verification contract enforces signatures, replay checks, and retention rules.",
           title: "Callback trust",
           value: "Verify first",
           variant: "tertiary",
@@ -58,7 +58,7 @@ function VerifierHome() {
         <p className="max-w-3xl text-sm leading-7 text-muted">
           Open <code className="rounded bg-content2 px-2 py-1 text-xs">/verify?sessionId=&lt;...&gt;&amp;token=&lt;...&gt;</code>{" "}
           with a Bun-issued challenge token to load signed session context, confirm the Discord-bound challenge, and stop
-          before any unsupported provider callback or release step.
+          before any unsupported provider verification or release step.
         </p>
         <p className="max-w-3xl text-sm leading-7 text-muted">
           This keeps the verifier honest: no fake provider completion, no synthetic release state, and no bypass around

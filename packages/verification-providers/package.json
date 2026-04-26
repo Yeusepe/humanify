@@ -1,0 +1,33 @@
+{
+  "name": "@humanify/verification-providers",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "bun run typecheck",
+    "lint": "bun run typecheck",
+    "typecheck": "tsc --project tsconfig.json --noEmit"
+  },
+  "humanify": {
+    "governingDocs": [
+      "AGENTS.md",
+      "Implementation Plan.txt",
+      "docs\\api.md",
+      "docs\\verification.md",
+      "docs\\workspaces.md"
+    ],
+    "upstreamDocs": [
+      "https://docs.self.xyz/",
+      "https://docs.world.org/world-id/concepts",
+      "https://docs.didit.me/integration/api-full-flow",
+      "https://docs.didit.me/integration/webhooks",
+      "https://docs.didit.me/console/data-retention",
+      "https://www.w3.org/TR/vc-data-model/",
+      "https://semaphore.appliedzkp.org/docs/concepts/nullifiers"
+    ],
+    "notes": "Verification providers are registered behind a shared Bun package so apps consume a catalog and provider template rather than embedding provider-specific conditionals."
+  }
+}

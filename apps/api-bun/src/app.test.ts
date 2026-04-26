@@ -222,6 +222,80 @@ test("policy writes produce a Postgres-first planning envelope", async () => {
   expect(json.data.queueEnvelope.stream).toBe("projection.refresh");
 });
 
+test("verification config lets a server owner choose enabled providers and a default provider", async () => {
+  const app = createTestApp();
+  const response = await app.handle(
+    new Request("http://humanify.local/guilds/guild_123/verification", {
+      body: JSON.stringify({
+        actorUserId: "mod_123",
+        defaultProviderId: "didit",
+        enabledProviderIds: ["self", "didit"],
+        suspiciousRoleIds: ["role_suspicious"],
+        trustedRoleIds: ["role_verified"],
+      }),
+      headers: {
+        "content-type": "application/json",
+        "x-idempotency-key": "verification-config-key-1",
+      },
+      method: "PUT",
+    }),
+  );
+  const json = (await response.json()) as {
+    data: {
+      verificationConfig: {
+        availableProviderIds: string[];
+        defaultProviderId: string;
+        enabledProviderIds: string[];
+        fallbackRoles: string[];
+        suspiciousRoleIds: string[];
+      };
+      writePlan: {
+        canonicalMutations: Array<{
+          table: string;
+        }>;
+      };
+    };
+  };
+
+  expect(response.status).toBe(202);
+  expect(json.data.verificationConfig.availableProviderIds).toEqual(["self", "world_id", "didit"]);
+  expect(json.data.verificationConfig.enabledProviderIds).toEqual(["self", "didit"]);
+  expect(json.data.verificationConfig.defaultProviderId).toBe("didit");
+  expect(json.data.verificationConfig.suspiciousRoleIds).toEqual(["role_suspicious"]);
+  expect(json.data.verificationConfig.fallbackRoles).toEqual(["role_verified"]);
+  expect(json.data.writePlan.canonicalMutations).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ table: "verification_requirements" }),
+      expect.objectContaining({ table: "audit_records" }),
+    ]),
+  );
+});
+
+test("verification config rejects defaults that are not enabled for the guild", async () => {
+  const app = createTestApp();
+  const response = await app.handle(
+    new Request("http://humanify.local/guilds/guild_123/verification", {
+      body: JSON.stringify({
+        actorUserId: "mod_123",
+        defaultProviderId: "world_id",
+        enabledProviderIds: ["self"],
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "PUT",
+    }),
+  );
+  const json = (await response.json()) as {
+    errorCode: string;
+    message: string;
+  };
+
+  expect(response.status).toBe(400);
+  expect(json.errorCode).toBe("validation_failed");
+  expect(json.message).toContain('Default verification provider "world_id" must be enabled');
+});
+
 test("report intake validates request bodies and returns the documented error envelope", async () => {
   const app = createTestApp();
   const response = await app.handle(
@@ -693,8 +767,8 @@ test("verification session reads derive honest context from the signed challenge
   );
   const json = (await response.json()) as {
     data: {
-      callbackBoundary: {
-        providerCallbacksConfigured: boolean;
+      providerBoundary: {
+        providerFlowConfigured: boolean;
       };
       persistence: string;
       session: {
@@ -708,7 +782,7 @@ test("verification session reads derive honest context from the signed challenge
   expect(json.data.persistence).toBe("derived_from_signed_challenge");
   expect(json.data.session.state).toBe("challenge_issued");
   expect(json.data.session.requiredCapabilities).toEqual(["captcha", "human_presence"]);
-  expect(json.data.callbackBoundary.providerCallbacksConfigured).toBe(false);
+  expect(json.data.providerBoundary.providerFlowConfigured).toBe(false);
 });
 
 test("challenge completion rejects session mismatches instead of trusting body fields", async () => {
@@ -739,6 +813,8 @@ test("challenge completion rejects session mismatches instead of trusting body f
     new Request(`http://humanify.local/verification/challenges/${created.data.session.challengeId}/complete`, {
       body: JSON.stringify({
         guildId: "guild_123",
+        providerId: "self",
+        requestedClaims: ["age_over_18", "nationality"],
         sessionId: "session_other",
         token: created.data.challengeToken,
         userId: "user_123",
@@ -759,7 +835,71 @@ test("challenge completion rejects session mismatches instead of trusting body f
   expect(json.message).toContain("sessionId");
 });
 
-test("verification release stays blocked until provider callbacks can prove a passed session", async () => {
+test("challenge completion carries provider choice and Humanify ID claims through the planning boundary", async () => {
+  const app = createTestApp();
+  const createResponse = await app.handle(
+    new Request("http://humanify.local/guilds/guild_123/verification/sessions", {
+      body: JSON.stringify({
+        requiredCapabilities: ["captcha", "age_over_18"],
+        userId: "user_123",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    }),
+  );
+  const created = (await createResponse.json()) as {
+    data: {
+      challengeToken: string;
+      session: {
+        challengeId: string;
+        sessionId: string;
+      };
+    };
+  };
+
+  const response = await app.handle(
+    new Request(`http://humanify.local/verification/challenges/${created.data.session.challengeId}/complete`, {
+      body: JSON.stringify({
+        guildId: "guild_123",
+        providerId: "self",
+        requestedClaims: ["age_over_18", "nationality"],
+        sessionId: created.data.session.sessionId,
+        token: created.data.challengeToken,
+        userId: "user_123",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    }),
+  );
+  const json = (await response.json()) as {
+    data: {
+      providerBoundary: {
+        handoffKind: string;
+        requestedClaims: string[];
+        selectedProvider: string;
+        serverVerificationNote: string;
+        status: string;
+      };
+      session: {
+        state: string;
+      };
+    };
+  };
+
+  expect(response.status).toBe(202);
+  expect(json.data.providerBoundary.selectedProvider).toBe("self");
+  expect(json.data.providerBoundary.requestedClaims).toEqual(["age_over_18", "nationality"]);
+  expect(json.data.providerBoundary.handoffKind).toBe("server_verified_proof");
+  expect(json.data.providerBoundary.status).toBe("pending_provider_verification");
+  expect(json.data.providerBoundary.serverVerificationNote).toContain("server-side");
+  expect(json.data.session.state).toBe("provider_pending");
+});
+
+test("verification release stays blocked until server-side provider verification can prove a passed session", async () => {
   const app = createTestApp();
   const createResponse = await app.handle(
     new Request("http://humanify.local/guilds/guild_123/verification/sessions", {
@@ -802,7 +942,7 @@ test("verification release stays blocked until provider callbacks can prove a pa
 
   expect(response.status).toBe(409);
   expect(json.errorCode).toBe("conflict");
-  expect(json.message).toContain("provider callback");
+  expect(json.message).toContain("provider handoff");
 });
 
 test("moderation routes refuse actions that exceed Bun policy clamps", async () => {

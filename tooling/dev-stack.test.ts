@@ -16,7 +16,11 @@
 
 import { expect, test } from "bun:test";
 
-import { createDevStackPlan } from "./dev-stack";
+import {
+  createDevStackPlan,
+  isRepoOwnedManagedListener,
+  terminateManagedSubprocess,
+} from "./dev-stack";
 
 test("dev stack includes Docker Compose orchestration metadata", () => {
   const plan = createDevStackPlan({ DISCORD_BOT_TOKEN: "test-token" });
@@ -150,4 +154,78 @@ test("dev stack derives readiness and preflight ports from env-configured servic
     "http://127.0.0.1:5103/healthz",
     "http://127.0.0.1:5104/healthz",
   ]);
+});
+
+test("Windows shutdown kills the managed process tree instead of only the direct child", () => {
+  const spawnCalls: string[][] = [];
+  let killed = false;
+
+  terminateManagedSubprocess(
+    {
+      exitCode: null,
+      exited: Promise.resolve(0),
+      kill() {
+        killed = true;
+      },
+      pid: 4321,
+    },
+    {
+      platform: "win32",
+      spawnSync(command) {
+        spawnCalls.push(command);
+        return {
+          exitCode: 0,
+        } as ReturnType<typeof Bun.spawnSync>;
+      },
+    },
+  );
+
+  expect(spawnCalls).toEqual([["taskkill", "/pid", "4321", "/t", "/f"]]);
+  expect(killed).toBe(false);
+});
+
+test("shutdown falls back to direct kill when task-tree termination is unavailable", () => {
+  const signals: string[] = [];
+
+  terminateManagedSubprocess(
+    {
+      exitCode: null,
+      exited: Promise.resolve(0),
+      kill(signal) {
+        signals.push(signal ?? "default");
+      },
+      pid: 9876,
+    },
+    {
+      platform: "win32",
+      spawnSync() {
+        return {
+          exitCode: 1,
+        } as ReturnType<typeof Bun.spawnSync>;
+      },
+    },
+  );
+
+  expect(signals).toEqual(["default"]);
+});
+
+test("repo-owned stale listeners are distinguished from unrelated listeners on managed ports", () => {
+  expect(
+    isRepoOwnedManagedListener({
+      commandLine:
+        'node "C:\\Users\\svalp\\OneDrive\\Documents\\Development\\antiwork\\humanify\\apps\\dashboard-start\\node_modules\\vite\\bin\\vite.js" dev --port 3210',
+      name: "node.exe",
+      port: 3210,
+      processId: 1111,
+    }),
+  ).toBe(true);
+
+  expect(
+    isRepoOwnedManagedListener({
+      commandLine: 'node "C:\\other-project\\node_modules\\vite\\bin\\vite.js" dev --port 3210',
+      name: "node.exe",
+      port: 3210,
+      processId: 2222,
+    }),
+  ).toBe(false);
 });

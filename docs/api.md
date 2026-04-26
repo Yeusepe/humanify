@@ -56,7 +56,7 @@ The exact path names may evolve, but the route groups and ownership below should
 | --- | --- | --- |
 | Health and metadata | `GET /healthz`, `GET /service-info`, `GET /contracts/summary`, `GET /contracts/schema` | never mutates state |
 | Auth | `POST /auth/discord/start`, `GET /auth/discord/callback`, `POST /auth/logout`, `GET /session` | owns browser session bootstrap and guild-scoped identity |
-| Guild config | `GET /guilds/:guildId/policy`, `PUT /guilds/:guildId/policy`, `PUT /guilds/:guildId/channels`, `PUT /guilds/:guildId/verification` | all writes create audit records |
+| Guild config | `GET /guilds/:guildId/policy`, `PUT /guilds/:guildId/policy`, `PUT /guilds/:guildId/channels`, `PUT /guilds/:guildId/verification` | all writes create audit records; verification config owns enabled providers and guild default provider |
 | Cases | `GET /guilds/:guildId/cases`, `GET /guilds/:guildId/cases/:caseId`, `POST /guilds/:guildId/cases/:caseId/review`, `POST /guilds/:guildId/cases/:caseId/appeal` | ties into `docs\cases-and-reports.md` |
 | Reports and evidence | `POST /guilds/:guildId/reports`, `POST /guilds/:guildId/reports/:reportId/evidence`, `POST /guilds/:guildId/evidence/upload-url`, `POST /guilds/:guildId/evidence/:evidenceId/redact` | report intake and Discord message-link evidence now persist canonically in Postgres; blob upload URLs remain brokered, time-limited, and auditable |
 | Verification | `POST /guilds/:guildId/verification/sessions`, `GET /verification/sessions/:sessionId`, `POST /verification/challenges/:challengeId/complete`, `POST /verification/sessions/:sessionId/release` | detailed flow in `docs\verification.md` |
@@ -164,19 +164,23 @@ Implementation details made concrete by the current spine:
   - request and trace correlation from `packages\telemetry`
 - verification routes now keep signed session identity explicit:
   - `POST /guilds/:guildId/verification/sessions` accepts an optional originating `caseId` and signs the verifier challenge with `challengeId`, `sessionId`, `guildId`, and `userId`
-  - `GET /verification/sessions/:sessionId?token=...` derives honest `challenge_issued` session context from that signed token while canonical reads are still pending
-  - `POST /verification/challenges/:challengeId/complete` re-checks that the token matches `challengeId`, `sessionId`, `guildId`, and `userId` before returning `provider_pending`
-  - `POST /verification/sessions/:sessionId/release` now refuses to invent success and returns `409 conflict` until a server-verified provider callback can prove a canonical `passed` session
+  - `GET /verification/sessions/:sessionId?token=...` derives honest `challenge_issued` session context from that signed token while canonical reads are still pending and returns a provider-neutral `providerBoundary`
+  - `POST /verification/challenges/:challengeId/complete` re-checks that the token matches `challengeId`, `sessionId`, `guildId`, and `userId`, validates the selected provider against `@humanify/verification-providers`, and carries the chosen provider plus requested Humanify ID predicates through a generic server handoff boundary (`handoffKind`, `serverEndpointPath`, `serverVerificationNote`)
+  - `POST /verification/sessions/:sessionId/release` now refuses to invent success and returns `409 conflict` until Humanify verifies the selected provider handoff against canonical state
+- `PUT /guilds/:guildId/verification` now validates guild-level provider configuration against the shared provider catalog:
+  - the route accepts a server-owner chosen `enabledProviderIds` list plus an optional `defaultProviderId`
+  - the default provider must still be enabled for that guild
+  - the response surfaces `availableProviderIds`, `enabledProviderIds`, and `defaultProviderId` so the dashboard and verifier can stay provider-neutral
 - moderation routes (`/approve`, `/quarantine`, `/timeout`, `/kick`, `/ban`) are now concretely clamped through `packages\policy-engine`; a requested action that exceeds Bun policy or Discord capability constraints must fail with `403 forbidden`.
 - moderation planning envelopes now separate durability from executor readiness: `durability: planned_not_persisted` means the bot must stop at planning, while `executorState` explains whether Bun approval exists but is still waiting on canonical persistence or is blocked by current capability.
 - API startup now validates the required session, OAuth, data-plane, policy-clamp, and observability config bundles up front, and request handling now emits structured request logs with redacted headers plus default `no-store`/`nosniff` response headers.
 - `GET /guilds/:guildId/audit` still returns explicit `pending_postgres_projection` status rather than synthetic data.
-- callback routes remain explicitly unavailable until provider-specific signature documentation and executor wiring exist; the API must not invent callback semantics.
+- callback routes remain explicitly unavailable until the shared provider template is backed by real signed-webhook or server-proof verification wiring; the API must not invent provider semantics.
 - `apps\dashboard-start` now consumes this boundary honestly through `/`, `/cases`, `/verification`, and `/policy` screens that surface metadata and pending states instead of fake live moderation rows.
 
 ## 9. What later implementation should add here
 
 - exact auth/session persistence contract once `packages\auth` grows durable session storage helpers
 - Postgres-backed read-model queries for case detail, user profile, verification-session status, audit, and risk-queue routes
-- provider-specific callback contracts once the first real provider is selected and documented in `docs\verification.md`
+- provider-specific callback contracts once the first real provider adapter is wired and documented in `docs\verification.md`
 - R2 upload/redaction brokering once storage and evidence services are ready for those boundaries

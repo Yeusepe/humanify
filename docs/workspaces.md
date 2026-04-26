@@ -84,6 +84,7 @@ Current boundaries:
 | `packages\policy-engine` | Shared Bun policy package | Converts advisory risk + guild policy into clamped allowed actions |
 | `packages\queue` | Shared Redis Streams package | Owns queue envelopes, trace propagation, and recovery plan helpers |
 | `packages\telemetry` | Shared observability package | Owns traceparent helpers, safe log fields, and redaction boundaries |
+| `packages\verification-providers` | Shared verification provider registry | Owns provider template definitions, Humanify ID claim helpers, and runtime provider catalog filtering |
 | `packages\ui` | Shared HeroUI shell components | Provides minimal shared layout components for Start apps |
 
 ### Local dev stack command
@@ -121,6 +122,7 @@ packages/
   policy-engine/
   queue/
   telemetry/
+  verification-providers/
   ui/
 
 crates/
