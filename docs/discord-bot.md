@@ -76,6 +76,27 @@ The current bot spine makes the first real moderation intake surface concrete:
 
 The bot should avoid keeping hidden business state. Local caches may exist for invite comparison or rate limiting, but canonical outcomes belong in Postgres.
 
+Current passive detector bridge implementation:
+
+1. `guildMemberAdd` now opens an advisory detector-bridge report when the joining account is less than 24 hours old, or when it is less than 7 days old and still missing a profile avatar.
+2. `messageCreate` now opens an advisory detector-bridge report when message-signal collection is enabled and the message matches one of the current stable reason codes:
+   - `first_message_link`
+   - `mention_burst`
+   - `duplicate_message_pattern`
+3. Passive message reports also attach canonical Discord `message_link` evidence so moderator warnings can show the same bounded preview and message reference that manual message-context reporting uses.
+4. Passive event ingestion remains advisory-only: it opens or enriches canonical cases and updates moderator warnings, but it does not authorize automatic moderation.
+
+### 3.1 Passive detector configuration
+
+Two runtime flags now control passive Discord ingestion:
+
+| Env var | Default | Purpose |
+| --- | --- | --- |
+| `HUMANIFY_BOT_ENABLE_MEMBER_JOIN_SIGNALS` | `true` | enables advisory `guildMemberAdd` detector-bridge reports for suspicious new-account joins |
+| `HUMANIFY_BOT_ENABLE_MESSAGE_SIGNALS` | `false` | enables `messageCreate` detector-bridge reporting and requests the Discord message-content intents needed for first-message-link / mention-burst / duplicate-pattern detection |
+
+`HUMANIFY_BOT_ENABLE_MESSAGE_SIGNALS=true` must only be enabled when the Discord application is approved for the message-content intent and the server owner wants passive content-based bot catching turned on.
+
 ## 4. Execution safety flow
 
 ```mermaid
@@ -183,6 +204,7 @@ Current concrete first-slice wiring:
 
 - each interaction now creates a request-correlation bundle that the bot forwards to the API as `x-request-id` plus W3C `traceparent`
 - boot logs now publish which propagation headers the runtime is using and whether Bun-side Sentry egress is enabled
+- boot logs now also publish whether member-join signals and message signals are enabled for the running bot instance
 - message-context evidence intake stays constrained to canonical Discord message-link refs rather than arbitrary external URLs
 
 Alert messages shown to moderators should prefer canonical case IDs and reason codes over free-form summaries that cannot be replayed.

@@ -53,6 +53,8 @@ export type BotTokenConfig = {
 export type BotApiConfig = {
   apiBaseUrl: string;
   commandGuildId?: string;
+  enableMemberJoinSignals: boolean;
+  enableMessageSignals: boolean;
   registerCommandsOnStart: boolean;
 };
 
@@ -274,6 +276,8 @@ export function loadBotApiConfig(source: EnvSource = process.env): BotApiConfig 
   const explicitApiBaseUrl = readOptionalString(source, "HUMANIFY_API_BASE_URL");
   const registerCommandsOnStart = readBoolean(source, "HUMANIFY_BOT_REGISTER_COMMANDS", true);
   const commandGuildId = readOptionalString(source, "HUMANIFY_BOT_COMMAND_GUILD_ID");
+  const enableMessageSignals = readBoolean(source, "HUMANIFY_BOT_ENABLE_MESSAGE_SIGNALS", false);
+  const enableMemberJoinSignals = readBoolean(source, "HUMANIFY_BOT_ENABLE_MEMBER_JOIN_SIGNALS", true);
 
   let apiBaseUrl = explicitApiBaseUrl;
   if (!apiBaseUrl) {
@@ -290,6 +294,8 @@ export function loadBotApiConfig(source: EnvSource = process.env): BotApiConfig 
   return finalizeIssues(issues, {
     apiBaseUrl,
     commandGuildId,
+    enableMemberJoinSignals,
+    enableMessageSignals,
     registerCommandsOnStart,
   });
 }

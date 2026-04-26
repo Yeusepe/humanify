@@ -49,6 +49,8 @@ test("migration inventory contains the canonical Postgres spine bootstrap", () =
   expect(migrations.map((migration) => migration.fileName)).toEqual([
     "0001_canonical_spine.sql",
     "0002_guild_channel_configs.sql",
+    "0002_moderator_warning_cards.sql",
+    "0003_signal_examples_outcome_links.sql",
   ]);
   expect(migrations[0]?.sql).toContain("CREATE EXTENSION IF NOT EXISTS vector");
   expect(migrations[0]?.sql).toContain("CREATE TABLE IF NOT EXISTS guilds");
@@ -62,5 +64,13 @@ test("migration inventory contains the canonical Postgres spine bootstrap", () =
   expect(migrations[0]?.sql).toContain("CREATE TABLE IF NOT EXISTS audit_records");
   expect(migrations[0]?.sql).toContain("CREATE TABLE IF NOT EXISTS action_execution_receipts");
   expect(migrations[0]?.sql).toContain("CREATE TABLE IF NOT EXISTS signal_embeddings");
+  expect(migrations[0]?.sql).not.toMatch(
+    /CREATE TABLE IF NOT EXISTS signal_examples[\s\S]+source_outcome_id uuid REFERENCES case_outcomes/iu,
+  );
+  expect(migrations[0]?.sql).not.toContain("signal_examples_outcome_hash_idx");
   expect(migrations[1]?.sql).toContain("CREATE TABLE IF NOT EXISTS guild_channel_configs");
+  expect(migrations[2]?.sql).toContain("CREATE TABLE IF NOT EXISTS moderator_warning_message_refs");
+  expect(migrations[3]?.sql).toContain("ALTER TABLE signal_examples");
+  expect(migrations[3]?.sql).toContain("ADD COLUMN IF NOT EXISTS source_outcome_id uuid REFERENCES case_outcomes");
+  expect(migrations[3]?.sql).toContain("CREATE UNIQUE INDEX IF NOT EXISTS signal_examples_outcome_hash_idx");
 });

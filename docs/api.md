@@ -147,6 +147,7 @@ Implementation details made concrete by the current spine:
   - `cases` is created or re-used by `opening_fingerprint` when `openCase !== false`
   - `reports`, `case_events`, `audit_records`, `idempotency_receipts`, and `outbox_events` are written in the same transaction
   - the route returns `201 Created` with `persistence: persisted` and `queueDelivery: pending_outbox_publish` to distinguish canonical durability from later stream publication
+  - the current Discord bot now uses this same route for passive `detector_bridge` intake from suspicious joins and suspicious messages, keeping automated advisory ingestion on the same canonical report spine as moderator-created reports
 - `POST /guilds/:guildId/reports/:reportId/evidence` now durably supports only canonical Discord `message_link` evidence:
   - the API validates the `https://discord.com/channels/{guildId}/{channelId}/{messageId}` form and rejects mismatched or non-Discord URLs
   - `evidence_records`, `evidence_links`, `case_events`, `audit_records`, `idempotency_receipts`, and `outbox_events` are written transactionally when the parent report exists
@@ -160,7 +161,7 @@ Implementation details made concrete by the current spine:
 - moderator warning cards now have a canonical advisory read/update flow for Discord bot use:
   - `GET /guilds/:guildId/cases/:caseId/warning-card` joins bounded case summary, evidence summary, the latest linked-or-subject verification summary, reusable-credential bridge status when present, face-check state when present, and the current persisted alert-message ref when one exists
   - `PUT /guilds/:guildId/cases/:caseId/warning-card/alert-message` persists the current Discord alert message ref for that case, appends a case event, writes audit/outbox/idempotency rows, and lets the bot update an existing warning card instead of reposting blindly
-  - `apps\bot-bun` now uses those routes during existing case-touching runtime paths only: report/case intake, message-context evidence attachment, and case-linked verification-shortcut refreshes; the resulting Discord warning remains advisory text and never authorizes automatic enforcement
+  - `apps\bot-bun` now uses those routes during both moderator-triggered and passive runtime paths: report/case intake, message-context evidence attachment, suspicious `guildMemberAdd` detector reports, suspicious `messageCreate` detector reports, and case-linked verification-shortcut refreshes; the resulting Discord warning remains advisory text and never authorizes automatic enforcement
 - `POST /guilds/:guildId/reports` now refreshes a canonical per-subject `reputation_views` row for `subject_report_anomaly`:
   - counts and stores recent report velocity, unique reporter counts, repeated trigger reuse, and `coordinated_report_burst`
   - keeps the signal explicitly advisory with privacy notes in the summary payload

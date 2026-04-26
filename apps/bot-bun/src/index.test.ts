@@ -33,6 +33,7 @@ import {
   type ModeratorWarningMessageRuntime,
   createBotApiClient,
   createInteractionHandler,
+  createPassiveEventHandler,
   decideApprovedActionExecution,
   syncModeratorWarningCard,
 } from "./index";
@@ -257,6 +258,63 @@ function createTestApiClient(overrides: Partial<BotApiClient> = {}): BotApiClien
     }),
     ...overrides,
   };
+}
+
+function createPassiveWarningRuntime(): ModeratorWarningMessageRuntime {
+  return {
+    deleteMessage: async () => undefined,
+    editMessage: async () => undefined,
+    sendMessage: async () => ({ messageId: "warning_message_123" }),
+  };
+}
+
+function createGuildMemberAddEvent(input: {
+  accountCreatedAt?: number;
+  avatar?: string | null;
+  guildId?: string;
+  userId?: string;
+}) {
+  return {
+    guild: {
+      id: input.guildId ?? "guild_123",
+    },
+    user: {
+      avatar: input.avatar ?? null,
+      bot: false,
+      createdTimestamp: input.accountCreatedAt ?? Date.UTC(2026, 0, 1, 11, 0, 0),
+      id: input.userId ?? "user_123",
+    },
+  } as any;
+}
+
+function createMessageCreateEvent(input: {
+  authorBot?: boolean;
+  channelId?: string;
+  content: string;
+  createdAt?: number;
+  guildId?: string;
+  id?: string;
+  mentionRoleCount?: number;
+  mentionUserCount?: number;
+  userId?: string;
+  webhookId?: string | null;
+}) {
+  return {
+    author: {
+      bot: input.authorBot ?? false,
+      createdTimestamp: input.createdAt ?? Date.UTC(2025, 11, 20, 0, 0, 0),
+      id: input.userId ?? "user_123",
+    },
+    channelId: input.channelId ?? "channel_123",
+    content: input.content,
+    guildId: input.guildId ?? "guild_123",
+    id: input.id ?? "message_123",
+    mentions: {
+      roles: { size: input.mentionRoleCount ?? 0 },
+      users: { size: input.mentionUserCount ?? 0 },
+    },
+    webhookId: input.webhookId ?? null,
+  } as any;
 }
 
 function createWarningCard(overrides: Partial<BotCaseWarningCardReadResponse> = {}): BotCaseWarningCardReadResponse {
@@ -1371,6 +1429,168 @@ test("bot API client propagates request and trace headers to the Bun API", async
   expect(requests).toHaveLength(1);
   expect(requests[0]?.headers.get("x-request-id")).toBeTruthy();
   expect(requests[0]?.headers.get("traceparent")).toBeTruthy();
+});
+
+test("passive guild-member detector opens an advisory case for very new accounts", async () => {
+  const reports: Array<Record<string, unknown>> = [];
+  const warningSyncInputs: Array<Record<string, unknown>> = [];
+  const handler = createPassiveEventHandler({
+    apiClient: createTestApiClient({
+      createReport: async (_guildId, body) => {
+        reports.push(body as unknown as Record<string, unknown>);
+        return {
+          persistence: "persisted",
+          report: {
+            caseId: "case_join_123",
+            reportId: "report_join_123",
+          },
+        };
+      },
+    }),
+    botActorUserId: "bot_123",
+    enableMemberJoinSignals: true,
+    enableMessageSignals: false,
+    messageRuntime: createPassiveWarningRuntime(),
+    now: () => Date.UTC(2026, 0, 1, 12, 0, 0),
+    syncModeratorWarningCard: async (input) => {
+      warningSyncInputs.push(input as unknown as Record<string, unknown>);
+      return {
+        note: "warning synced",
+        status: "posted",
+      };
+    },
+  });
+
+  await handler.handleGuildMemberAdd(
+    createGuildMemberAddEvent({
+      accountCreatedAt: Date.UTC(2026, 0, 1, 11, 30, 0),
+    }),
+  );
+
+  expect(reports).toEqual([
+    expect.objectContaining({
+      intakeSource: "detector_bridge",
+      openCase: true,
+      reportReason: "Automatic detector bridge flagged a very new Discord account joining the server.",
+      reporterNotes: "Reason codes: account_age_lt_24h",
+      reporterUserId: "bot_123",
+      subjectUserId: "user_123",
+      triggerFingerprint: "guild-member-add:guild_123:user_123:account_age_lt_24h",
+    }),
+  ]);
+  expect(warningSyncInputs).toEqual([
+    expect.objectContaining({
+      caseId: "case_join_123",
+      guildId: "guild_123",
+    }),
+  ]);
+});
+
+test("passive message detector opens a detector-bridge report and attaches canonical message evidence", async () => {
+  const reports: Array<Record<string, unknown>> = [];
+  const evidenceBodies: Array<Record<string, unknown>> = [];
+  const warningSyncInputs: Array<Record<string, unknown>> = [];
+  const handler = createPassiveEventHandler({
+    apiClient: createTestApiClient({
+      attachReportEvidence: async (_guildId, _reportId, body) => {
+        evidenceBodies.push(body as unknown as Record<string, unknown>);
+        return {
+          evidence: {
+            evidenceId: "evidence_123",
+          },
+          persistence: "persisted",
+        };
+      },
+      createReport: async (_guildId, body) => {
+        reports.push(body as unknown as Record<string, unknown>);
+        return {
+          persistence: "persisted",
+          report: {
+            caseId: "case_message_123",
+            reportId: "report_message_123",
+          },
+        };
+      },
+    }),
+    botActorUserId: "bot_123",
+    enableMemberJoinSignals: false,
+    enableMessageSignals: true,
+    messageRuntime: createPassiveWarningRuntime(),
+    syncModeratorWarningCard: async (input) => {
+      warningSyncInputs.push(input as unknown as Record<string, unknown>);
+      return {
+        note: "warning synced",
+        status: "posted",
+      };
+    },
+  });
+
+  await handler.handleMessageCreate(
+    createMessageCreateEvent({
+      content: "https://evil.example/claim-your-free-nitro",
+      id: "message_456",
+    }),
+  );
+
+  expect(reports).toEqual([
+    expect.objectContaining({
+      intakeSource: "detector_bridge",
+      openCase: true,
+      reportReason: "Automatic detector bridge flagged a suspicious message: first message link.",
+      reporterNotes: "Reason codes: first_message_link",
+      reporterUserId: "bot_123",
+      subjectUserId: "user_123",
+      triggerFingerprint: "discord-message:guild_123:channel_123:message_456",
+    }),
+  ]);
+  expect(evidenceBodies).toEqual([
+    expect.objectContaining({
+      actorUserId: "bot_123",
+      captureSource: "discord_message_create",
+      channelId: "channel_123",
+      evidenceType: "message_link",
+      externalRef: "https://discord.com/channels/guild_123/channel_123/message_456",
+      messageId: "message_456",
+      messagePreview: "https://evil.example/claim-your-free-nitro",
+      subjectUserId: "user_123",
+    }),
+  ]);
+  expect(warningSyncInputs).toEqual([
+    expect.objectContaining({
+      caseId: "case_message_123",
+      guildId: "guild_123",
+    }),
+  ]);
+});
+
+test("passive message detector stays disabled until message signals are enabled", async () => {
+  const reports: Array<Record<string, unknown>> = [];
+  const handler = createPassiveEventHandler({
+    apiClient: createTestApiClient({
+      createReport: async (_guildId, body) => {
+        reports.push(body as unknown as Record<string, unknown>);
+        return {
+          persistence: "persisted",
+          report: {
+            caseId: "case_disabled_123",
+            reportId: "report_disabled_123",
+          },
+        };
+      },
+    }),
+    botActorUserId: "bot_123",
+    enableMemberJoinSignals: true,
+    enableMessageSignals: false,
+    messageRuntime: createPassiveWarningRuntime(),
+  });
+
+  await handler.handleMessageCreate(
+    createMessageCreateEvent({
+      content: "https://evil.example/claim-your-free-nitro",
+    }),
+  );
+
+  expect(reports).toHaveLength(0);
 });
 
 test("default bot runtime keeps automatic message-content bot scoring disabled", () => {

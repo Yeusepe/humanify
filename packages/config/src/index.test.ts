@@ -90,11 +90,15 @@ test("bot api config falls back to the local api port and can opt into guild-sco
     loadBotApiConfig({
       HUMANIFY_API_PORT: "4321",
       HUMANIFY_BOT_COMMAND_GUILD_ID: "guild_123",
+      HUMANIFY_BOT_ENABLE_MEMBER_JOIN_SIGNALS: "true",
+      HUMANIFY_BOT_ENABLE_MESSAGE_SIGNALS: "true",
       HUMANIFY_BOT_REGISTER_COMMANDS: "true",
     }),
   ).toEqual({
     apiBaseUrl: "http://127.0.0.1:4321",
     commandGuildId: "guild_123",
+    enableMemberJoinSignals: true,
+    enableMessageSignals: true,
     registerCommandsOnStart: true,
   });
 });

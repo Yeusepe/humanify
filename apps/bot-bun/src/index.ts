@@ -21,6 +21,8 @@
  * - apps/bot-bun/src/index.test.ts
  */
 
+import { createHash } from "node:crypto";
+
 import {
   ActionRowBuilder,
   ButtonBuilder,
@@ -36,9 +38,11 @@ import {
   type ChannelSelectMenuInteraction,
   type ChatInputCommandInteraction,
   type ClientOptions,
+  type GuildMember,
   type Interaction,
   type InteractionReplyOptions,
   type InteractionUpdateOptions,
+  type Message,
   type MessageContextMenuCommandInteraction,
   type RoleSelectMenuInteraction,
   type StringSelectMenuInteraction,
@@ -78,7 +82,7 @@ export const botRuntimeSummary = {
 };
 
 export type BotReportBody = {
-  intakeSource: "message_context" | "slash_command";
+  intakeSource: "detector_bridge" | "internal" | "message_context" | "slash_command";
   openCase: boolean;
   reportReason: string;
   reporterNotes?: string;
@@ -365,6 +369,21 @@ export type CreateInteractionHandlerOptions = {
   }) => Promise<ModeratorWarningSyncResult>;
 };
 
+export type CreatePassiveEventHandlerOptions = {
+  apiClient: BotApiClient;
+  botActorUserId: string | (() => string | undefined);
+  enableMemberJoinSignals: boolean;
+  enableMessageSignals: boolean;
+  messageRuntime: ModeratorWarningMessageRuntime;
+  now?: () => number;
+  syncModeratorWarningCard?: CreateInteractionHandlerOptions["syncModeratorWarningCard"];
+};
+
+export type PassiveEventHandler = {
+  handleGuildMemberAdd(member: GuildMember): Promise<void>;
+  handleMessageCreate(message: Message): Promise<void>;
+};
+
 type LoggerLike = Pick<Console, "error" | "info">;
 
 function createAuthorizationFailureMessage(scope: "admin_only" | "trusted_moderator_only") {
@@ -411,6 +430,140 @@ async function requireTrustedModeratorAction(
 
 function buildDiscordMessageUrl(guildId: string, channelId: string, messageId: string) {
   return `https://discord.com/channels/${guildId}/${channelId}/${messageId}`;
+}
+
+const passiveDuplicateWindowMs = 2 * 60 * 1_000;
+const passiveDuplicateThreshold = 3;
+const passiveMentionBurstThreshold = 5;
+const twentyFourHoursMs = 24 * 60 * 60 * 1_000;
+const sevenDaysMs = 7 * 24 * 60 * 60 * 1_000;
+
+type PassiveMessageState = {
+  duplicateMessageCounters: Map<string, { count: number; lastSeenAt: number }>;
+  seenMessageCounts: Map<string, number>;
+};
+
+function createPassiveMessageState(): PassiveMessageState {
+  return {
+    duplicateMessageCounters: new Map(),
+    seenMessageCounts: new Map(),
+  };
+}
+
+function normalizeMessageContent(content: string) {
+  return content.replace(/\s+/gu, " ").trim().toLowerCase();
+}
+
+function hashPassiveFingerprint(value: string) {
+  return createHash("sha256").update(value).digest("hex").slice(0, 16);
+}
+
+function prunePassiveDuplicateCounters(state: PassiveMessageState, now: number) {
+  for (const [key, counter] of state.duplicateMessageCounters) {
+    if (now - counter.lastSeenAt > passiveDuplicateWindowMs) {
+      state.duplicateMessageCounters.delete(key);
+    }
+  }
+}
+
+function extractMessageReasonCodes(message: Message, state: PassiveMessageState, now: number) {
+  const guildId = message.guildId;
+  if (!guildId) {
+    return {
+      duplicateContentHash: undefined,
+      reasonCodes: [] as string[],
+    };
+  }
+
+  const reasonCodes: string[] = [];
+  const memberKey = `${guildId}:${message.author.id}`;
+  const priorMessageCount = state.seenMessageCounts.get(memberKey) ?? 0;
+  const normalizedContent = normalizeMessageContent(message.content);
+  const hasLink = /https?:\/\/\S+/iu.test(message.content);
+  if (priorMessageCount === 0 && hasLink) {
+    reasonCodes.push("first_message_link");
+  }
+
+  const mentionCount = message.mentions.users.size + message.mentions.roles.size;
+  if (mentionCount >= passiveMentionBurstThreshold) {
+    reasonCodes.push("mention_burst");
+  }
+
+  let duplicateContentHash: string | undefined;
+  if (normalizedContent.length >= 24) {
+    prunePassiveDuplicateCounters(state, now);
+    duplicateContentHash = hashPassiveFingerprint(normalizedContent);
+    const duplicateKey = `${guildId}:${message.author.id}:${duplicateContentHash}`;
+    const existing = state.duplicateMessageCounters.get(duplicateKey);
+    if (existing && now - existing.lastSeenAt <= passiveDuplicateWindowMs) {
+      existing.count += 1;
+      existing.lastSeenAt = now;
+      if (existing.count >= passiveDuplicateThreshold) {
+        reasonCodes.push("duplicate_message_pattern");
+      }
+    } else {
+      state.duplicateMessageCounters.set(duplicateKey, {
+        count: 1,
+        lastSeenAt: now,
+      });
+    }
+  }
+
+  state.seenMessageCounts.set(memberKey, priorMessageCount + 1);
+
+  return {
+    duplicateContentHash,
+    reasonCodes,
+  };
+}
+
+function extractJoinReasonCodes(member: GuildMember, now: number) {
+  const accountAgeMs = Math.max(now - member.user.createdTimestamp, 0);
+  if (accountAgeMs < twentyFourHoursMs) {
+    return ["account_age_lt_24h"];
+  }
+
+  if (accountAgeMs < sevenDaysMs && !member.user.avatar) {
+    return ["account_age_lt_7d", "profile_missing_avatar"];
+  }
+
+  return [];
+}
+
+function buildPassiveJoinReportReason(reasonCodes: string[]) {
+  if (reasonCodes.includes("account_age_lt_24h")) {
+    return "Automatic detector bridge flagged a very new Discord account joining the server.";
+  }
+
+  return "Automatic detector bridge flagged a newly created Discord account with an incomplete profile joining the server.";
+}
+
+function buildPassiveMessageReportReason(reasonCodes: string[]) {
+  const labels = reasonCodes.map((reasonCode) => reasonCode.replaceAll("_", " "));
+  return `Automatic detector bridge flagged a suspicious message: ${labels.join(", ")}.`;
+}
+
+function buildPassiveJoinTriggerFingerprint(guildId: string, userId: string, reasonCodes: string[]) {
+  return `guild-member-add:${guildId}:${userId}:${reasonCodes.join("+")}`;
+}
+
+function buildPassiveMessageTriggerFingerprint(input: {
+  guildId: string;
+  channelId: string;
+  messageId: string;
+  reasonCodes: string[];
+  subjectUserId: string;
+  duplicateContentHash?: string;
+}) {
+  if (input.reasonCodes.includes("duplicate_message_pattern") && input.duplicateContentHash) {
+    return `message-duplicate:${input.guildId}:${input.subjectUserId}:${input.duplicateContentHash}`;
+  }
+
+  return `discord-message:${input.guildId}:${input.channelId}:${input.messageId}`;
+}
+
+function resolvePassiveBotActorUserId(value: CreatePassiveEventHandlerOptions["botActorUserId"]) {
+  return typeof value === "function" ? value() : value;
 }
 
 function buildVerificationShortcutId(guildId: string, caseId: string, userId: string) {
@@ -1203,7 +1356,7 @@ function isDiscordMissingMessageError(error: unknown) {
   return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === 10_008;
 }
 
-async function createDiscordWarningRuntime(client: Pick<Client<true>, "channels">): Promise<ModeratorWarningMessageRuntime> {
+function createDiscordWarningRuntime(client: Pick<Client, "channels">): ModeratorWarningMessageRuntime {
   const resolveChannel = async (channelId: string) => {
     const channel = await client.channels.fetch(channelId);
     if (!channel?.isSendable() || !channel.isTextBased()) {
@@ -1351,7 +1504,7 @@ async function syncModeratorWarningCardForInteraction(input: {
     });
   }
 
-  const messageRuntime = await createDiscordWarningRuntime(input.interactionClient);
+  const messageRuntime = createDiscordWarningRuntime(input.interactionClient);
   return syncModeratorWarningCard({
     apiClient: input.apiClient,
     caseId: input.caseId,
@@ -1359,6 +1512,129 @@ async function syncModeratorWarningCardForInteraction(input: {
     messageRuntime,
     requestTelemetry: input.requestTelemetry,
   });
+}
+
+export function createPassiveEventHandler(options: CreatePassiveEventHandlerOptions): PassiveEventHandler {
+  const passiveMessageState = createPassiveMessageState();
+  const now = options.now ?? Date.now;
+
+  return {
+    async handleGuildMemberAdd(member) {
+      if (!options.enableMemberJoinSignals || member.user.bot) {
+        return;
+      }
+
+      const botActorUserId = resolvePassiveBotActorUserId(options.botActorUserId);
+      if (!botActorUserId) {
+        return;
+      }
+
+      const reasonCodes = extractJoinReasonCodes(member, now());
+      if (reasonCodes.length === 0) {
+        return;
+      }
+
+      const requestTelemetry = createRequestTelemetryContext();
+      const response = await options.apiClient.createReport(member.guild.id, {
+        intakeSource: "detector_bridge",
+        openCase: true,
+        reportReason: buildPassiveJoinReportReason(reasonCodes),
+        reporterNotes: `Reason codes: ${reasonCodes.join(", ")}`,
+        reporterUserId: botActorUserId,
+        subjectUserId: member.user.id,
+        triggerFingerprint: buildPassiveJoinTriggerFingerprint(member.guild.id, member.user.id, reasonCodes),
+      }, requestTelemetry);
+
+      if (!response.report.caseId) {
+        return;
+      }
+
+      if (options.syncModeratorWarningCard) {
+        await options.syncModeratorWarningCard({
+          apiClient: options.apiClient,
+          caseId: response.report.caseId,
+          guildId: member.guild.id,
+          requestTelemetry,
+        });
+        return;
+      }
+
+      await syncModeratorWarningCard({
+        apiClient: options.apiClient,
+        caseId: response.report.caseId,
+        guildId: member.guild.id,
+        messageRuntime: options.messageRuntime,
+        requestTelemetry,
+      });
+    },
+
+    async handleMessageCreate(message) {
+      if (!options.enableMessageSignals || !message.guildId || message.author.bot || message.webhookId) {
+        return;
+      }
+
+      const botActorUserId = resolvePassiveBotActorUserId(options.botActorUserId);
+      if (!botActorUserId) {
+        return;
+      }
+
+      const detection = extractMessageReasonCodes(message, passiveMessageState, now());
+      if (detection.reasonCodes.length === 0) {
+        return;
+      }
+
+      const requestTelemetry = createRequestTelemetryContext();
+      const response = await options.apiClient.createReport(message.guildId, {
+        intakeSource: "detector_bridge",
+        openCase: true,
+        reportReason: buildPassiveMessageReportReason(detection.reasonCodes),
+        reporterNotes: `Reason codes: ${detection.reasonCodes.join(", ")}`,
+        reporterUserId: botActorUserId,
+        subjectUserId: message.author.id,
+        triggerFingerprint: buildPassiveMessageTriggerFingerprint({
+          channelId: message.channelId,
+          duplicateContentHash: detection.duplicateContentHash,
+          guildId: message.guildId,
+          messageId: message.id,
+          reasonCodes: detection.reasonCodes,
+          subjectUserId: message.author.id,
+        }),
+      }, requestTelemetry);
+
+      await options.apiClient.attachReportEvidence(message.guildId, response.report.reportId, {
+        actorUserId: botActorUserId,
+        captureSource: "discord_message_create",
+        channelId: message.channelId,
+        evidenceType: "message_link",
+        externalRef: buildDiscordMessageUrl(message.guildId, message.channelId, message.id),
+        messageId: message.id,
+        messagePreview: truncatePlainText(message.content, 160),
+        subjectUserId: message.author.id,
+      }, requestTelemetry);
+
+      if (!response.report.caseId) {
+        return;
+      }
+
+      if (options.syncModeratorWarningCard) {
+        await options.syncModeratorWarningCard({
+          apiClient: options.apiClient,
+          caseId: response.report.caseId,
+          guildId: message.guildId,
+          requestTelemetry,
+        });
+        return;
+      }
+
+      await syncModeratorWarningCard({
+        apiClient: options.apiClient,
+        caseId: response.report.caseId,
+        guildId: message.guildId,
+        messageRuntime: options.messageRuntime,
+        requestTelemetry,
+      });
+    },
+  };
 }
 
 async function handleReportCommand(
@@ -1875,10 +2151,15 @@ export function createInteractionHandler(options: CreateInteractionHandlerOption
   };
 }
 
-export function createBotClient(options: Omit<ClientOptions, "intents"> = {}) {
+export function createBotClient(
+  options: Omit<ClientOptions, "intents"> & {
+    includeMessageSignals?: boolean;
+  } = {},
+) {
+  const { includeMessageSignals = false, ...clientOptions } = options;
   return new Client({
-    ...options,
-    intents: createBotGatewayIntents(),
+    ...clientOptions,
+    intents: createBotGatewayIntents({ includeMessageSignals }),
   });
 }
 
@@ -1919,7 +2200,14 @@ export async function startBot(
   const apiConfig = loadBotApiConfig(env);
   const apiClient = createBotApiClient({ apiBaseUrl: apiConfig.apiBaseUrl });
   const interactionHandler = createInteractionHandler({ apiClient });
-  const client = createBotClient();
+  const client = createBotClient({ includeMessageSignals: apiConfig.enableMessageSignals });
+  const passiveEventHandler = createPassiveEventHandler({
+    apiClient,
+    botActorUserId: () => client.user?.id,
+    enableMemberJoinSignals: apiConfig.enableMemberJoinSignals,
+    enableMessageSignals: apiConfig.enableMessageSignals,
+    messageRuntime: createDiscordWarningRuntime(client),
+  });
 
   client.once(Events.ClientReady, (readyClient) => {
     const requestTelemetry = createRequestTelemetryContext();
@@ -1943,7 +2231,11 @@ export async function startBot(
             commandRegistrationScope: registration.scope,
             commandsRegistered: registration.commandCount,
             contractVersion: botRuntimeSummary.contractVersion,
-            gatewayIntentCount: botRuntimeSummary.gatewayIntentCount,
+            gatewayIntentCount: createBotGatewayIntents({
+              includeMessageSignals: apiConfig.enableMessageSignals,
+            }).length,
+            memberJoinSignalsEnabled: apiConfig.enableMemberJoinSignals,
+            messageSignalsEnabled: apiConfig.enableMessageSignals,
             requestIdHeader: telemetry.requestIdHeader,
             sentryEnabled: telemetry.sentryEnabled,
             tag: readyClient.user.tag,
@@ -1976,6 +2268,58 @@ export async function startBot(
               event: "discord.interaction.failed",
               guildId: interaction.guildId ?? undefined,
               interactionType: interaction.type,
+            },
+          ),
+        ),
+      );
+    });
+  });
+
+  client.on(Events.GuildMemberAdd, (member) => {
+    passiveEventHandler.handleGuildMemberAdd(member).catch((error) => {
+      const requestTelemetry = createRequestTelemetryContext();
+      logger.error(
+        JSON.stringify(
+          createStructuredErrorFields(
+            {
+              environment: identity.environment,
+              release: identity.release,
+              requestId: requestTelemetry.requestId,
+              serviceName: identity.serviceName,
+              traceContext: requestTelemetry.traceContext,
+            },
+            error,
+            {
+              event: "discord.guild_member_add.failed",
+              guildId: member.guild.id,
+              subjectUserId: member.user.id,
+            },
+          ),
+        ),
+      );
+    });
+  });
+
+  client.on(Events.MessageCreate, (message) => {
+    passiveEventHandler.handleMessageCreate(message).catch((error) => {
+      const requestTelemetry = createRequestTelemetryContext();
+      logger.error(
+        JSON.stringify(
+          createStructuredErrorFields(
+            {
+              environment: identity.environment,
+              release: identity.release,
+              requestId: requestTelemetry.requestId,
+              serviceName: identity.serviceName,
+              traceContext: requestTelemetry.traceContext,
+            },
+            error,
+            {
+              channelId: message.channelId,
+              event: "discord.message_create.failed",
+              guildId: message.guildId ?? undefined,
+              messageId: message.id,
+              subjectUserId: message.author.id,
             },
           ),
         ),

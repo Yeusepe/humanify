@@ -111,6 +111,13 @@ First canonical slice now implemented:
 | Automated detector -> report bridge | allow risk events or provider callbacks to open cases | dedupe on trigger fingerprint |
 | Appeal submission | bind to case and subject identity | require authenticated subject or moderator route |
 
+Current detector-bridge slice now implemented in `apps\bot-bun`:
+
+1. suspicious `guildMemberAdd` events open canonical reports for very new accounts (`account_age_lt_24h`) and for young incomplete-profile accounts (`account_age_lt_7d`, `profile_missing_avatar`)
+2. suspicious `messageCreate` events open canonical reports for `first_message_link`, `mention_burst`, and `duplicate_message_pattern`
+3. passive message detections attach the same canonical Discord `message_link` evidence shape used by moderator-triggered message-context reporting
+4. these detector-bridge reports remain advisory-only and still depend on moderator review or later Bun policy approval before any enforcement path can run
+
 ## 6. Evidence handling rules
 
 1. Evidence items are immutable references. Corrections create new derivatives or new case events; they do not silently rewrite prior evidence identity.
