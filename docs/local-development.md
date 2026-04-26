@@ -17,6 +17,7 @@ Upstream docs:
 - `docker compose up`: https://docs.docker.com/reference/cli/docker/compose/up/
 - Electric installation: https://electric-sql.com/docs/guides/installation
 - Electric sync config: https://electric-sql.com/docs/api/config
+- Postgres.js: https://github.com/porsager/postgres
 - pgvector Docker image: https://hub.docker.com/r/pgvector/pgvector
 - Redis Streams: https://redis.io/docs/latest/develop/data-types/streams/
 - MinIO container docs: https://min.io/docs/minio/container/index.html
@@ -31,12 +32,14 @@ The root command is the authoritative local bring-up entrypoint.
 
 It performs the following in order:
 
-1. Starts local infrastructure with `docker compose -f docker-compose.local.yml up -d --wait --remove-orphans`
-2. Starts the Bun application surfaces
-3. Starts the Rust HTTP services
-4. Waits for the application/service HTTP endpoints to become reachable
-5. Keeps the stack attached until interrupted
-6. Shuts down the child processes and local infrastructure when interrupted or when a managed process exits unexpectedly
+1. Preflights every fixed host port the stack owns and fails immediately if any of them are already occupied
+2. Starts local infrastructure with `docker compose -f docker-compose.local.yml up -d --wait --remove-orphans`
+3. Applies the canonical Postgres migration bundle with `bun run db:migrate`
+4. Starts the Bun application surfaces
+5. Starts the Rust HTTP services
+6. Waits for the application/service HTTP endpoints to become reachable
+7. Keeps the stack attached until interrupted
+8. Shuts down the child processes and local infrastructure when interrupted or when a managed process exits unexpectedly
 
 This is local development orchestration, not a production deployment model.
 
@@ -57,6 +60,12 @@ The local infrastructure stack currently includes:
 
 Cloudflare R2 is the deployed object-storage target. Because R2 does not run locally, the development stack uses MinIO as a local S3-compatible stand-in.
 
+### Postgres bootstrap note
+
+- `docker\postgres\init\001-humanify.sql` only preloads `vector` when the Docker volume is initialized for the first time.
+- The authoritative schema bootstrap path is `packages\db\migrations\0001_canonical_spine.sql` through `bun run db:migrate`.
+- `bun run dev` executes that migration command automatically after Docker Compose reports infrastructure readiness.
+
 ## 3. Bun and Rust processes
 
 After the Docker services are up, the root command starts:
@@ -73,7 +82,21 @@ After the Docker services are up, the root command starts:
 
 The dashboard and verifier use Vite `--strictPort` so they fail loudly if another process occupies their assigned ports.
 
-## 4. Discord bot behavior
+## 4. Fixed-port preflight behavior
+
+Before Docker or any child process starts, `bun run dev` checks that every required host port is available.
+
+- This prevents stale listeners from satisfying readiness probes and causing a later false "stack is ready" message.
+- It also keeps the command honest on shared machines: if the port map is already occupied, the stack does not partially boot.
+
+On Windows, use this PowerShell command to find the conflicting process for one or more ports:
+
+```powershell
+Get-NetTCPConnection -State Listen -LocalPort 3210,3211,3212,4101,4102,4103,4104,5432,6379,5133,9000,9001,6333,6334,4300 |
+  Select-Object LocalAddress, LocalPort, OwningProcess, State
+```
+
+## 5. Discord bot behavior
 
 The root command now treats the bot as part of the full stack.
 
@@ -83,7 +106,7 @@ The root command now treats the bot as part of the full stack.
 
 This keeps the default behavior honest while still allowing deliberate botless work.
 
-## 5. Environment bootstrap
+## 6. Environment bootstrap
 
 Copy `.env.example` to `.env` for local development and adjust values as needed.
 
@@ -94,6 +117,9 @@ Important variables:
 | `DISCORD_BOT_TOKEN` | required for the bot unless explicitly skipped |
 | `HUMANIFY_SKIP_BOT` | explicit opt-out for botless local work |
 | `HUMANIFY_API_PORT` | Bun API port |
+| `HUMANIFY_DATABASE_URL` | optional full Postgres connection string for Bun-side migration/bootstrap tooling |
+| `HUMANIFY_POSTGRES_HOST` | host used by host-run Bun tooling when `HUMANIFY_DATABASE_URL` is unset |
+| `HUMANIFY_POSTGRES_PORT` | host Postgres port used by Docker publish + host-run Bun tooling |
 | `HUMANIFY_*_BIND_ADDR` | Rust service bind addresses |
 | `HUMANIFY_POSTGRES_*` | Postgres credentials/database name |
 | `HUMANIFY_ELECTRIC_PORT` | host port for Electric |
@@ -104,7 +130,7 @@ Important variables:
 
 SQLite/libSQL-based local prediction state remains file-backed and does not require a separate container yet.
 
-## 6. Stopping the stack
+## 7. Stopping the stack
 
 The root command stops the managed Bun and Rust processes on `SIGINT`/`SIGTERM` and then runs Docker Compose down for the local infrastructure.
 

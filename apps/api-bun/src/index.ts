@@ -3,6 +3,8 @@
  * Governing docs:
  * - AGENTS.md
  * - Implementation Plan.txt
+ * - docs\architecture.md
+ * - docs\api.md
  * - docs\reference-baseline.md
  * - docs\contracts.md
  * - docs\observability-security.md
@@ -16,13 +18,23 @@
  */
 
 import { createApiApp } from "./app";
+import { loadApiBindingConfig, loadServiceIdentityConfig, type EnvSource } from "@humanify/config";
+import { createTelemetryBootstrap } from "@humanify/telemetry";
 
 export const defaultApiPort = 3211;
 
-export function resolveApiPort(portValue = process.env.HUMANIFY_API_PORT) {
-  const parsed = Number(portValue ?? defaultApiPort);
+export function resolveApiPort(source: EnvSource = process.env) {
+  return loadApiBindingConfig(source).port;
+}
 
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultApiPort;
+export function getApiRuntimeSummary(source: EnvSource = process.env) {
+  const identity = loadServiceIdentityConfig(source, { serviceName: "api-bun" });
+
+  return {
+    binding: loadApiBindingConfig(source),
+    identity,
+    telemetry: createTelemetryBootstrap(identity),
+  };
 }
 
 export function startApi(port = resolveApiPort()) {
@@ -30,7 +42,10 @@ export function startApi(port = resolveApiPort()) {
 }
 
 if (import.meta.main) {
-  const server = startApi();
+  const runtime = getApiRuntimeSummary();
+  const server = startApi(runtime.binding.port);
 
-  console.log(`@humanify/api-bun listening on http://localhost:${server.server?.port ?? resolveApiPort()}`);
+  console.log(
+    `@humanify/api-bun listening on http://localhost:${server.server?.port ?? runtime.binding.port} (${runtime.telemetry.propagationHeader}).`,
+  );
 }

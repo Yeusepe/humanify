@@ -32,6 +32,26 @@ Upstream docs:
 6. Cloudflare R2 stores large blobs only. Blob metadata, hashes, retention state, and access decisions stay in Postgres.
 7. Qdrant is optional and projection-only. If enabled, it is fed from Postgres-owned embeddings and can be rebuilt from Postgres plus R2 metadata.
 
+### 1.1 Concrete migration ownership in the repo
+
+The current implementation anchors these decisions in a Bun-first migration package:
+
+- `packages\db\migrations\0001_canonical_spine.sql` is the authoritative schema file for the first canonical data spine.
+- `packages\db\src\migrator.ts` owns migration discovery, checksum drift detection, and Postgres-first application from Bun.
+- `schema_migrations` records applied SQL files; it is the only migration bookkeeping table.
+- Local Docker bootstrap under `docker\postgres\init\001-humanify.sql` is intentionally narrow and only preloads `vector` for first-time local volumes.
+
+The first migration now creates the canonical table families for:
+
+- tenant + identity: `guilds`, `user_identities`, `guild_members`, `moderators`
+- policy + verification: `guild_policy_versions`, `verification_requirements`, `verification_sessions`, `verification_artifacts`
+- observation + scoring: `risk_inputs`, `risk_feature_snapshots`, `risk_decisions`, `action_recommendations`
+- cases + evidence + outcomes: `cases`, `reports`, `case_events`, `case_outcomes`, `appeals`, `evidence_records`, `blob_objects`, `blob_derivatives`, `evidence_links`
+- learning + vectors: `learned_signals`, `signal_examples`, `signal_embeddings`, `reputation_views`
+- durability + replay: `outbox_events`, `idempotency_receipts`, `action_execution_receipts`, `audit_records`, `stream_consumer_checkpoints`, `projection_failures`
+
+Implementation choice: policy, verification, moderation, and evidence payload details are initially carried in constrained `jsonb` documents plus explicit foreign keys, enum-backed states, and uniqueness constraints. This keeps the canonical boundaries stable without overfitting the first migration to UI-specific fields.
+
 ## 2. Storage ownership matrix
 
 | Concern | Canonical owner | Secondary copy or cache | Notes |

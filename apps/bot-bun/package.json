@@ -11,7 +11,9 @@
     "typecheck": "tsc --project tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@humanify/config": "workspace:*",
     "@humanify/contracts": "workspace:*",
+    "@humanify/discord-core": "workspace:*",
     "discord.js": "^14.26.3"
   },
   "devDependencies": {
@@ -22,6 +24,8 @@
     "governingDocs": [
       "AGENTS.md",
       "Implementation Plan.txt",
+      "docs\\architecture.md",
+      "docs\\discord-bot.md",
       "docs\\reference-baseline.md",
       "docs\\contracts.md",
       "docs\\observability-security.md",
@@ -32,6 +36,6 @@
       "https://discord.com/developers/docs/intro",
       "https://bun.sh/docs/runtime/env"
     ],
-    "notes": "The bot scaffold stops at client bootstrap and shared-contract awareness; moderation behavior stays behind future policy and executor work."
+    "notes": "The bot scaffold now reuses shared config and discord-core helpers so gateway intents and actionability stay aligned with later executor work."
   }
 }

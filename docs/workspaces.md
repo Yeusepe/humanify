@@ -24,6 +24,7 @@ This document governs the repo-level monorepo bootstrap created for `bootstrap-w
 - HeroUI styling: https://www.heroui.com/docs/react/getting-started/styling
 - Cargo workspaces: https://doc.rust-lang.org/cargo/reference/workspaces.html
 - Cargo manifests: https://doc.rust-lang.org/cargo/reference/manifest.html
+- Postgres.js: https://github.com/porsager/postgres
 - TypeScript `tsconfig`: https://www.typescriptlang.org/tsconfig
 - `rustfmt` configuration: https://github.com/rust-lang/rustfmt/blob/master/Configurations.md
 
@@ -47,6 +48,8 @@ Current boundaries:
 - Repo-level scripts:
   - `bun run check`
   - `bun run build`
+  - `bun run db:migrate`
+  - `bun run db:status`
   - `bun run dev`
   - `bun run lint`
   - `bun run typecheck`
@@ -54,6 +57,7 @@ Current boundaries:
   - `bun test`
 - `tooling\verify-workspaces.ts` remains the single source of truth for required Bun workspace directories, root manifests, and first-class Bun app/package entry files.
 - Root Bun scripts delegate workspace work with `bun run --filter '*' ...` so new apps/packages participate automatically once they define the standard scripts.
+- `packages\db` owns the canonical SQL migration set and the Bun-first migration/status commands used by local development and future deploy hooks.
 - `tooling\run-cargo-metadata.ts` skips Cargo metadata cleanly when a shared environment contains partial Rust scaffolding outside the Bun workstream.
 - `tooling\dev-stack.ts` owns root local-stack orchestration so developers can start the full Docker + Bun + Rust stack with one command.
 
@@ -65,15 +69,24 @@ Current boundaries:
 | `apps\api-bun` | Bun + Elysia HTTP surface | Exposes health and contract-summary endpoints |
 | `apps\dashboard-start` | TanStack Start + React 19 dashboard shell | Imports Tailwind v4 and HeroUI v3 styles |
 | `apps\verifier-start` | TanStack Start + React 19 verifier shell | Mirrors dashboard stack with verifier-specific content |
+| `packages\auth` | Shared auth/session package | Owns Discord OAuth state, verifier challenge tokens, and session cookie helpers |
+| `packages\config` | Shared Bun runtime config package | Validates service/env settings, Discord OAuth inputs, session secrets, and policy clamp defaults |
+| `packages\db` | Shared Bun Postgres package | Owns migration discovery, connection resolution, and canonical schema bootstrap |
 | `packages\contracts` | Shared Bun contract package | Re-exports the canonical JSON Schema instead of copying Rust contract definitions |
+| `packages\discord-core` | Shared Discord execution package | Owns gateway intents, custom IDs, audit reasons, and capability-aware action helpers |
+| `packages\policy-engine` | Shared Bun policy package | Converts advisory risk + guild policy into clamped allowed actions |
+| `packages\queue` | Shared Redis Streams package | Owns queue envelopes, trace propagation, and recovery plan helpers |
+| `packages\telemetry` | Shared observability package | Owns traceparent helpers, safe log fields, and redaction boundaries |
 | `packages\ui` | Shared HeroUI shell components | Provides minimal shared layout components for Start apps |
 
 ### Local dev stack command
 
 - Run `bun run dev` from the repo root to start the local infra stack plus the Bun and Rust processes.
+- `bun run dev` now applies `bun run db:migrate` after Docker infra readiness and before application processes start.
 - The local infrastructure is defined in `docker-compose.local.yml`.
 - `apps\dashboard-start` and `apps\verifier-start` now use Vite `--strictPort` so the documented ports remain stable instead of silently moving.
 - The app-facing defaults are now `3210` (dashboard), `3211` (API), and `3212` (verifier) to reduce collisions with other common local tooling.
+- The root launcher preflights every required host port before startup and fails fast instead of reporting readiness against stale listeners.
 - See `docs\local-development.md` for the authoritative port map, env requirements, infra services, and bot inclusion rules.
 
 ### Rust
@@ -93,7 +106,14 @@ apps/
   verifier-start/
 
 packages/
+  auth/
+  config/
+  db/
   contracts/
+  discord-core/
+  policy-engine/
+  queue/
+  telemetry/
   ui/
 
 crates/
@@ -117,4 +137,5 @@ services/
 - `bun run check` must validate the root workspace contract, Cargo workspace presence, and Bun workspace typechecks/tests.
 - `bun run build` builds the Start apps and runs build hooks for Bun packages/apps.
 - `bun test` covers the repo-level workspace validator plus Bun-side package/app tests where available.
+- Shared Bun kernel packages must expose a real `src\index.ts` entrypoint plus package-level `build`, `lint`, and `typecheck` scripts so root workspace filters can treat them as first-class workspaces.
 - `bun run format:check` follows the current Rust workspace state owned outside this workstream.

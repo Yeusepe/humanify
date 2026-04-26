@@ -1,0 +1,34 @@
+{
+  "name": "@humanify/queue",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "bun run typecheck",
+    "lint": "bun run typecheck",
+    "typecheck": "tsc --project tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@humanify/telemetry": "workspace:*"
+  },
+  "humanify": {
+    "governingDocs": [
+      "AGENTS.md",
+      "Implementation Plan.txt",
+      "docs\\architecture.md",
+      "docs\\api.md",
+      "docs\\operations.md",
+      "docs\\observability-security.md",
+      "docs\\workspaces.md"
+    ],
+    "upstreamDocs": [
+      "https://redis.io/docs/latest/develop/data-types/streams/",
+      "https://redis.io/docs/latest/commands/xautoclaim/",
+      "https://opentelemetry.io/docs/concepts/context-propagation/"
+    ],
+    "notes": "Queue helpers keep Redis Streams transport-only by carrying canonical refs and propagated trace context instead of business truth."
+  }
+}

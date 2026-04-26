@@ -31,7 +31,7 @@ services:
       - -c
       - max_replication_slots=10
     ports:
-      - "5432:5432"
+      - "${HUMANIFY_POSTGRES_PORT:-5432}:5432"
     volumes:
       - humanify-postgres-data:/var/lib/postgresql/data
       - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro

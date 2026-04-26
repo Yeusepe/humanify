@@ -11,6 +11,8 @@
     "check:rust": "bun run tooling/run-cargo-metadata.ts",
     "check": "bun run check:workspace && bun run check:rust && bun run typecheck && bun test",
     "build": "bun run --sequential --filter '*' build",
+    "db:migrate": "bun run --filter @humanify/db migrate",
+    "db:status": "bun run --filter @humanify/db status",
     "dev": "bun run tooling/dev-stack.ts",
     "lint": "bun run check:workspace && bun run --sequential --filter '*' lint",
     "typecheck": "bun run --sequential --filter '*' typecheck",

@@ -1,0 +1,34 @@
+{
+  "name": "@humanify/config",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "bun run typecheck",
+    "lint": "bun run typecheck",
+    "typecheck": "tsc --project tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@humanify/contracts": "workspace:*"
+  },
+  "humanify": {
+    "governingDocs": [
+      "AGENTS.md",
+      "Implementation Plan.txt",
+      "docs\\architecture.md",
+      "docs\\api.md",
+      "docs\\operations.md",
+      "docs\\verification.md",
+      "docs\\workspaces.md"
+    ],
+    "upstreamDocs": [
+      "https://bun.sh/docs/runtime/env",
+      "https://bun.sh/docs/typescript",
+      "https://discord.com/developers/docs/topics/oauth2"
+    ],
+    "notes": "Shared environment validation stays Bun-authoritative and composes role-specific config bundles for API, bot, and later verifier work."
+  }
+}

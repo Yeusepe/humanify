@@ -34,6 +34,7 @@ test("root workspace scripts delegate Bun-side checks to workspaces", () => {
   const packageJson = readFileSync(join(process.cwd(), "package.json"), "utf8");
 
   expect(packageJson).toContain('"build": "bun run --sequential --filter \'*\' build"');
+  expect(packageJson).toContain('"db:migrate": "bun run --filter @humanify/db migrate"');
   expect(packageJson).toContain('"dev": "bun run tooling/dev-stack.ts"');
   expect(packageJson).toContain(
     '"check": "bun run check:workspace && bun run check:rust && bun run typecheck && bun test"',

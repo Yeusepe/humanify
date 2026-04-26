@@ -1,0 +1,30 @@
+{
+  "name": "@humanify/auth",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "bun run typecheck",
+    "lint": "bun run typecheck",
+    "typecheck": "tsc --project tsconfig.json --noEmit"
+  },
+  "humanify": {
+    "governingDocs": [
+      "AGENTS.md",
+      "Implementation Plan.txt",
+      "docs\\api.md",
+      "docs\\verification.md",
+      "docs\\observability-security.md",
+      "docs\\workspaces.md"
+    ],
+    "upstreamDocs": [
+      "https://discord.com/developers/docs/topics/oauth2",
+      "https://bun.sh/docs/runtime/env",
+      "https://bun.sh/docs/typescript"
+    ],
+    "notes": "Auth helpers keep Discord OAuth, CSRF/state, and verifier challenge binding in Bun-owned code without granting moderation authority."
+  }
+}

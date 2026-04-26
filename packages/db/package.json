@@ -1,0 +1,39 @@
+{
+  "name": "@humanify/db",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "bun run typecheck",
+    "lint": "bun run typecheck",
+    "migrate": "bun run src/cli.ts migrate",
+    "status": "bun run src/cli.ts status",
+    "typecheck": "tsc --project tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "postgres": "^3.4.7"
+  },
+  "humanify": {
+    "governingDocs": [
+      "AGENTS.md",
+      "Implementation Plan.txt",
+      "docs\\architecture.md",
+      "docs\\api.md",
+      "docs\\data-platform.md",
+      "docs\\local-development.md",
+      "docs\\operations.md",
+      "docs\\testing.md",
+      "docs\\workspaces.md"
+    ],
+    "upstreamDocs": [
+      "https://github.com/porsager/postgres",
+      "https://www.postgresql.org/docs/current/index.html",
+      "https://redis.io/docs/latest/develop/data-types/streams/",
+      "https://bun.sh/docs/typescript"
+    ],
+    "notes": "Shared database helpers now combine canonical write planning with the existing Bun-first migration/status commands used by local development and deploy scaffolding."
+  }
+}

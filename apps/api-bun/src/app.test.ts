@@ -34,6 +34,21 @@ test("health route reports Bun-side API status", async () => {
   });
 });
 
+test("healthz route matches the documented local readiness path", async () => {
+  const app = createApiApp();
+  const response = await app.handle(new Request("http://humanify.local/healthz"));
+  const json = (await response.json()) as {
+    contractVersion: string;
+    status: string;
+  };
+
+  expect(response.status).toBe(200);
+  expect(json).toEqual({
+    contractVersion: humanifyContractVersion,
+    status: "ok",
+  });
+});
+
 test("contracts summary route exposes the shared schema metadata", async () => {
   const app = createApiApp();
   const response = await app.handle(new Request("http://humanify.local/contracts/summary"));

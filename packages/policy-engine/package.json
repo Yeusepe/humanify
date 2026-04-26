@@ -1,0 +1,34 @@
+{
+  "name": "@humanify/policy-engine",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "bun run typecheck",
+    "lint": "bun run typecheck",
+    "typecheck": "tsc --project tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@humanify/contracts": "workspace:*"
+  },
+  "humanify": {
+    "governingDocs": [
+      "AGENTS.md",
+      "Implementation Plan.txt",
+      "docs\\architecture.md",
+      "docs\\api.md",
+      "docs\\contracts.md",
+      "docs\\testing.md",
+      "docs\\workspaces.md"
+    ],
+    "upstreamDocs": [
+      "https://www.postgresql.org/docs/current/index.html",
+      "https://bun.sh/docs/typescript",
+      "https://bun.sh/docs/test"
+    ],
+    "notes": "The policy engine remains Bun-authoritative and converts advisory risk plus guild policy into clamped, explainable actions."
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "name": "@humanify/telemetry",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "bun run typecheck",
+    "lint": "bun run typecheck",
+    "typecheck": "tsc --project tsconfig.json --noEmit"
+  },
+  "humanify": {
+    "governingDocs": [
+      "AGENTS.md",
+      "Implementation Plan.txt",
+      "docs\\architecture.md",
+      "docs\\observability-security.md",
+      "docs\\operations.md",
+      "docs\\workspaces.md"
+    ],
+    "upstreamDocs": [
+      "https://opentelemetry.io/docs/concepts/context-propagation/",
+      "https://opentelemetry.io/docs/languages/js/propagation/",
+      "https://bun.sh/docs/runtime/env"
+    ],
+    "notes": "Shared telemetry boundaries keep trace context, redaction, and structured log fields consistent before full OpenTelemetry SDK wiring lands."
+  }
+}

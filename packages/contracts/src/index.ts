@@ -22,10 +22,21 @@ export const humanifyContractSchemaId = humanifyContractsSchema.$id;
 export const humanifyContractSchemaPath = "docs\\contracts\\humanify-contracts.schema.json" as const;
 export const humanifyContractDocumentPath = "docs\\contracts.md" as const;
 
-export const humanifyActionLadder = [...humanifyContractsSchema.$defs.Action.enum];
+export const humanifyActionLadder = ["none", "watch", "verify", "quarantine", "timeout", "kick", "ban"] as const;
+export type HumanifyAction = (typeof humanifyActionLadder)[number];
+
 export const humanifyInferenceEventKinds = [
-  ...humanifyContractsSchema.$defs.InferenceEvent.properties.kind.enum,
-];
+  "join",
+  "message",
+  "report",
+  "verification_update",
+  "manual_review",
+] as const;
+export type HumanifyInferenceEventKind = (typeof humanifyInferenceEventKinds)[number];
+
+export function isHumanifyAction(value: string): value is HumanifyAction {
+  return (humanifyActionLadder as readonly string[]).includes(value);
+}
 
 export function getHumanifyContractSummary() {
   return {

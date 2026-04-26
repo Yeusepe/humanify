@@ -18,11 +18,15 @@ import { GatewayIntentBits } from "discord.js";
 
 import { botRuntimeSummary, createBotClient } from "./index";
 
-test("bot client boots with the guild intent only", () => {
+test("bot client boots with the shared gateway intent bundle", () => {
   const client = createBotClient();
 
   expect(client.options.intents.has(GatewayIntentBits.Guilds)).toBe(true);
+  expect(client.options.intents.has(GatewayIntentBits.GuildMembers)).toBe(true);
+  expect(client.options.intents.has(GatewayIntentBits.GuildModeration)).toBe(true);
+  expect(client.options.intents.has(GatewayIntentBits.GuildInvites)).toBe(true);
   expect(botRuntimeSummary.contractVersion).toBe("0.1.0");
+  expect(botRuntimeSummary.gatewayIntentCount).toBeGreaterThan(1);
 
   client.destroy();
 });

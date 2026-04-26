@@ -31,6 +31,10 @@ export function createApiApp() {
       contractVersion: humanifyContractVersion,
       status: "ok",
     }))
+    .get("/healthz", () => ({
+      contractVersion: humanifyContractVersion,
+      status: "ok",
+    }))
     .get("/contracts/summary", () => getHumanifyContractSummary());
 }
 

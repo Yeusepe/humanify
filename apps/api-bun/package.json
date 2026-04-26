@@ -11,7 +11,9 @@
     "typecheck": "tsc --project tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@humanify/config": "workspace:*",
     "@humanify/contracts": "workspace:*",
+    "@humanify/telemetry": "workspace:*",
     "elysia": "^1.4.28"
   },
   "devDependencies": {
@@ -22,6 +24,8 @@
     "governingDocs": [
       "AGENTS.md",
       "Implementation Plan.txt",
+      "docs\\architecture.md",
+      "docs\\api.md",
       "docs\\reference-baseline.md",
       "docs\\contracts.md",
       "docs\\observability-security.md",
@@ -32,6 +36,6 @@
       "https://bun.sh/docs/runtime/env",
       "https://bun.sh/docs/typescript"
     ],
-    "notes": "The API skeleton deliberately limits itself to health and contract summary routes until policy, auth, and storage surfaces are designed."
+    "notes": "The API shell now resolves typed service config and telemetry bootstrap through shared kernel packages while keeping route scope limited to bootstrap-safe endpoints."
   }
 }

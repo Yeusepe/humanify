@@ -3,6 +3,8 @@
  * Governing docs:
  * - AGENTS.md
  * - Implementation Plan.txt
+ * - docs\architecture.md
+ * - docs\discord-bot.md
  * - docs\reference-baseline.md
  * - docs\contracts.md
  * - docs\observability-security.md
@@ -15,25 +17,25 @@
  * - apps/bot-bun/src/index.test.ts
  */
 
-import { Client, Events, GatewayIntentBits } from "discord.js";
+import { Client, Events } from "discord.js";
 
+import { loadBotTokenConfig } from "@humanify/config";
 import { humanifyActionLadder, humanifyContractVersion } from "@humanify/contracts";
+import { createBotGatewayIntents } from "@humanify/discord-core";
 
 export const botRuntimeSummary = {
   contractVersion: humanifyContractVersion,
+  gatewayIntentCount: createBotGatewayIntents().length,
   supportedActionCount: humanifyActionLadder.length,
 };
 
 export function createBotClient() {
   return new Client({
-    intents: [GatewayIntentBits.Guilds],
+    intents: createBotGatewayIntents(),
   });
 }
 
-export async function startBot(token = process.env.DISCORD_BOT_TOKEN) {
-  if (!token) {
-    throw new Error("DISCORD_BOT_TOKEN is required to start @humanify/bot-bun.");
-  }
+export async function startBot(token = loadBotTokenConfig(process.env).botToken) {
 
   const client = createBotClient();
 

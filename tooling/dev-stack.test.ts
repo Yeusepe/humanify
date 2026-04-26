@@ -23,6 +23,12 @@ test("dev stack includes Docker Compose orchestration metadata", () => {
 
   expect(plan.composeFile).toBe("docker-compose.local.yml");
   expect(plan.composeProjectName).toBe("humanify-local");
+  expect(plan.setupCommands).toEqual([
+    {
+      command: ["bun", "run", "--filter", "@humanify/db", "migrate"],
+      name: "@humanify/db migrate",
+    },
+  ]);
 });
 
 test("dev stack includes all local services and UI surfaces", () => {
@@ -72,5 +78,76 @@ test("dev stack keeps documented readiness URLs", () => {
     "http://127.0.0.1:4102/healthz",
     "http://127.0.0.1:4103/healthz",
     "http://127.0.0.1:4104/healthz",
+  ]);
+});
+
+test("dev stack preflights the documented fixed host ports", () => {
+  const plan = createDevStackPlan({ HUMANIFY_SKIP_BOT: "1" });
+
+  expect(plan.requiredPorts).toEqual([
+    { host: "127.0.0.1", name: "dashboard", port: 3210 },
+    { host: "127.0.0.1", name: "api", port: 3211 },
+    { host: "127.0.0.1", name: "verifier", port: 3212 },
+    { host: "127.0.0.1", name: "inference-rs", port: 4101 },
+    { host: "127.0.0.1", name: "learning-rs", port: 4102 },
+    { host: "127.0.0.1", name: "evidence-rs", port: 4103 },
+    { host: "127.0.0.1", name: "trust-rs", port: 4104 },
+    { host: "127.0.0.1", name: "postgres", port: 5432 },
+    { host: "127.0.0.1", name: "redis", port: 6379 },
+    { host: "127.0.0.1", name: "electric", port: 5133 },
+    { host: "127.0.0.1", name: "minio-api", port: 9000 },
+    { host: "127.0.0.1", name: "minio-console", port: 9001 },
+    { host: "127.0.0.1", name: "qdrant-http", port: 6333 },
+    { host: "127.0.0.1", name: "qdrant-grpc", port: 6334 },
+    { host: "127.0.0.1", name: "grafana", port: 4300 },
+  ]);
+});
+
+test("dev stack derives readiness and preflight ports from env-configured services", () => {
+  const plan = createDevStackPlan({
+    HUMANIFY_SKIP_BOT: "1",
+    HUMANIFY_API_PORT: "4211",
+    HUMANIFY_INFERENCE_RS_BIND_ADDR: "127.0.0.1:5101",
+    HUMANIFY_LEARNING_RS_BIND_ADDR: "127.0.0.1:5102",
+    HUMANIFY_EVIDENCE_RS_BIND_ADDR: "127.0.0.1:5103",
+    HUMANIFY_TRUST_RS_BIND_ADDR: "127.0.0.1:5104",
+    HUMANIFY_REDIS_PORT: "6380",
+    HUMANIFY_ELECTRIC_PORT: "5233",
+      HUMANIFY_MINIO_API_PORT: "9100",
+      HUMANIFY_MINIO_CONSOLE_PORT: "9101",
+      HUMANIFY_POSTGRES_PORT: "5544",
+      HUMANIFY_QDRANT_HTTP_PORT: "6433",
+      HUMANIFY_QDRANT_GRPC_PORT: "6434",
+      HUMANIFY_GRAFANA_PORT: "4400",
+  });
+
+  expect(plan.ports).toEqual({
+    api: 4211,
+    dashboard: 3210,
+    electric: 5233,
+    evidence: 5103,
+    grafana: 4400,
+    inference: 5101,
+      learning: 5102,
+      minioApi: 9100,
+      minioConsole: 9101,
+      postgres: 5544,
+      qdrantGrpc: 6434,
+      qdrantHttp: 6433,
+      redis: 6380,
+    trust: 5104,
+    verifier: 3212,
+  });
+
+  const readinessUrls = plan.processes.map((processSpec) => processSpec.readinessUrl).filter(Boolean);
+
+  expect(readinessUrls).toEqual([
+    "http://127.0.0.1:4211/healthz",
+    "http://127.0.0.1:3210/",
+    "http://127.0.0.1:3212/",
+    "http://127.0.0.1:5101/healthz",
+    "http://127.0.0.1:5102/healthz",
+    "http://127.0.0.1:5103/healthz",
+    "http://127.0.0.1:5104/healthz",
   ]);
 });

@@ -22,7 +22,14 @@ export const requiredDirectories = [
   "apps\\dashboard-start",
   "apps\\verifier-start",
   "packages",
+  "packages\\auth",
+  "packages\\config",
+  "packages\\db",
   "packages\\contracts",
+  "packages\\discord-core",
+  "packages\\policy-engine",
+  "packages\\queue",
+  "packages\\telemetry",
   "packages\\ui",
   "crates",
   "crates\\humanify-core",
@@ -51,6 +58,16 @@ export const requiredFiles = [
   "docker\\postgres\\init\\001-humanify.sql",
   "docs\\local-development.md",
   "docs\\workspaces.md",
+  "packages\\auth\\package.json",
+  "packages\\auth\\src\\index.ts",
+  "packages\\config\\package.json",
+  "packages\\config\\src\\index.ts",
+  "packages\\db\\package.json",
+  "packages\\db\\src\\cli.ts",
+  "packages\\db\\src\\index.ts",
+  "packages\\db\\src\\migrator.ts",
+  "packages\\db\\src\\migrator.test.ts",
+  "packages\\db\\migrations\\0001_canonical_spine.sql",
   "apps\\api-bun\\package.json",
   "apps\\api-bun\\src\\app.ts",
   "apps\\api-bun\\src\\index.ts",
@@ -66,6 +83,14 @@ export const requiredFiles = [
   "apps\\verifier-start\\src\\routes\\index.tsx",
   "packages\\contracts\\package.json",
   "packages\\contracts\\src\\index.ts",
+  "packages\\discord-core\\package.json",
+  "packages\\discord-core\\src\\index.ts",
+  "packages\\policy-engine\\package.json",
+  "packages\\policy-engine\\src\\index.ts",
+  "packages\\queue\\package.json",
+  "packages\\queue\\src\\index.ts",
+  "packages\\telemetry\\package.json",
+  "packages\\telemetry\\src\\index.ts",
   "packages\\ui\\package.json",
   "packages\\ui\\src\\index.tsx",
   "tooling\\dev-stack.ts",
@@ -111,6 +136,10 @@ export function verifyWorkspaces(root = process.cwd()): VerificationResult {
 
   if (!packageJsonText.includes('"build": "bun run --sequential --filter \'*\' build"')) {
     warnings.push("Root package.json build script no longer matches the documented Bun workspace convention.");
+  }
+
+  if (!packageJsonText.includes('"db:migrate": "bun run --filter @humanify/db migrate"')) {
+    warnings.push("Root package.json db:migrate script no longer matches the documented Postgres migration convention.");
   }
 
   if (!packageJsonText.includes('"dev": "bun run tooling/dev-stack.ts"')) {
