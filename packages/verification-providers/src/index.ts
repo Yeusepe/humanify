@@ -43,21 +43,39 @@ import {
 } from "./template";
 
 export {
+  getDisclosedAttributeVerificationClaimIds,
   getDefaultVerificationClaimBundle,
+  getProofOnlyVerificationClaimIds,
+  getVerificationClaimDefinition,
   getVerificationClaimBundles,
   getVerificationClaimDefinitions,
   getSupportedVerificationClaimIds,
   getDefaultHumanifyIdClaimBundle,
+  isDisclosedAttributeHumanifyClaimKey,
   getHumanifyClaimDefinitions,
   getHumanifyIdClaimBundles,
   getSupportedHumanifyClaimIds,
   isHumanifyClaimKey,
+  isProofOnlyHumanifyClaimKey,
   type HumanifyClaimDefinition,
   type HumanifyClaimKey,
   type HumanifyIdClaimBundle,
+  type VerificationClaimCategory,
   type VerificationClaimBundle,
   type VerificationClaimDefinition,
+  type VerificationClaimDisclosureMode,
+  type VerificationClaimSourceAttribute,
 } from "./claims";
+export {
+  createReusableIdentityHandoffContract,
+  getReusableIdentityProofOnlyClaimKeys,
+  isReusableIdentityDisclosedAttributeClaim,
+  reusableIdentityContractVersion,
+  reusableIdentityDisclosedAttributeKeys,
+  type ReusableIdentityDisclosedAttributeKey,
+  type ReusableIdentityFaceVerificationEvidenceSource,
+  type ReusableIdentityHandoffContract,
+} from "./reusable-identity";
 export {
   buildPrivadoWalletLaunch,
   createPrivadoReusableCredentialBridge,
@@ -83,9 +101,13 @@ export {
   type UserSelectableVerificationStrategyRole,
   type VerificationProviderDefinition,
   type VerificationProviderHandoffKind,
+  type VerificationStrategyCapabilities,
+  type VerificationStrategyClaimDeliveryKind,
   type VerificationStrategyCompletionMode,
   type VerificationStrategyDefinition,
+  type VerificationStrategyFaceVerificationSupportLevel,
   type VerificationStrategyHandoffKind,
+  type VerificationStrategyReusableIdentityContractRole,
   type VerificationStrategyRole,
 } from "./template";
 export {
@@ -321,6 +343,12 @@ export function verificationStrategySupportsClaims(
 ) {
   const supportedClaimKeySet = new Set<string>(strategy.supportedClaimKeys);
   return requestedClaims.every((claimKey) => supportedClaimKeySet.has(claimKey));
+}
+
+export function verificationStrategySupportsFaceVerificationRequirement(
+  strategy: Pick<VerificationStrategyDefinition, "capabilities">,
+) {
+  return strategy.capabilities.faceVerification.satisfiesFaceVerificationPolicy;
 }
 
 export function createVerificationStrategyPipelineCatalog(
@@ -567,6 +595,7 @@ export function resolveVerificationOptionCatalog(input: { enabledOptionIds?: rea
 
 export const parseVerificationOptionSelection = parseVerificationStrategySelection;
 export const verificationOptionSupportsClaims = verificationStrategySupportsClaims;
+export const verificationOptionSupportsFaceVerificationRequirement = verificationStrategySupportsFaceVerificationRequirement;
 
 export function resolveVerificationOptionConfiguration(input: {
   availableCatalog?: VerificationOptionCatalog;

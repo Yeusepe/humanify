@@ -18,7 +18,7 @@
 
 import { expect, test } from "bun:test";
 
-import { GatewayIntentBits, MessageFlags } from "discord.js";
+import { GatewayIntentBits, MessageFlags, PermissionFlagsBits, PermissionsBitField } from "discord.js";
 
 import { createBotGatewayIntents, parseComponentCustomId } from "@humanify/discord-core";
 
@@ -27,6 +27,43 @@ import {
   createInteractionHandler,
   decideApprovedActionExecution,
 } from "./index";
+
+function createGuildInteractionPermissions(...permissions: bigint[]) {
+  return new PermissionsBitField(permissions);
+}
+
+function createChatCommandInteraction(input: {
+  commandName: string;
+  getString?: (name: string) => string | null;
+  getSubcommand?: () => string;
+  getUser?: (name: string) => { id: string; username?: string } | null;
+  memberPermissions?: PermissionsBitField | null;
+  reply?: (payload: unknown) => Promise<void>;
+  userId?: string;
+}) {
+  return {
+    commandName: input.commandName,
+    guildId: "guild_123",
+    inGuild: () => true,
+    isButton: () => false,
+    isChatInputCommand: () => true,
+    isMessageContextMenuCommand: () => false,
+    memberPermissions: input.memberPermissions,
+    options: {
+      getString(name: string) {
+        return input.getString?.(name) ?? null;
+      },
+      getSubcommand() {
+        return input.getSubcommand?.() ?? "open";
+      },
+      getUser(name: string) {
+        return input.getUser?.(name) ?? null;
+      },
+    },
+    reply: input.reply ?? (async () => undefined),
+    user: { id: input.userId ?? "user_123" },
+  } as any;
+}
 
 test("report command routes moderator intake through the report API and offers a verification shortcut", async () => {
   const apiCalls: unknown[] = [];
@@ -110,6 +147,224 @@ test("report command routes moderator intake through the report API and offers a
     guildId: "guild_123",
     kind: "verification_start",
   });
+});
+
+test("humanify setup refuses members who are not server admins", async () => {
+  const replies: unknown[] = [];
+  const handler = createInteractionHandler({
+    apiClient: {
+      attachReportEvidence: async () => {
+        throw new Error("setup should not attach evidence");
+      },
+      createReport: async () => {
+        throw new Error("setup should not create reports");
+      },
+      createVerificationSession: async () => {
+        throw new Error("setup should not create verification");
+      },
+    },
+  });
+
+  await handler(
+    createChatCommandInteraction({
+      commandName: "humanify",
+      getSubcommand: () => "setup",
+      memberPermissions: createGuildInteractionPermissions(PermissionFlagsBits.ManageGuild),
+      reply: async (payload) => {
+        replies.push(payload);
+      },
+      userId: "admin_candidate",
+    }),
+  );
+
+  expect(replies).toEqual([
+    expect.objectContaining({
+      content: "Only server admins can run Humanify setup.",
+      flags: MessageFlags.Ephemeral,
+    }),
+  ]);
+});
+
+test("humanify setup keeps an honest pending reply for server admins", async () => {
+  const replies: unknown[] = [];
+  const handler = createInteractionHandler({
+    apiClient: {
+      attachReportEvidence: async () => {
+        throw new Error("setup should not attach evidence");
+      },
+      createReport: async () => {
+        throw new Error("setup should not create reports");
+      },
+      createVerificationSession: async () => {
+        throw new Error("setup should not create verification");
+      },
+    },
+  });
+
+  await handler(
+    createChatCommandInteraction({
+      commandName: "humanify",
+      getSubcommand: () => "setup",
+      memberPermissions: createGuildInteractionPermissions(PermissionFlagsBits.Administrator),
+      reply: async (payload) => {
+        replies.push(payload);
+      },
+      userId: "admin_123",
+    }),
+  );
+
+  expect(replies).toEqual([
+    expect.objectContaining({
+      content: "Humanify setup is not ready yet. Server admins will be able to configure channels and roles here soon.",
+      flags: MessageFlags.Ephemeral,
+    }),
+  ]);
+});
+
+test("case open refuses members who are not trusted moderators", async () => {
+  const replies: unknown[] = [];
+  const handler = createInteractionHandler({
+    apiClient: {
+      attachReportEvidence: async () => {
+        throw new Error("case open should not attach evidence");
+      },
+      createReport: async () => {
+        throw new Error("case open should be blocked before API handoff");
+      },
+      createVerificationSession: async () => {
+        throw new Error("case open should not create verification");
+      },
+    },
+  });
+
+  await handler(
+    createChatCommandInteraction({
+      commandName: "case",
+      getString(name) {
+        if (name === "reason") return "spam link";
+        return null;
+      },
+      getSubcommand: () => "open",
+      getUser(name) {
+        if (name === "user") return { id: "subject_123", username: "target" };
+        return null;
+      },
+      memberPermissions: createGuildInteractionPermissions(PermissionFlagsBits.UseApplicationCommands),
+      reply: async (payload) => {
+        replies.push(payload);
+      },
+      userId: "member_123",
+    }),
+  );
+
+  expect(replies).toEqual([
+    expect.objectContaining({
+      content: "Only trusted moderators can open cases or verify other members.",
+      flags: MessageFlags.Ephemeral,
+    }),
+  ]);
+});
+
+test("verify allows members to start verification for themselves", async () => {
+  const apiCalls: unknown[] = [];
+  const replies: unknown[] = [];
+  const handler = createInteractionHandler({
+    apiClient: {
+      attachReportEvidence: async () => {
+        throw new Error("verify should not attach evidence");
+      },
+      createReport: async () => {
+        throw new Error("verify should not create reports");
+      },
+      createVerificationSession: async (guildId, body) => {
+        apiCalls.push({ body, guildId });
+        return {
+          challengeToken: "challenge_123",
+          persistence: "planned_not_persisted",
+          session: {
+            challengeId: "challenge_123",
+            guildId,
+            sessionId: "session_123",
+            state: "pending",
+            userId: body.userId,
+          },
+        };
+      },
+    },
+  });
+
+  await handler(
+    createChatCommandInteraction({
+      commandName: "verify",
+      getString: () => null,
+      getUser(name) {
+        if (name === "user") return { id: "member_123", username: "member" };
+        return null;
+      },
+      memberPermissions: createGuildInteractionPermissions(PermissionFlagsBits.UseApplicationCommands),
+      reply: async (payload) => {
+        replies.push(payload);
+      },
+      userId: "member_123",
+    }),
+  );
+
+  expect(apiCalls).toEqual([
+    {
+      body: {
+        initiatedBy: "member_123",
+        requiredCapabilities: ["captcha"],
+        userId: "member_123",
+      },
+      guildId: "guild_123",
+    },
+  ]);
+  expect(replies).toEqual([
+    expect.objectContaining({
+      content: expect.stringContaining("session_123"),
+      flags: MessageFlags.Ephemeral,
+    }),
+  ]);
+});
+
+test("verify refuses members who try to start verification for someone else without trusted moderator permission", async () => {
+  const replies: unknown[] = [];
+  const handler = createInteractionHandler({
+    apiClient: {
+      attachReportEvidence: async () => {
+        throw new Error("verify should not attach evidence");
+      },
+      createReport: async () => {
+        throw new Error("verify should not create reports");
+      },
+      createVerificationSession: async () => {
+        throw new Error("verify should be blocked before API handoff");
+      },
+    },
+  });
+
+  await handler(
+    createChatCommandInteraction({
+      commandName: "verify",
+      getString: () => "captcha",
+      getUser(name) {
+        if (name === "user") return { id: "subject_123", username: "member" };
+        return null;
+      },
+      memberPermissions: createGuildInteractionPermissions(PermissionFlagsBits.UseApplicationCommands),
+      reply: async (payload) => {
+        replies.push(payload);
+      },
+      userId: "member_123",
+    }),
+  );
+
+  expect(replies).toEqual([
+    expect.objectContaining({
+      content: "Only trusted moderators can open cases or verify other members.",
+      flags: MessageFlags.Ephemeral,
+    }),
+  ]);
 });
 
 test("message context intake opens a report and then attaches canonical Discord message evidence", async () => {

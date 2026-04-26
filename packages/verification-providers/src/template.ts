@@ -16,6 +16,7 @@
  */
 
 import { isHumanifyClaimKey, type HumanifyClaimKey } from "./claims";
+import { type ReusableIdentityDisclosedAttributeKey } from "./reusable-identity";
 
 export const verificationStrategyRoles = ["capture_provider", "reusable_proof_backend", "policy_consumer"] as const;
 
@@ -24,9 +25,38 @@ export type UserSelectableVerificationStrategyRole = Exclude<VerificationStrateg
 
 export type VerificationStrategyHandoffKind = "server_verified_proof" | "signed_webhook" | "policy_evaluation";
 export type VerificationStrategyCompletionMode = "provider_verification_required" | "policy_consumer_evaluation";
+export type VerificationStrategyClaimDeliveryKind =
+  | "capture_attestation"
+  | "reusable_proof"
+  | "personhood_proof"
+  | "policy_evaluation";
+export type VerificationStrategyFaceVerificationSupportLevel =
+  | "capture_attestation"
+  | "proof_of_personhood"
+  | "not_automatic";
+export type VerificationStrategyReusableIdentityContractRole = "seed" | "consume" | "none";
+
+export type VerificationStrategyCapabilities = {
+  claimDelivery: ReadonlyArray<{
+    claimKey: HumanifyClaimKey;
+    deliveryKind: VerificationStrategyClaimDeliveryKind;
+  }>;
+  faceVerification: {
+    satisfiesFaceVerificationPolicy: boolean;
+    summary: string;
+    supportLevel: VerificationStrategyFaceVerificationSupportLevel;
+  };
+  reusableIdentity: {
+    contractRole: VerificationStrategyReusableIdentityContractRole;
+    disclosedAttributeKeys: readonly ReusableIdentityDisclosedAttributeKey[];
+    proofOnlyClaimKeys: readonly HumanifyClaimKey[];
+    summary: string;
+  };
+};
 
 export type VerificationStrategyDefinition = {
   benefits: readonly string[];
+  capabilities: VerificationStrategyCapabilities;
   defaultRank: number;
   deletionPolicy?: string;
   goodFor: string;
@@ -61,6 +91,17 @@ export function cloneVerificationStrategyDefinition<TStrategy extends Verificati
   return {
     ...strategy,
     benefits: [...strategy.benefits],
+    capabilities: {
+      claimDelivery: strategy.capabilities.claimDelivery.map((entry) => ({ ...entry })),
+      faceVerification: {
+        ...strategy.capabilities.faceVerification,
+      },
+      reusableIdentity: {
+        ...strategy.capabilities.reusableIdentity,
+        disclosedAttributeKeys: [...strategy.capabilities.reusableIdentity.disclosedAttributeKeys],
+        proofOnlyClaimKeys: [...strategy.capabilities.reusableIdentity.proofOnlyClaimKeys],
+      },
+    },
     integration: {
       ...strategy.integration,
     },
@@ -101,6 +142,21 @@ export function defineVerificationStrategy<TStrategy extends VerificationStrateg
   for (const claimKey of strategy.supportedClaimKeys) {
     if (!isHumanifyClaimKey(claimKey)) {
       throw new Error(`Verification strategy "${strategy.id}" references unsupported Humanify claim "${claimKey}".`);
+    }
+  }
+
+  if (strategy.capabilities.claimDelivery.length !== strategy.supportedClaimKeys.length) {
+    throw new Error(
+      `Verification strategy "${strategy.id}" must describe every supported claim in capabilities.claimDelivery.`,
+    );
+  }
+
+  const supportedClaimKeySet = new Set(strategy.supportedClaimKeys);
+  for (const claimCapability of strategy.capabilities.claimDelivery) {
+    if (!supportedClaimKeySet.has(claimCapability.claimKey)) {
+      throw new Error(
+        `Verification strategy "${strategy.id}" includes unsupported capability claim "${claimCapability.claimKey}".`,
+      );
     }
   }
 

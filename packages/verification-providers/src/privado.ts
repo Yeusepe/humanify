@@ -18,6 +18,7 @@
  */
 
 import { type HumanifyClaimKey } from "./claims";
+import { createReusableIdentityHandoffContract, type ReusableIdentityHandoffContract } from "./reusable-identity";
 
 export type PrivadoClaimScopeRequest = {
   circuitId: string;
@@ -112,60 +113,15 @@ export type PrivadoNormalizedVerificationResult = {
   status: "failed" | "pending" | "verified";
 };
 
-export type PrivadoReusableCredentialBridge = {
-  approvedClaims: HumanifyClaimKey[];
-  bridgeId: string;
-  custody: {
-    storesDocumentImages: false;
-    storesFullReusableCredential: false;
-    storesRawDiditPayload: false;
-  };
-  durableAfterHandoff: {
-    handoffAuditRef: string;
-    retainedFacts: Array<
-      | "sourceAttestationRef"
-      | "approvedClaims"
-      | "faceVerificationPerformed"
-      | "faceVerificationPassed"
-      | "targetProvider"
-      | "handoffAuditRef"
-    >;
-    sourceAttestationRef: string;
-  };
-  handoff: {
-    credentialInput: {
-      ageOver18?: true;
-      nationality?: string;
-    };
-    handoffKind: "external_issuer_request";
-    note: string;
-    policyInputs: {
-      faceVerificationPassed: boolean;
-      faceVerificationPerformed: boolean;
-    };
-    requestedClaims: HumanifyClaimKey[];
+export type PrivadoReusableCredentialBridge = ReusableIdentityHandoffContract & {
+  handoff: ReusableIdentityHandoffContract["handoff"] & {
     requiredExternalInputs: ["holderDid", "issuerDid", "credentialSchema", "issuerSigningKeyRef"];
     targetBackend: "privado";
   };
-  inputFacts: {
-    ageOver18?: true;
-    faceVerificationPassed: boolean;
-    faceVerificationPerformed: boolean;
-    nationality?: string;
-  };
-  source: {
-    guildId: string;
+  source: ReusableIdentityHandoffContract["source"] & {
     providerId: "didit";
-    providerSessionId: string;
-    sessionId: string;
-    userId: string;
   };
-  status: "issuer_handoff_required";
   targetProvider: "privado";
-  temporaryRetention: {
-    expiresAt: string;
-    retainedFacts: Array<"age_over_18" | "nationality" | "faceVerificationPerformed" | "faceVerificationPassed">;
-  };
 };
 
 const privadoUniversalLinkBase = "https://wallet.privado.id/";
@@ -439,6 +395,7 @@ export function createPrivadoReusableCredentialBridge(input: {
   };
   verifiedDiditFacts: {
     ageOver18?: boolean;
+    ageOver21?: boolean;
     documentIdentityVerified: boolean;
     faceVerificationPassed: boolean;
     faceVerificationPerformed: boolean;
@@ -451,71 +408,53 @@ export function createPrivadoReusableCredentialBridge(input: {
     return undefined;
   }
 
-  const approvedClaims = input.verifiedDiditFacts.satisfiedClaims.filter((claim): claim is HumanifyClaimKey =>
-    claim === "age_over_18" || claim === "nationality"
-  );
-  if (approvedClaims.length === 0) {
-    return undefined;
-  }
-
-  const expiresAt = new Date((input.now ?? Date.now()) + (input.bridgeTtlSeconds ?? 3600) * 1_000).toISOString();
-  const bridgeId = crypto.randomUUID();
-  const sourceAttestationRef = `didit:session:${input.source.providerSessionId}`;
-  const handoffAuditRef = `verification-bridge:${bridgeId}`;
   const nationality = input.verifiedDiditFacts.nationality?.trim() || undefined;
-  const ageOver18 = input.verifiedDiditFacts.ageOver18 ? true : undefined;
 
-  return {
-    approvedClaims,
-    bridgeId,
-    custody: {
-      storesDocumentImages: false,
-      storesFullReusableCredential: false,
-      storesRawDiditPayload: false,
-    },
-    durableAfterHandoff: {
-      handoffAuditRef,
-      retainedFacts: [
-        "sourceAttestationRef",
-        "approvedClaims",
-        "faceVerificationPerformed",
-        "faceVerificationPassed",
-        "targetProvider",
-        "handoffAuditRef",
-      ],
-      sourceAttestationRef,
-    },
+  return createReusableIdentityHandoffContract({
+    bridgeTtlSeconds: input.bridgeTtlSeconds,
     handoff: {
-      credentialInput: {
-        ageOver18,
-        nationality,
-      },
-      handoffKind: "external_issuer_request",
+      disclosedAttributeKeys: ["nationality"],
       note:
         "Humanify stops at a documented bridge request. A separate issuer/backend with its own legal basis and signing material must mint any Privado-held credential; Humanify never imports the full Didit session or keeps raw documents.",
-      policyInputs: {
-        faceVerificationPassed: input.verifiedDiditFacts.faceVerificationPassed,
-        faceVerificationPerformed: input.verifiedDiditFacts.faceVerificationPerformed,
-      },
-      requestedClaims: approvedClaims,
+      proofOnlyClaimKeys: [
+        "age_over_18",
+        "age_over_21",
+        "gender_marker_female",
+        "gender_marker_male",
+        "gender_marker_x",
+      ],
       requiredExternalInputs: ["holderDid", "issuerDid", "credentialSchema", "issuerSigningKeyRef"],
       targetBackend: "privado",
     },
-    inputFacts: {
-      ageOver18,
-      faceVerificationPassed: input.verifiedDiditFacts.faceVerificationPassed,
-      faceVerificationPerformed: input.verifiedDiditFacts.faceVerificationPerformed,
-      nationality,
-    },
+    now: input.now,
     source: {
       ...input.source,
       providerId: "didit",
     },
-    status: "issuer_handoff_required",
-    targetProvider: "privado",
-    temporaryRetention: {
-      expiresAt,
-      retainedFacts: ["age_over_18", "nationality", "faceVerificationPerformed", "faceVerificationPassed"],
+    verifiedSourceFacts: {
+      disclosedAttributes: nationality
+        ? {
+          nationality,
+        }
+        : undefined,
+      faceVerification: {
+        evidenceSource: "capture_provider",
+        passed: input.verifiedDiditFacts.faceVerificationPassed,
+        performed: input.verifiedDiditFacts.faceVerificationPerformed,
+      },
+      satisfiedClaims: input.verifiedDiditFacts.satisfiedClaims.filter((claim): claim is HumanifyClaimKey => {
+        if (claim === "nationality" && nationality) {
+          return true;
+        }
+
+        return (
+          claim === "age_over_18" ||
+          claim === "age_over_21" ||
+          claim === "gender_marker_female" ||
+          claim === "gender_marker_male" ||
+          claim === "gender_marker_x"
+        );
+      }),
     },
-  } satisfies PrivadoReusableCredentialBridge;
+  }) as PrivadoReusableCredentialBridge | undefined;
 }

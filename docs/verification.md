@@ -66,7 +66,7 @@ Recommended session states:
 
 `released` is a terminal post-pass state once the bot actually applies the verification role release or quarantine removal.
 
-Verification metadata also records whether face verification was part of the capture flow and whether the face check passed. Guild policy can depend on those normalized fields; Bun does not infer them later from raw provider payloads.
+Verification metadata also records whether face verification was part of the capture flow and whether the face check passed. Guild policy can depend on those normalized fields; Bun does not infer them later from raw provider payloads. Didit and World ID can satisfy face-verification-related requirements through their normalized provider outcomes; Privado and Self.xyz do **not** automatically imply face verification and must rely on separate policy inputs if a face check matters.
 
 ## 3. Verification flow
 
@@ -172,34 +172,34 @@ Didit also documents reusable KYC and B2B session sharing. Humanify **does not**
 2. importing full Didit sessions would collapse the architecture back into provider-baked storage
 3. reusable-proof reuse belongs in the reusable backend role, not the capture-provider role
 
-### 4.2.1 Didit → Privado reusable-credential bridge boundary
+### 4.2.1 Didit → reusable identity handoff boundary
 
-When a Didit capture result is approved, Humanify may prepare a **reusable-credential bridge contract** for the primary reusable backend role (**Privado**), but it must stop at an honest handoff boundary unless a separate issuer/backend with its own legal basis, wallet binding, and signing material is available.
+When a Didit capture result is approved, Humanify may prepare a **reusable identity handoff contract** for a reusable backend such as **Privado**, but it must stop at an honest handoff boundary unless a separate issuer/backend with its own legal basis, wallet binding, and signing material is available.
 
-The bridge keeps these **minimal approved facts** only long enough for the handoff window:
+The handoff contract keeps these **minimal approved facts** only long enough for the handoff window:
 
-- `ageOver18: true` when Didit approved a document-backed adult threshold
-- `nationality` as the approved country code when Didit exposed it in the approved result
-- `faceVerificationPerformed`
-- `faceVerificationPassed`
+- disclosed attributes such as `nationality` when the source capture explicitly approved them
+- proof-only predicates such as `age_over_18`, `age_over_21`, and later gender-marker predicates derived from DOB/gender without storing the raw underlying values
+- first-class face-verification policy inputs (`performed`, `passed`, and whether the policy requirement is satisfied)
 - the source capture attestation reference (`didit:session:<session_id>`)
 
-Humanify sends or persists a bridge contract that:
+Humanify sends or persists a reusable identity handoff contract that:
 
-- names the source capture attestation and target backend (`privado`)
-- lists the approved reusable predicates (`age_over_18`, `nationality`)
-- carries only the minimal credential input facts above plus face-verification policy inputs
+- names the source capture attestation and target backend (`privado` today)
+- separates disclosed attributes from proof-only predicates so creator-facing setup stays plain-language and custody stays minimal
+- carries only the minimal approved claims above plus face-verification policy inputs
 - explicitly says that external issuer inputs such as holder DID, issuer DID, schema choice, and signing-key reference are still required
 
 After a real external handoff completes, the durable Humanify record is still limited to:
 
 - the source attestation reference
-- approved predicate names
+- approved claim names
+- disclosed-attribute / proof-only summaries
 - face-verification policy fields
 - target backend id
 - audit / handoff refs
 
-Humanify does **not** keep raw documents, full Didit payloads, imported Didit sessions, or full Privado credentials as part of this bridge.
+Humanify does **not** keep raw documents, raw DOB, raw gender, full Didit payloads, imported Didit sessions, or full Privado credentials as part of this handoff.
 
 ### 4.3 Reusable-proof default: Privado
 
@@ -225,9 +225,9 @@ The verifier should present verification as **proof choices**, not provider bran
 
 | User-facing path | Strategy role | Default / primary adapter | Typical claims |
 | --- | --- | --- | --- |
-| Verify for the first time | capture provider | Didit | `age_over_18`, `nationality`, `document_identity`, `liveness` |
+| Verify for the first time | capture provider | Didit | `age_over_18`, `age_over_21`, `nationality`, `document_identity`, `liveness`, `face_verification` |
 | Use a reusable proof | reusable proof backend | Privado | `age_over_18`, `nationality`, later other reusable predicates |
-| Prove uniqueness only | reusable proof backend or later specialist backend | later extension | `unique_person` |
+| Prove uniqueness only | reusable proof backend or later specialist backend | World ID today | `unique_person`, face-verification-related policy inputs when World ID is the selected proof-of-personhood lane |
 
 At verification time, the verifier presents these consumer-facing proof bundles:
 
@@ -242,6 +242,8 @@ For the first implementation, the default proof bundle remains:
 - `age_over_18`
 - `nationality`
 
+The shared claim catalog also reserves plain-language copy for stricter proof-only age predicates such as `age_over_21`, but the first persisted proof-bundle surface still exposes the v1 age-18 / nationality bundles until setup persistence grows that option explicitly.
+
 `unique_person` remains a later extension and must stay behind the same role-based strategy model rather than becoming new app-local branching logic.
 
 ### 4.5 Minimal-storage rule
@@ -253,6 +255,7 @@ Humanify does not store:
 - raw document images
 - passport or national ID numbers
 - date of birth
+- raw gender
 - the full capture-provider payload
 - the full reusable credential payload
 - imported third-party full-session copies
@@ -268,7 +271,7 @@ Humanify stores only:
 - strategy handoff identifiers needed for audit and idempotency
 - audit references showing that Bun verified the proof server-side
 
-For the Didit → Privado bridge specifically, any temporary bridge facts are time-bounded handoff inputs rather than permanent profile data. The durable post-handoff record remains the attestation ref, approved predicates, face-verification policy fields, and audit refs.
+For the reusable identity handoff specifically, any temporary bridge facts are time-bounded handoff inputs rather than permanent profile data. The durable post-handoff record remains the attestation ref, approved claims, disclosed-attribute / proof-only summaries, face-verification policy fields, and audit refs.
 
 This matches the W3C VC model's minimization guidance while keeping raw identity data out of Humanify's custody.
 
@@ -281,7 +284,7 @@ The current durable storage contract is intentionally narrow. Operators should e
 | Didit capture created | `selectedProvider`, `status = didit_session_created`, `requestedClaims`, `workflowId`, `callbackUrl`, `launch.providerSessionId`, `launch.providerStatus`, `launch.url` | empty until Bun reconciles the webhook | none yet | no Didit decision payload, no document bytes |
 | Didit webhook reconciled | prior Didit launch fields plus `status = provider_webhook_verified` or `provider_webhook_recorded`, `verifiedWebhook.{webhookType,timestamp,workflowId,providerStatus}`, `purge.{attemptedAt,outcome}`, optional `reusableCredentialBridge` summary | `authoritativeSource = didit_decision_api`, `providerReferenceId`, `providerStatus`, `requestedClaims`, `satisfiedClaims`, `faceVerificationPerformed`, `faceVerificationPassed` | one `capture_attestation` row for provider `didit` with the same normalized summary; optional `reusable_credential_bridge` row for provider `privado` with only the bridge contract | no raw `idVerifications`, no raw `livenessChecks`, no imported Didit session copy |
 | Privado proof status read | `selectedProvider`, `providerSessionId`, `requestedClaims`, `status = pending_provider_verification` or `provider_proof_failed` or `provider_proof_verified` | `authoritativeSource = privado_verifier_backend_status`, `providerReferenceId`, `providerStatus`, `requestedClaims`, `satisfiedClaims`, `message`, `proofReceiptRef`, optional `proofReceiptHash`, `nullifierRefs`, `trustedIssuerScopes`, `verifiablePresentationCount` | one `reusable_proof_receipt` row for provider `privado` carrying the same normalized summary | no JWZ, no full VC / presentation array, no holder DID profile, no full wallet payload |
-| Didit → Privado bridge handoff | stored as the optional `reusableCredentialBridge` summary above | none beyond the Didit normalized summary and face fields | `provider_name = privado`, `artifact_kind = reusable_credential_bridge`, `provider_reference_id = bridgeId`, `attestation_status = issuer_handoff_required`, `expires_at`, and bridge payload containing only `approvedClaims`, `inputFacts`, `handoff`, `custody`, `temporaryRetention`, and durable-after-handoff refs | no minted credential body, no issuer signing material, no raw Didit payload |
+| Didit → reusable identity handoff | stored as the optional `reusableCredentialBridge` summary above | none beyond the Didit normalized summary and face fields | `provider_name = privado`, `artifact_kind = reusable_credential_bridge`, `provider_reference_id = bridgeId`, `attestation_status = issuer_handoff_required`, `expires_at`, and bridge payload containing only `approvedClaims`, `claims.{disclosedAttributes,proofOnlyPredicates}`, `policyInputs.faceVerification`, `handoff`, `custody`, `temporaryRetention`, and durable-after-handoff refs | no minted credential body, no issuer signing material, no raw Didit payload, no raw DOB, no raw gender |
 
 ### 4.5.2 Deletion, purge, and retention boundaries
 
@@ -289,19 +292,18 @@ Humanify treats provider cleanup as part of the verification receipt contract:
 
 1. After Bun reconciles a Didit webhook against the server-side decision API, Humanify requests Didit-side deletion and stores only the minimal purge receipt (`attemptedAt`, provider outcome) in `verification_sessions.provider_status.purge`.
 2. The bridge contract is time-bounded by `temporaryRetention.expiresAt`; that window exists only to support an external issuer/backend handoff and must not become a long-lived profile store.
-3. The durable post-handoff record remains the source attestation ref, approved reusable predicates, face-verification policy fields, target backend id, and handoff audit ref.
+3. The durable post-handoff record remains the source attestation ref, approved reusable claims, disclosed-attribute / proof-only summaries, face-verification policy fields, target backend id, and handoff audit ref.
 4. Privado proof persistence is limited to receipt refs/hashes, nullifier refs, issuer scopes, predicate results, and proof-status messages. Humanify never stores the wallet credential, raw proof token, or the full verifier-backend success payload.
 5. Deletion and expiry decisions stay Postgres-owned and auditable. Queue trimming or provider-side deletion never becomes the source of truth for retention.
 
 ### 4.5.3 Face-verification storage and use
 
-Face verification is stored only as normalized booleans:
+Face verification is stored only as normalized policy inputs:
 
 - `verification_sessions.result_summary.faceVerificationPerformed`
 - `verification_sessions.result_summary.faceVerificationPassed`
 - `verification_artifacts.redacted_payload.faceVerificationPerformed` / `faceVerificationPassed` for the Didit `capture_attestation`
-- `reusableCredentialBridge.inputFacts.faceVerificationPerformed` / `faceVerificationPassed`
-- `reusableCredentialBridge.handoff.policyInputs.faceVerificationPerformed` / `faceVerificationPassed`
+- `reusableCredentialBridge.policyInputs.faceVerification.{performed,passed,satisfiesFaceVerificationRequirement}`
 
 These fields exist so Bun policy and external issuer handoff logic can require or explain face verification without retaining selfie images, liveness media, or provider-native liveness payloads.
 
@@ -353,25 +355,27 @@ The current verifier spine is intentionally generic, but the default Didit captu
 3. The verifier UI renders the shared adapter catalog from `packages\verification-providers`, so strategy descriptions, privacy notes, and server handoff notes come from adapter modules rather than app-local conditionals.
 4. The verifier UI lets the person verifying choose both the proof bundle and the concrete adapter, using consumer-facing wording rather than operator language.
 5. The verifier and dashboard UIs split enabled options into **first-time capture flows** and **reusable proof backends**, so both consumers and server owners can understand what is being configured without reading app-local provider branches.
-6. The dashboard stays honest about the current route contract: enabled adapters and default flow choices come from the shared catalog today, while proof-bundle and face-verification controls are explicit draft UI state until `PUT /guilds/:guildId/verification` persists them.
-7. `POST /verification/challenges/:challengeId/complete` re-verifies the same signed token against `challengeId`, `sessionId`, `guildId`, and `userId`, validates the selected adapter against the shared registry, and:
+6. Provider-specific verifier UI copy and browser-launch behavior now live in app-local option runtime modules (`apps\verifier-start\src\verification-options\`) so `src\verification-flow.ts` and `src\routes\verify.tsx` stay option-driven.
+7. The dashboard stays honest about the current route contract: enabled adapters and default flow choices come from the shared catalog today, while proof-bundle and face-verification controls are explicit draft UI state until `PUT /guilds/:guildId/verification` persists them.
+8. `apps\api-bun\src\verification-options\` now owns provider-specific capture, reusable-proof, and callback runtimes so `apps\api-bun\src\app.ts` dispatches through generic option boundaries rather than branching on concrete adapters.
+9. `POST /verification/challenges/:challengeId/complete` re-verifies the same signed token against `challengeId`, `sessionId`, `guildId`, and `userId`, validates the selected adapter against the shared registry, and:
    - creates a real Didit session server-side when the selected adapter is `didit`
    - returns the Didit SDK launch contract to the verifier shell
    - exposes reusable-proof adapters through the same shared boundary with `providerStartEndpoint` and a signed `providerStartToken`
-8. `POST /callbacks/providers/didit` verifies the raw-body HMAC/timestamp webhook boundary, fetches the authoritative Didit decision server-side, reduces the result to minimal-custody facts, requests Didit-side deletion after reconciliation, and persists a time-bounded Didit → Privado bridge contract when the approved predicates can seed a later reusable credential or proof-input handoff.
-9. `POST /verification/sessions/:sessionId/providers/:providerId/start` is the reusable-proof start boundary. Today it is implemented for Privado and must:
+10. `POST /callbacks/providers/didit` verifies the raw-body HMAC/timestamp webhook boundary, fetches the authoritative Didit decision server-side, reduces the result to minimal-custody facts, requests Didit-side deletion after reconciliation, and persists a time-bounded Didit → Privado bridge contract when the approved predicates can seed a later reusable credential or proof-input handoff.
+11. `POST /verification/sessions/:sessionId/providers/:providerId/start` is the reusable-proof start boundary. Today it is implemented for Privado and must:
    - verify the signed start token
    - build the provider request from Humanify claim predicates
    - return only wallet launch metadata (`request`, `requestUri`, `universalLink`, QR value) plus a signed `providerSessionToken`
-10. `POST /verification/providers/:providerId/proof` is the reusable-proof verification boundary. Today it is implemented for Privado and must:
+12. `POST /verification/providers/:providerId/proof` is the reusable-proof verification boundary. Today it is implemented for Privado and must:
    - verify the signed provider session token
    - call the Privado verifier backend `GET /status`
    - normalize the result down to satisfied predicates, nullifiers scoped to the Humanify session, trusted issuer scopes, and minimal proof receipt refs or hashes
    - keep release blocked until Bun's canonical session state and policy checks agree
-11. The verifier app forwards `x-request-id` and W3C `traceparent` on its session fetch, challenge-complete, reusable-proof start, and reusable-proof verification requests so troubleshooting lines up with the same correlation model as Bun and Rust services.
+13. The verifier app forwards `x-request-id` and W3C `traceparent` on its session fetch, challenge-complete, reusable-proof start, and reusable-proof verification requests so troubleshooting lines up with the same correlation model as Bun and Rust services.
 
-12. `GET /verification/sessions/:sessionId?token=...` and the Didit callback response may now surface that persisted reusable-credential bridge summary so the UI and privacy runbooks can see the honest handoff boundary without pretending that Humanify already issued a reusable credential.
-13. `GET /verification/sessions/:sessionId?token=...` now surfaces the persisted normalized `verification` summary itself when Bun has already reconciled a Didit callback or Privado proof read, so operators can confirm the stored minimal-custody fields without reading raw provider payloads.
+14. `GET /verification/sessions/:sessionId?token=...` and the Didit callback response may now surface that persisted reusable-credential bridge summary so the UI and privacy runbooks can see the honest handoff boundary without pretending that Humanify already issued a reusable credential.
+15. `GET /verification/sessions/:sessionId?token=...` now surfaces the persisted normalized `verification` summary itself when Bun has already reconciled a Didit callback or Privado proof read, so operators can confirm the stored minimal-custody fields without reading raw provider payloads.
 
 This means the verifier app currently relies on a Bun-authored signed link rather than a user-entered Discord short code or completed OAuth account binding. Those richer steps remain explicit follow-on work and must not be faked client-side.
 

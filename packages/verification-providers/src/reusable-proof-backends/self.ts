@@ -20,6 +20,23 @@ export const selfReusableProofBackendStrategy = defineVerificationStrategy({
     "Shows only the claims you need instead of exposing the whole document.",
     "Useful when privacy matters more than broad browser-capture compatibility.",
   ],
+  capabilities: {
+    claimDelivery: [
+      { claimKey: "age_over_18", deliveryKind: "reusable_proof" },
+      { claimKey: "nationality", deliveryKind: "reusable_proof" },
+    ],
+    faceVerification: {
+      satisfiesFaceVerificationPolicy: false,
+      summary: "Self.xyz proofs do not automatically satisfy face-check policy requirements in Humanify's shared contract layer.",
+      supportLevel: "not_automatic",
+    },
+    reusableIdentity: {
+      contractRole: "none",
+      disclosedAttributeKeys: [],
+      proofOnlyClaimKeys: [],
+      summary: "No shared reusable identity handoff contract is wired for Self.xyz yet; only the live reusable proof lane is described here.",
+    },
+  },
   defaultRank: 2,
   goodFor: "People who want a privacy-preserving reusable proof path when Self.xyz supports their credential.",
   id: "self",

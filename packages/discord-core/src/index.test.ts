@@ -15,9 +15,11 @@
  */
 
 import { expect, test } from "bun:test";
-import { GatewayIntentBits } from "discord.js";
+import { GatewayIntentBits, PermissionFlagsBits, PermissionsBitField } from "discord.js";
 
 import {
+  authorizeAdminOnlyBotAction,
+  authorizeTrustedModeratorOnlyBotAction,
   buildComponentCustomId,
   createHumanifyApplicationCommands,
   createBotGatewayIntents,
@@ -57,12 +59,23 @@ test("humanify application commands expose the first real intake surface", () =>
 
   expect(names).toEqual(
     expect.arrayContaining([
+      "humanify",
       "report",
       "case",
       "verify",
       "Report message to Humanify",
     ]),
   );
+
+  const setupCommand = commands.find((command) => ("toJSON" in command ? command.toJSON().name : command.name) === "humanify") as
+    | {
+        defaultMemberPermissions?: bigint | string | null;
+        options?: Array<{ name: string }>;
+      }
+    | undefined;
+
+  expect(setupCommand?.defaultMemberPermissions).toBe(PermissionFlagsBits.Administrator);
+  expect(setupCommand?.options?.map((option) => option.name)).toEqual(["setup"]);
 });
 
 test("execution plans refuse exact moderation actions when the current Discord capability is missing", () => {
@@ -79,4 +92,42 @@ test("execution plans refuse exact moderation actions when the current Discord c
     resolvedAction: "kick",
   });
   expect(createDiscordAuditReason({ action: "quarantine", caseId: "case_123", reasonCodes: ["first_message_link"], requestId: "req_123" })).toContain("case:case_123");
+});
+
+test("admin-only bot actions fail closed unless the member has administrator", () => {
+  expect(authorizeAdminOnlyBotAction(null)).toEqual({
+    authorized: false,
+    reason: "missing_member_permissions",
+    scope: "admin_only",
+  });
+
+  expect(authorizeAdminOnlyBotAction(new PermissionsBitField(PermissionFlagsBits.ManageGuild))).toEqual({
+    authorized: false,
+    reason: "admin_only",
+    scope: "admin_only",
+  });
+
+  expect(authorizeAdminOnlyBotAction(new PermissionsBitField(PermissionFlagsBits.Administrator))).toEqual({
+    authorized: true,
+    scope: "admin_only",
+  });
+});
+
+test("trusted moderator bot actions allow common moderation permissions and fail closed otherwise", () => {
+  expect(authorizeTrustedModeratorOnlyBotAction(null)).toEqual({
+    authorized: false,
+    reason: "missing_member_permissions",
+    scope: "trusted_moderator_only",
+  });
+
+  expect(authorizeTrustedModeratorOnlyBotAction(new PermissionsBitField(PermissionFlagsBits.UseApplicationCommands))).toEqual({
+    authorized: false,
+    reason: "trusted_moderator_only",
+    scope: "trusted_moderator_only",
+  });
+
+  expect(authorizeTrustedModeratorOnlyBotAction(new PermissionsBitField(PermissionFlagsBits.KickMembers))).toEqual({
+    authorized: true,
+    scope: "trusted_moderator_only",
+  });
 });

@@ -40,6 +40,8 @@ import { loadBotApiConfig, loadBotTokenConfig, loadObservabilityConfig, loadServ
 import { humanifyActionLadder, humanifyContractVersion } from "@humanify/contracts";
 import {
   buildComponentCustomId,
+  authorizeAdminOnlyBotAction,
+  authorizeTrustedModeratorOnlyBotAction,
   createBotGatewayIntents,
   createHumanifyApplicationCommands,
   humanifyBotCommandNames,
@@ -148,6 +150,48 @@ export type CreateInteractionHandlerOptions = {
 };
 
 type LoggerLike = Pick<Console, "error" | "info">;
+
+function createAuthorizationFailureMessage(scope: "admin_only" | "trusted_moderator_only") {
+  if (scope === "admin_only") {
+    return "Only server admins can run Humanify setup.";
+  }
+
+  return "Only trusted moderators can open cases or verify other members.";
+}
+
+async function requireAdminOnlyAction(
+  interaction: {
+    memberPermissions?: unknown;
+    reply(options: InteractionReplyOptions): Promise<unknown>;
+  },
+) {
+  const authorization = authorizeAdminOnlyBotAction(interaction.memberPermissions as never);
+  if (authorization.authorized) {
+    return true;
+  }
+
+  await replyEphemeral(interaction, {
+    content: createAuthorizationFailureMessage(authorization.scope),
+  });
+  return false;
+}
+
+async function requireTrustedModeratorAction(
+  interaction: {
+    memberPermissions?: unknown;
+    reply(options: InteractionReplyOptions): Promise<unknown>;
+  },
+) {
+  const authorization = authorizeTrustedModeratorOnlyBotAction(interaction.memberPermissions as never);
+  if (authorization.authorized) {
+    return true;
+  }
+
+  await replyEphemeral(interaction, {
+    content: createAuthorizationFailureMessage(authorization.scope),
+  });
+  return false;
+}
 
 function buildDiscordMessageUrl(guildId: string, channelId: string, messageId: string) {
   return `https://discord.com/channels/${guildId}/${channelId}/${messageId}`;
@@ -296,6 +340,10 @@ async function handleCaseCommand(
     return;
   }
 
+  if (!await requireTrustedModeratorAction(interaction)) {
+    return;
+  }
+
   const subject = interaction.options.getUser("user", true);
   const report = await apiClient.createReport(interaction.guildId!, {
     intakeSource: "slash_command",
@@ -314,12 +362,34 @@ async function handleCaseCommand(
   });
 }
 
+async function handleHumanifyCommand(interaction: ChatInputCommandInteraction) {
+  const subcommand = interaction.options.getSubcommand(true);
+  if (subcommand !== "setup") {
+    await replyEphemeral(interaction, {
+      content: `Humanify does not support /humanify ${subcommand} yet.`,
+    });
+    return;
+  }
+
+  if (!await requireAdminOnlyAction(interaction)) {
+    return;
+  }
+
+  await replyEphemeral(interaction, {
+    content: "Humanify setup is not ready yet. Server admins will be able to configure channels and roles here soon.",
+  });
+}
+
 async function handleVerifyCommand(
   interaction: ChatInputCommandInteraction,
   apiClient: BotApiClient,
   requestTelemetry: RequestTelemetryContext,
 ) {
   const subject = interaction.options.getUser("user", true);
+  if (subject.id !== interaction.user.id && !await requireTrustedModeratorAction(interaction)) {
+    return;
+  }
+
   const capability = interaction.options.getString("capability") ?? "captcha";
   const verification = await apiClient.createVerificationSession(interaction.guildId!, {
     initiatedBy: interaction.user.id,
@@ -393,6 +463,10 @@ async function handleVerificationShortcut(
   }
 
   const { caseId, userId } = parseCaseUserEntity(parsed.entityId);
+  if (userId !== interaction.user.id && !await requireTrustedModeratorAction(interaction)) {
+    return;
+  }
+
   const verification = await apiClient.createVerificationSession(interaction.guildId!, {
     caseId,
     initiatedBy: interaction.user.id,
@@ -439,6 +513,11 @@ export function createInteractionHandler(options: CreateInteractionHandlerOption
     }
 
     if (interaction.isChatInputCommand()) {
+      if (interaction.commandName === humanifyBotCommandNames.humanify) {
+        await handleHumanifyCommand(interaction);
+        return;
+      }
+
       if (interaction.commandName === humanifyBotCommandNames.report) {
         await handleReportCommand(interaction, options.apiClient, requestTelemetry);
         return;

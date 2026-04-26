@@ -21,6 +21,34 @@ export const diditCaptureFlowStrategy = defineVerificationStrategy({
     "Supports the broadest range of common IDs and countries.",
     "Practical fallback when reusable-proof backends do not yet cover the user's credential.",
   ],
+  capabilities: {
+    claimDelivery: [
+      { claimKey: "age_over_18", deliveryKind: "capture_attestation" },
+      { claimKey: "age_over_21", deliveryKind: "capture_attestation" },
+      { claimKey: "nationality", deliveryKind: "capture_attestation" },
+      { claimKey: "document_identity", deliveryKind: "capture_attestation" },
+      { claimKey: "liveness", deliveryKind: "capture_attestation" },
+      { claimKey: "face_verification", deliveryKind: "capture_attestation" },
+    ],
+    faceVerification: {
+      satisfiesFaceVerificationPolicy: true,
+      summary: "Didit can satisfy face-check requirements when the verified capture result includes the normalized face check.",
+      supportLevel: "capture_attestation",
+    },
+    reusableIdentity: {
+      contractRole: "seed",
+      disclosedAttributeKeys: ["nationality"],
+      proofOnlyClaimKeys: [
+        "age_over_18",
+        "age_over_21",
+        "gender_marker_female",
+        "gender_marker_male",
+        "gender_marker_x",
+      ],
+      summary:
+        "Didit capture results can seed reusable identity handoff contracts with disclosed nationality plus proof-only age or gender predicates, without storing raw DOB or raw gender.",
+    },
+  },
   defaultRank: 1,
   deletionPolicy:
     "Humanify deletes the Didit session via DELETE /v3/session/{session_id}/ immediately after normalizing the verification result.",
@@ -36,7 +64,7 @@ export const diditCaptureFlowStrategy = defineVerificationStrategy({
   privacySummary: "Default first-time capture",
   role: "capture_provider",
   summary: "Use Didit when you need Humanify's default first-time capture flow for document and liveness verification.",
-  supportedClaimKeys: ["age_over_18", "nationality", "document_identity", "liveness"],
+  supportedClaimKeys: ["age_over_18", "age_over_21", "nationality", "document_identity", "liveness", "face_verification"],
   thingsToKnow: [
     "Browser completion is only a UX step; Humanify still waits for a verified server receipt before release stays possible.",
     "Humanify keeps only normalized attestation facts and deletes the Didit session afterward.",

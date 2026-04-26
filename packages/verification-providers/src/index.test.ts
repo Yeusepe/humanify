@@ -15,6 +15,7 @@ import {
   createVerificationStrategyCatalog,
   defineVerificationStrategy,
   getDefaultVerificationClaimBundle,
+  getVerificationClaimDefinitions,
   getVerificationClaimBundles,
   getSupportedVerificationClaimIds,
   humanifyVerificationOptionCatalog,
@@ -29,6 +30,7 @@ import {
   resolveVerificationStrategyCatalog,
   resolveVerificationStrategyConfiguration,
   verificationOptionSupportsClaims,
+  verificationStrategySupportsFaceVerificationRequirement,
   verificationStrategySupportsClaims,
 } from "./index";
 
@@ -73,6 +75,25 @@ test("the shared strategy template rejects unsupported claims and duplicate stra
   expect(() =>
     defineVerificationStrategy({
       benefits: ["broken"],
+      capabilities: {
+        claimDelivery: [
+          {
+            claimKey: "unknown-claim" as never,
+            deliveryKind: "capture_attestation",
+          },
+        ],
+        faceVerification: {
+          satisfiesFaceVerificationPolicy: false,
+          summary: "broken",
+          supportLevel: "not_automatic",
+        },
+        reusableIdentity: {
+          contractRole: "none",
+          disclosedAttributeKeys: [],
+          proofOnlyClaimKeys: [],
+          summary: "broken",
+        },
+      },
       defaultRank: 9,
       goodFor: "broken",
       id: "broken-strategy",
@@ -101,18 +122,42 @@ test("the shared strategy template rejects unsupported claims and duplicate stra
   ).toThrow('Duplicate id: "didit"');
 });
 
-test("default claim bundle stays age + nationality while the shared claim catalog covers capture, reusable, and uniqueness predicates", () => {
+test("claim catalog keeps plain-language proof-only metadata while default bundles stay minimal", () => {
   const bundle = getDefaultVerificationClaimBundle();
   const bundles = getVerificationClaimBundles();
+  const definitions = getVerificationClaimDefinitions();
   const storageContract = bundle.operatorStorageGuarantees.join(" ");
+  const ageOver21 = definitions.find((definition) => definition.id === "age_over_21");
+  const faceVerification = definitions.find((definition) => definition.id === "face_verification");
+  const genderMarkerFemale = definitions.find((definition) => definition.id === "gender_marker_female");
 
   expect(getSupportedVerificationClaimIds()).toEqual([
     "age_over_18",
+    "age_over_21",
     "nationality",
     "document_identity",
     "liveness",
+    "face_verification",
     "unique_person",
+    "gender_marker_female",
+    "gender_marker_male",
+    "gender_marker_x",
   ]);
+  expect(ageOver21).toMatchObject({
+    category: "age",
+    disclosureMode: "proof_only",
+    sourceAttributes: ["date_of_birth"],
+  });
+  expect(faceVerification).toMatchObject({
+    category: "biometric",
+    disclosureMode: "proof_only",
+    sourceAttributes: ["face_check"],
+  });
+  expect(genderMarkerFemale).toMatchObject({
+    category: "gender",
+    disclosureMode: "proof_only",
+    sourceAttributes: ["gender_marker"],
+  });
   expect(bundles.map((entry) => entry.bundleId)).toEqual([
     "humanify_id_age_over_18_v1",
     "humanify_id_nationality_v1",
@@ -135,6 +180,12 @@ test("strategy capability checks stay generic and role-based", () => {
     verificationStrategySupportsClaims(humanifyVerificationStrategyCatalog.require("privado"), ["age_over_18"]),
   ).toBe(true);
   expect(
+    verificationStrategySupportsClaims(humanifyVerificationStrategyCatalog.require("didit"), [
+      "age_over_21",
+      "face_verification",
+    ]),
+  ).toBe(true);
+  expect(
     verificationStrategySupportsClaims(humanifyVerificationStrategyCatalog.require("world_id"), ["unique_person"]),
   ).toBe(true);
   expect(
@@ -143,6 +194,30 @@ test("strategy capability checks stay generic and role-based", () => {
   expect(
     verificationOptionSupportsClaims(humanifyVerificationOptionCatalog.require("privado"), ["age_over_18"]),
   ).toBe(true);
+});
+
+test("provider capability metadata stays honest about face verification and reusable identity handoff roles", () => {
+  const didit = humanifyVerificationStrategyCatalog.require("didit");
+  const privado = humanifyVerificationStrategyCatalog.require("privado");
+  const worldId = humanifyVerificationStrategyCatalog.require("world_id");
+
+  expect(verificationStrategySupportsFaceVerificationRequirement(didit)).toBe(true);
+  expect(verificationStrategySupportsFaceVerificationRequirement(worldId)).toBe(true);
+  expect(verificationStrategySupportsFaceVerificationRequirement(privado)).toBe(false);
+  expect(didit.capabilities.reusableIdentity).toMatchObject({
+    contractRole: "seed",
+    disclosedAttributeKeys: ["nationality"],
+    proofOnlyClaimKeys: ["age_over_18", "age_over_21", "gender_marker_female", "gender_marker_male", "gender_marker_x"],
+  });
+  expect(privado.capabilities.reusableIdentity).toMatchObject({
+    contractRole: "consume",
+    disclosedAttributeKeys: ["nationality"],
+    proofOnlyClaimKeys: ["age_over_18", "age_over_21", "gender_marker_female", "gender_marker_male", "gender_marker_x"],
+  });
+  expect(worldId.capabilities.faceVerification).toMatchObject({
+    satisfiesFaceVerificationPolicy: true,
+    supportLevel: "proof_of_personhood",
+  });
 });
 
 test("pipeline catalogs describe first-time capture, reusable proof, and uniqueness lanes against the same policy consumer", () => {

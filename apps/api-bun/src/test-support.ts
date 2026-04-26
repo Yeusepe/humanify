@@ -16,6 +16,7 @@
 import type {
   AppliedLearningResult,
   CaseOutcomeKind,
+  GuildChannelConfigRepository,
   LearnedSignalCandidateRecord,
   LearnedSignalFamily,
   LearningFeedbackSummary,
@@ -681,6 +682,75 @@ export function createInMemoryReportCasesRepository(): ReportCasesRepository {
           status: entry.status,
           subjectUserId: entry.subjectUserId,
         }));
+    },
+
+    async close() {
+      return;
+    },
+  };
+}
+
+export function createInMemoryGuildChannelConfigRepository(): GuildChannelConfigRepository {
+  const configs = new Map<string, {
+    auditLogChannelId?: string;
+    createdAt: string;
+    guildId: string;
+    moderationLogChannelId?: string;
+    moderatorAlertChannelId: string;
+    reviewChannelId?: string;
+    updatedAt: string;
+  }>();
+  const idempotencyReceipts = new Map<string, unknown>();
+
+  function buildIdempotencyReceiptKey(scope: string, key: string) {
+    return `${scope}::${key}`;
+  }
+
+  function readIdempotencyReceipt<TResult>(scope: string, key: string) {
+    return idempotencyReceipts.get(buildIdempotencyReceiptKey(scope, key)) as TResult | undefined;
+  }
+
+  function storeIdempotencyReceipt<TResult>(scope: string, key: string, result: TResult) {
+    idempotencyReceipts.set(buildIdempotencyReceiptKey(scope, key), result);
+  }
+
+  return {
+    async getConfig(guildId) {
+      return configs.get(guildId);
+    },
+
+    async upsertConfig(input) {
+      const existing = readIdempotencyReceipt<Awaited<ReturnType<GuildChannelConfigRepository["upsertConfig"]>>>(
+        input.artifacts.idempotency.scope,
+        input.artifacts.idempotency.key,
+      );
+      if (existing) {
+        return existing;
+      }
+
+      const now = new Date().toISOString();
+      const previous = configs.get(input.guildId);
+      const channelConfig = {
+        auditLogChannelId: input.body.auditLogChannelId,
+        createdAt: previous?.createdAt ?? now,
+        guildId: input.guildId,
+        moderationLogChannelId: input.body.moderationLogChannelId,
+        moderatorAlertChannelId: input.body.moderatorAlertChannelId,
+        reviewChannelId: input.body.reviewChannelId,
+        updatedAt: now,
+      };
+
+      configs.set(input.guildId, channelConfig);
+
+      const result = {
+        channelConfig,
+        persistence: "persisted",
+        queueDelivery: "pending_outbox_publish",
+      } satisfies Awaited<ReturnType<GuildChannelConfigRepository["upsertConfig"]>>;
+
+      storeIdempotencyReceipt(input.artifacts.idempotency.scope, input.artifacts.idempotency.key, result);
+
+      return result;
     },
 
     async close() {

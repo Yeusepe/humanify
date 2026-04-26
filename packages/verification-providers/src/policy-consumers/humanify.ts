@@ -21,6 +21,23 @@ export const humanifyPolicyConsumerStrategy = defineVerificationStrategy({
     "Normalizes capture and reusable-proof receipts before guild policy decides whether a requirement is satisfied.",
     "Preserves the minimal-storage rule by storing only normalized proof receipts, audit facts, and replay guards.",
   ],
+  capabilities: {
+    claimDelivery: getSupportedVerificationClaimIds().map((claimKey) => ({
+      claimKey,
+      deliveryKind: "policy_evaluation" as const,
+    })),
+    faceVerification: {
+      satisfiesFaceVerificationPolicy: true,
+      summary: "Humanify can evaluate normalized face-check policy inputs regardless of which enabled provider supplied them.",
+      supportLevel: "capture_attestation",
+    },
+    reusableIdentity: {
+      contractRole: "none",
+      disclosedAttributeKeys: [],
+      proofOnlyClaimKeys: [],
+      summary: "Humanify consumes reusable identity handoff contracts for policy and audit, but it is not itself a credential backend.",
+    },
+  },
   defaultRank: 1,
   goodFor: "Every verification lane, because Humanify is always the policy consumer that decides release eligibility.",
   id: "humanify",

@@ -26,7 +26,11 @@ import { parseComponentCustomId } from "@humanify/discord-core";
 import { createBotApiClient, createInteractionHandler, decideApprovedActionExecution } from "../../bot-bun/src/index";
 import { completeVerificationChallenge, fetchVerificationSession } from "../../verifier-start/src/verification-flow";
 import { createApiApp, type HumanifyApiApp, type LearningServiceClient } from "./app";
-import { createInMemoryReportCasesRepository, createInMemoryVerificationSessionsRepository } from "./test-support";
+import {
+  createInMemoryGuildChannelConfigRepository,
+  createInMemoryReportCasesRepository,
+  createInMemoryVerificationSessionsRepository,
+} from "./test-support";
 
 const fixedNow = Date.UTC(2026, 0, 1, 0, 0, 0);
 
@@ -75,6 +79,7 @@ function createTestApp(
 ) {
   return createApiApp({
     env: testEnv,
+    guildChannelConfigRepository: createInMemoryGuildChannelConfigRepository(),
     learningServiceClient,
     now: () => fixedNow,
     reportCasesRepository: repository,

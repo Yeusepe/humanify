@@ -24,8 +24,13 @@ import { expect, test } from "bun:test";
 import { humanifyContractVersion } from "@humanify/contracts";
 import { extractTraceContext } from "@humanify/telemetry";
 
-import { createApiApp, type DiditClient, type LearningServiceClient, type PrivadoVerifierBackendClient } from "./app";
-import { createInMemoryReportCasesRepository, createInMemoryVerificationSessionsRepository } from "./test-support";
+import { createApiApp, type LearningServiceClient, type PrivadoVerifierBackendClient } from "./app";
+import type { DiditClient } from "./didit";
+import {
+  createInMemoryGuildChannelConfigRepository,
+  createInMemoryReportCasesRepository,
+  createInMemoryVerificationSessionsRepository,
+} from "./test-support";
 
 const fixedNow = Date.UTC(2026, 0, 1, 0, 0, 0);
 
@@ -199,18 +204,22 @@ function createFakePrivadoVerifierBackendClient(input: {
 function createTestApp(input: {
   diditClient?: DiditClient;
   env?: Record<string, string | undefined>;
+  guildChannelConfigRepository?: ReturnType<typeof createInMemoryGuildChannelConfigRepository>;
   learningServiceClient?: LearningServiceClient;
   privadoVerifierBackendClient?: PrivadoVerifierBackendClient;
   reportCasesRepository?: ReturnType<typeof createInMemoryReportCasesRepository>;
   verificationSessionsRepository?: ReturnType<typeof createInMemoryVerificationSessionsRepository>;
 } = {}) {
   return createApiApp({
-    diditClient: input.diditClient ?? createFakeDiditClient(),
     env: input.env ?? testEnv,
+    guildChannelConfigRepository: input.guildChannelConfigRepository ?? createInMemoryGuildChannelConfigRepository(),
     learningServiceClient: input.learningServiceClient ?? createFakeLearningServiceClient(),
     now: () => fixedNow,
-    privadoVerifierBackendClient: input.privadoVerifierBackendClient,
     reportCasesRepository: input.reportCasesRepository ?? createInMemoryReportCasesRepository(),
+    verificationOptionRuntimeOverrides: {
+      diditClient: input.diditClient ?? createFakeDiditClient(),
+      privadoVerifierBackendClient: input.privadoVerifierBackendClient,
+    },
     verificationSessionsRepository: input.verificationSessionsRepository ?? createInMemoryVerificationSessionsRepository(),
   });
 }
@@ -425,6 +434,53 @@ test("verification config rejects defaults that are not enabled for the guild", 
   expect(response.status).toBe(400);
   expect(json.errorCode).toBe("validation_failed");
   expect(json.message).toContain('Default capture provider "world_id" must use the capture_provider role.');
+});
+
+test("channel config persists moderator alert settings for setup and warning workflows", async () => {
+  const app = createTestApp();
+  const response = await app.handle(
+    new Request("http://humanify.local/guilds/guild_123/channels", {
+      body: JSON.stringify({
+        actorUserId: "mod_123",
+        auditLogChannelId: "channel_audit",
+        moderationLogChannelId: "channel_warning_log",
+        moderatorAlertChannelId: "channel_alerts",
+        reviewChannelId: "channel_review",
+      }),
+      headers: {
+        "content-type": "application/json",
+        "x-idempotency-key": "channel-config-key-1",
+      },
+      method: "PUT",
+    }),
+  );
+  const json = (await response.json()) as {
+    data?: {
+      channelConfig: {
+        auditLogChannelId?: string;
+        moderationLogChannelId?: string;
+        moderatorAlertChannelId: string;
+        reviewChannelId?: string;
+      };
+      persistence: string;
+      queueDelivery: string;
+    };
+    errorCode?: string;
+    message?: string;
+  };
+
+  expect(response.status).toBe(200);
+  expect(json.errorCode).toBeUndefined();
+  expect(json.data?.persistence).toBe("persisted");
+  expect(json.data?.queueDelivery).toBe("pending_outbox_publish");
+  expect(json.data?.channelConfig).toEqual(
+    expect.objectContaining({
+      auditLogChannelId: "channel_audit",
+      moderationLogChannelId: "channel_warning_log",
+      moderatorAlertChannelId: "channel_alerts",
+      reviewChannelId: "channel_review",
+    }),
+  );
 });
 
 test("report intake validates request bodies and returns the documented error envelope", async () => {
@@ -1115,11 +1171,14 @@ test("didit callbacks verify the signature, reconcile the decision server-side, 
   const verificationSessionsRepository = createInMemoryVerificationSessionsRepository();
   const diditClient = createFakeDiditClient();
   const app = createApiApp({
-    diditClient,
     env: testEnv,
+    guildChannelConfigRepository: createInMemoryGuildChannelConfigRepository(),
     learningServiceClient: createFakeLearningServiceClient(),
     now: () => fixedNow,
     reportCasesRepository: createInMemoryReportCasesRepository(),
+    verificationOptionRuntimeOverrides: {
+      diditClient,
+    },
     verificationSessionsRepository,
   });
   const createResponse = await app.handle(
@@ -1192,6 +1251,13 @@ test("didit callbacks verify the signature, reconcile the decision server-side, 
       };
       reusableCredentialBridge: {
         approvedClaims: string[];
+        claims: {
+          disclosedAttributes: {
+            nationality?: string;
+          };
+          proofOnlyPredicates: string[];
+        };
+        contractVersion: string;
         custody: {
           storesDocumentImages: boolean;
           storesFullReusableCredential: boolean;
@@ -1201,19 +1267,24 @@ test("didit callbacks verify the signature, reconcile the decision server-side, 
           retainedFacts: string[];
         };
         handoff: {
+          disclosedAttributeKeys: string[];
+          proofOnlyClaimKeys: string[];
           requestedClaims: string[];
           targetBackend: string;
         };
-        inputFacts: {
-          ageOver18?: boolean;
-          faceVerificationPassed: boolean;
-          faceVerificationPerformed: boolean;
-          nationality?: string;
+        policyInputs: {
+          faceVerification: {
+            evidenceSource: string;
+            passed: boolean;
+            performed: boolean;
+            satisfiesFaceVerificationRequirement: boolean;
+          };
         };
         status: string;
         targetProvider: string;
         temporaryRetention: {
           expiresAt: string;
+          retainedClaims: string[];
         };
       };
       session: {
@@ -1233,29 +1304,55 @@ test("didit callbacks verify the signature, reconcile the decision server-side, 
   expect(webhookJson.data.providerBoundary.status).toBe("provider_webhook_verified");
   expect(webhookJson.data.reusableCredentialBridge.status).toBe("issuer_handoff_required");
   expect(webhookJson.data.reusableCredentialBridge.targetProvider).toBe("privado");
-  expect(webhookJson.data.reusableCredentialBridge.approvedClaims).toEqual(["age_over_18", "nationality"]);
-  expect(webhookJson.data.reusableCredentialBridge.inputFacts).toEqual({
-    ageOver18: true,
-    faceVerificationPassed: true,
-    faceVerificationPerformed: true,
-    nationality: "ESP",
+  expect(webhookJson.data.reusableCredentialBridge.contractVersion).toBe("reusable_identity_handoff_v1");
+  expect(webhookJson.data.reusableCredentialBridge.approvedClaims).toEqual([
+    "age_over_18",
+    "age_over_21",
+    "nationality",
+  ]);
+  expect(webhookJson.data.reusableCredentialBridge.claims).toEqual({
+    disclosedAttributes: {
+      nationality: "ESP",
+    },
+    proofOnlyPredicates: ["age_over_18", "age_over_21"],
   });
   expect(webhookJson.data.reusableCredentialBridge.handoff.targetBackend).toBe("privado");
-  expect(webhookJson.data.reusableCredentialBridge.handoff.requestedClaims).toEqual(["age_over_18", "nationality"]);
+  expect(webhookJson.data.reusableCredentialBridge.handoff.disclosedAttributeKeys).toEqual(["nationality"]);
+  expect(webhookJson.data.reusableCredentialBridge.handoff.proofOnlyClaimKeys).toEqual([
+    "age_over_18",
+    "age_over_21",
+  ]);
+  expect(webhookJson.data.reusableCredentialBridge.handoff.requestedClaims).toEqual([
+    "age_over_18",
+    "age_over_21",
+    "nationality",
+  ]);
   expect(webhookJson.data.reusableCredentialBridge.durableAfterHandoff.retainedFacts).toEqual([
     "sourceAttestationRef",
     "approvedClaims",
-    "faceVerificationPerformed",
-    "faceVerificationPassed",
+    "disclosedAttributes",
+    "proofOnlyPredicates",
+    "faceVerification",
     "targetProvider",
     "handoffAuditRef",
   ]);
+  expect(webhookJson.data.reusableCredentialBridge.policyInputs.faceVerification).toEqual({
+    evidenceSource: "capture_provider",
+    passed: true,
+    performed: true,
+    satisfiesFaceVerificationRequirement: true,
+  });
   expect(webhookJson.data.reusableCredentialBridge.custody).toEqual({
     storesDocumentImages: false,
     storesFullReusableCredential: false,
     storesRawDiditPayload: false,
   });
   expect(new Date(webhookJson.data.reusableCredentialBridge.temporaryRetention.expiresAt).getTime()).toBeGreaterThan(fixedNow);
+  expect(webhookJson.data.reusableCredentialBridge.temporaryRetention.retainedClaims).toEqual([
+    "age_over_18",
+    "age_over_21",
+    "nationality",
+  ]);
   expect(webhookJson.data.verification.faceVerificationPerformed).toBe(true);
   expect(webhookJson.data.verification.faceVerificationPassed).toBe(true);
 
@@ -1284,7 +1381,7 @@ test("didit callbacks verify the signature, reconcile the decision server-side, 
       providerReferenceId: "didit_session_123",
       providerStatus: "Approved",
       requestedClaims: ["age_over_18", "nationality"],
-      satisfiedClaims: ["document_identity", "age_over_18", "nationality", "liveness"],
+      satisfiedClaims: ["document_identity", "age_over_18", "age_over_21", "nationality", "liveness", "face_verification"],
     },
     state: "passed",
   });
@@ -1302,8 +1399,10 @@ test("didit callbacks verify the signature, reconcile the decision server-side, 
         releaseEligible: boolean;
       };
       reusableCredentialBridge: {
-        inputFacts: {
-          nationality?: string;
+        claims: {
+          disclosedAttributes: {
+            nationality?: string;
+          };
         };
         status: string;
         targetProvider: string;
@@ -1325,12 +1424,12 @@ test("didit callbacks verify the signature, reconcile the decision server-side, 
   expect(statusJson.data.providerBoundary.releaseEligible).toBe(true);
   expect(statusJson.data.reusableCredentialBridge.status).toBe("issuer_handoff_required");
   expect(statusJson.data.reusableCredentialBridge.targetProvider).toBe("privado");
-  expect(statusJson.data.reusableCredentialBridge.inputFacts.nationality).toBe("ESP");
+  expect(statusJson.data.reusableCredentialBridge.claims.disclosedAttributes.nationality).toBe("ESP");
   expect(statusJson.data.verification).toMatchObject({
     faceVerificationPassed: true,
     faceVerificationPerformed: true,
     providerReferenceId: "didit_session_123",
-    satisfiedClaims: ["document_identity", "age_over_18", "nationality", "liveness"],
+    satisfiedClaims: ["document_identity", "age_over_18", "age_over_21", "nationality", "liveness", "face_verification"],
   });
 });
 

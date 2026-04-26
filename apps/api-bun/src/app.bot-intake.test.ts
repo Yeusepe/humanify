@@ -19,7 +19,7 @@
 import { expect, test } from "bun:test";
 
 import { createApiApp } from "./app";
-import { createInMemoryReportCasesRepository } from "./test-support";
+import { createInMemoryGuildChannelConfigRepository, createInMemoryReportCasesRepository } from "./test-support";
 
 const fixedNow = Date.UTC(2026, 0, 1, 0, 0, 0);
 const testEnv = {
@@ -38,6 +38,7 @@ const testEnv = {
 function createTestApp() {
   return createApiApp({
     env: testEnv,
+    guildChannelConfigRepository: createInMemoryGuildChannelConfigRepository(),
     now: () => fixedNow,
     reportCasesRepository: createInMemoryReportCasesRepository(),
   });

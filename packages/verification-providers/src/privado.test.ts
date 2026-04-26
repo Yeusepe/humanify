@@ -132,26 +132,45 @@ test("Privado bridge contracts retain only minimal Didit facts while making issu
     },
     verifiedDiditFacts: {
       ageOver18: true,
+      ageOver21: true,
       documentIdentityVerified: true,
       faceVerificationPassed: true,
       faceVerificationPerformed: true,
       livenessVerified: true,
       nationality: "ESP",
-      satisfiedClaims: ["age_over_18", "nationality", "document_identity", "liveness"],
+      satisfiedClaims: ["age_over_18", "age_over_21", "nationality", "gender_marker_female", "document_identity", "liveness"],
     },
   });
   expect(bridge).toBeDefined();
 
   expect(bridge!.targetProvider).toBe("privado");
   expect(bridge!.status).toBe("issuer_handoff_required");
-  expect(bridge!.approvedClaims).toEqual(["age_over_18", "nationality"]);
-  expect(bridge!.inputFacts).toEqual({
-    ageOver18: true,
-    faceVerificationPassed: true,
-    faceVerificationPerformed: true,
-    nationality: "ESP",
+  expect(bridge!.contractVersion).toBe("reusable_identity_handoff_v1");
+  expect(bridge!.approvedClaims).toEqual(["age_over_18", "age_over_21", "nationality", "gender_marker_female"]);
+  expect(bridge!.claims).toEqual({
+    disclosedAttributes: {
+      nationality: "ESP",
+    },
+    proofOnlyPredicates: ["age_over_18", "age_over_21", "gender_marker_female"],
   });
-  expect(bridge!.handoff.requestedClaims).toEqual(["age_over_18", "nationality"]);
+  expect(bridge!.policyInputs.faceVerification).toEqual({
+    evidenceSource: "capture_provider",
+    passed: true,
+    performed: true,
+    satisfiesFaceVerificationRequirement: true,
+  });
+  expect(bridge!.handoff.requestedClaims).toEqual([
+    "age_over_18",
+    "age_over_21",
+    "nationality",
+    "gender_marker_female",
+  ]);
+  expect(bridge!.handoff.disclosedAttributeKeys).toEqual(["nationality"]);
+  expect(bridge!.handoff.proofOnlyClaimKeys).toEqual([
+    "age_over_18",
+    "age_over_21",
+    "gender_marker_female",
+  ]);
   expect(bridge!.handoff.requiredExternalInputs).toEqual([
     "holderDid",
     "issuerDid",
@@ -161,11 +180,19 @@ test("Privado bridge contracts retain only minimal Didit facts while making issu
   expect(bridge!.durableAfterHandoff.retainedFacts).toEqual([
     "sourceAttestationRef",
     "approvedClaims",
-    "faceVerificationPerformed",
-    "faceVerificationPassed",
+    "disclosedAttributes",
+    "proofOnlyPredicates",
+    "faceVerification",
     "targetProvider",
     "handoffAuditRef",
   ]);
+  expect(bridge!.temporaryRetention.retainedClaims).toEqual([
+    "age_over_18",
+    "age_over_21",
+    "nationality",
+    "gender_marker_female",
+  ]);
+  expect(bridge!.temporaryRetention.retainedPolicyInputs).toEqual(["faceVerification"]);
   expect(bridge!.custody.storesRawDiditPayload).toBe(false);
   expect(bridge!.custody.storesFullReusableCredential).toBe(false);
   expect(bridge!.custody.storesDocumentImages).toBe(false);

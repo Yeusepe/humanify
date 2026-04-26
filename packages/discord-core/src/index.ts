@@ -19,8 +19,11 @@ import {
   ApplicationCommandOptionType,
   ApplicationCommandType,
   GatewayIntentBits,
+  PermissionFlagsBits,
+  PermissionsBitField,
   type ApplicationCommandDataResolvable,
   type GuildMember,
+  type PermissionResolvable,
 } from "discord.js";
 
 import type { HumanifyAction } from "@humanify/contracts";
@@ -38,15 +41,61 @@ export type DiscordExecutionPlan = {
   resolvedAction: HumanifyAction;
 };
 
+export type BotAuthorizationScope = "admin_only" | "trusted_moderator_only";
+
+export type BotActionAuthorization = {
+  authorized: boolean;
+  reason?: "admin_only" | "missing_member_permissions" | "trusted_moderator_only";
+  scope: BotAuthorizationScope;
+};
+
+type MemberPermissionsLike = PermissionResolvable | Readonly<PermissionsBitField> | null | undefined;
+
 export const humanifyBotCommandNames = {
   case: "case",
+  humanify: "humanify",
   report: "report",
   reportMessage: "Report message to Humanify",
   verify: "verify",
 } as const;
 
+export const humanifyTrustedModeratorPermissionFlags = [
+  PermissionFlagsBits.Administrator,
+  PermissionFlagsBits.ManageGuild,
+  PermissionFlagsBits.ModerateMembers,
+  PermissionFlagsBits.KickMembers,
+  PermissionFlagsBits.BanMembers,
+  PermissionFlagsBits.ManageRoles,
+] as const;
+
+function createPermissionsBitField(memberPermissions: MemberPermissionsLike) {
+  return memberPermissions ? new PermissionsBitField(memberPermissions) : null;
+}
+
+function hasAnyPermission(memberPermissions: MemberPermissionsLike, permissions: readonly PermissionResolvable[]) {
+  const resolvedPermissions = createPermissionsBitField(memberPermissions);
+  if (!resolvedPermissions) {
+    return false;
+  }
+
+  return permissions.some((permission) => resolvedPermissions.has(permission));
+}
+
 export function createHumanifyApplicationCommands(): readonly ApplicationCommandDataResolvable[] {
   return [
+    {
+      defaultMemberPermissions: PermissionFlagsBits.Administrator,
+      description: "Server setup and capability checks for Humanify.",
+      name: humanifyBotCommandNames.humanify,
+      options: [
+        {
+          description: "Start server setup for Humanify.",
+          name: "setup",
+          type: ApplicationCommandOptionType.Subcommand,
+        },
+      ],
+      type: ApplicationCommandType.ChatInput,
+    },
     {
       description: "Open a Humanify report for a member.",
       name: humanifyBotCommandNames.report,
@@ -133,6 +182,48 @@ export function createHumanifyApplicationCommands(): readonly ApplicationCommand
       type: ApplicationCommandType.Message,
     },
   ];
+}
+
+export function authorizeAdminOnlyBotAction(memberPermissions: MemberPermissionsLike): BotActionAuthorization {
+  if (!memberPermissions) {
+    return {
+      authorized: false,
+      reason: "missing_member_permissions",
+      scope: "admin_only",
+    };
+  }
+
+  return hasAnyPermission(memberPermissions, [PermissionFlagsBits.Administrator])
+    ? {
+        authorized: true,
+        scope: "admin_only",
+      }
+    : {
+        authorized: false,
+        reason: "admin_only",
+        scope: "admin_only",
+      };
+}
+
+export function authorizeTrustedModeratorOnlyBotAction(memberPermissions: MemberPermissionsLike): BotActionAuthorization {
+  if (!memberPermissions) {
+    return {
+      authorized: false,
+      reason: "missing_member_permissions",
+      scope: "trusted_moderator_only",
+    };
+  }
+
+  return hasAnyPermission(memberPermissions, humanifyTrustedModeratorPermissionFlags)
+    ? {
+        authorized: true,
+        scope: "trusted_moderator_only",
+      }
+    : {
+        authorized: false,
+        reason: "trusted_moderator_only",
+        scope: "trusted_moderator_only",
+      };
 }
 
 export function createBotGatewayIntents(options: {

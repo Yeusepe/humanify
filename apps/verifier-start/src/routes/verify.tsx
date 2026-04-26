@@ -27,16 +27,16 @@ import {
   completeVerificationChallenge,
   fetchVerificationSession,
   getDefaultHumanifyIdClaimBundle,
-  getDiditLaunchContract,
   getDefaultVerificationProviderId,
   getHumanifyIdClaimBundles,
+  getVerificationOptionLaunch,
   getVerificationProvider,
   getVerificationProviderClaimCompatibility,
   getVerifierApiBaseUrl,
   getVerificationProviderOptions,
   hasVerificationLink,
   parseVerificationSearch,
-  startDiditVerification,
+  startVerificationOptionLaunch,
   startReusableProofFlow,
   verifyReusableProofResult,
   type VerificationProviderId,
@@ -46,6 +46,7 @@ import {
   type ReusableProofVerificationData,
   type VerificationSessionData,
 } from "../verification-flow";
+import { resolveVerificationOptionRouteRuntime } from "../verification-options/runtime";
 
 export const Route = createFileRoute("/verify")({
   component: VerificationRoute,
@@ -69,7 +70,7 @@ function VerificationRoute() {
     hasVerificationLink(search) ? "loading" : "idle",
   );
   const [actionState, setActionState] = useState<"error" | "idle" | "submitting" | "success">("idle");
-  const [diditState, setDiditState] = useState<"idle" | "launching">("idle");
+  const [browserLaunchState, setBrowserLaunchState] = useState<"idle" | "launching">("idle");
   const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
 
   const apiBaseUrl = getVerifierApiBaseUrl(providerEnv);
@@ -84,6 +85,10 @@ function VerificationRoute() {
     () =>
       claimBundleOptions.find((bundle) => bundle.bundleId === selectedClaimBundleId) ?? getDefaultHumanifyIdClaimBundle(),
     [claimBundleOptions, selectedClaimBundleId],
+  );
+  const selectedOptionRuntime = useMemo(
+    () => resolveVerificationOptionRouteRuntime(selectedProviderDefinition),
+    [selectedProviderDefinition],
   );
 
   useEffect(() => {
@@ -166,7 +171,16 @@ function VerificationRoute() {
   const providerSessionToken =
     proofVerificationData?.providerBoundary.providerSessionToken ??
     proofStartData?.providerBoundary.providerSessionToken;
-  const diditLaunchContract = activeProviderBoundary ? getDiditLaunchContract(activeProviderBoundary) : null;
+  const activeProviderId = activeProviderBoundary?.selectedProvider ?? selectedProviderDefinition.id;
+  const activeProviderDefinition = useMemo(
+    () => getVerificationProvider(activeProviderId, providerEnv),
+    [activeProviderId, providerEnv],
+  );
+  const activeOptionRuntime = useMemo(
+    () => resolveVerificationOptionRouteRuntime(activeProviderDefinition),
+    [activeProviderDefinition],
+  );
+  const providerLaunchContract = activeProviderBoundary ? getVerificationOptionLaunch(activeProviderBoundary) : null;
   const checklist = useMemo(
     () =>
       buildVerificationChecklist({
@@ -226,10 +240,13 @@ function VerificationRoute() {
 
       setChallengeData(data);
       setActionState("success");
+      const completedProvider = getVerificationProvider(data.providerBoundary.selectedProvider ?? selectedProvider, providerEnv);
+      const completedRuntime = resolveVerificationOptionRouteRuntime(completedProvider);
+      const completedLaunch = getVerificationOptionLaunch(data.providerBoundary);
       setFeedbackMessage(
-        data.providerBoundary.launch?.mode === "didit_sdk"
-          ? `Challenge accepted. Humanify created your Didit session on the server. Start Didit when you're ready, and remember that Humanify only trusts the backend webhook reconciliation.`
-          : `Challenge accepted. ${selectedProviderDefinition.title} is now the selected verification path, but release still waits for Humanify's server-side provider verification contract.`,
+        completedLaunch && completedRuntime.browserLaunch
+          ? completedRuntime.browserLaunch.challengeAcceptedMessage(completedProvider)
+          : `Challenge accepted. ${completedProvider.title} is now the selected verification path, but release still waits for Humanify's server-side provider verification contract.`,
       );
     } catch (error) {
       setActionState("error");
@@ -260,11 +277,17 @@ function VerificationRoute() {
       setProofVerificationData(null);
       setActionState("success");
       setFeedbackMessage(
-        "Privado proof request created. Open your wallet or the Privado web wallet, then return here so Humanify can verify the proof server-side.",
+        selectedOptionRuntime.reusableProof?.startSuccessMessage(selectedProviderDefinition)
+          ?? `${selectedProviderDefinition.title} proof request created. Return here so Humanify can verify the proof server-side.`,
       );
     } catch (error) {
       setActionState("error");
-      setFeedbackMessage(error instanceof Error ? error.message : "Privado proof request creation failed.");
+      setFeedbackMessage(
+        error instanceof Error
+          ? error.message
+          : selectedOptionRuntime.reusableProof?.startErrorMessage(selectedProviderDefinition)
+            ?? "Proof request creation failed.",
+      );
     }
   }
 
@@ -279,7 +302,7 @@ function VerificationRoute() {
     try {
       const data = await verifyReusableProofResult(fetch, {
         apiBaseUrl,
-        providerId: selectedProvider,
+        providerId: activeProviderDefinition.id,
         providerSessionToken,
       });
 
@@ -288,22 +311,26 @@ function VerificationRoute() {
       setFeedbackMessage(data.verification.message);
     } catch (error) {
       setActionState("error");
-      setFeedbackMessage(error instanceof Error ? error.message : "Privado proof verification failed.");
+      setFeedbackMessage(
+        error instanceof Error
+          ? error.message
+          : selectedOptionRuntime.reusableProof?.verifyErrorMessage(selectedProviderDefinition)
+            ?? "Proof verification failed.",
+      );
     }
   }
 
-  async function handleDiditStart() {
-    if (!diditLaunchContract) {
+  async function handleBrowserLaunchStart() {
+    if (!providerLaunchContract || !activeOptionRuntime.browserLaunch) {
       return;
     }
 
-    setDiditState("launching");
+    setBrowserLaunchState("launching");
     setFeedbackMessage(null);
 
     try {
-      const { DiditSdk } = await import("@didit-protocol/sdk-web");
-      await startDiditVerification(DiditSdk.shared, {
-        launch: diditLaunchContract,
+      await startVerificationOptionLaunch({
+        launch: providerLaunchContract,
         onBrowserResult(result) {
           setFeedbackMessage(result.message);
           if (result.refreshStatus) {
@@ -312,15 +339,19 @@ function VerificationRoute() {
         },
       });
     } catch (error) {
-      setFeedbackMessage(error instanceof Error ? error.message : "Didit could not be started.");
+      setFeedbackMessage(
+        error instanceof Error
+          ? error.message
+          : activeOptionRuntime.browserLaunch.errorMessage(activeProviderDefinition),
+      );
     } finally {
-      setDiditState("idle");
+      setBrowserLaunchState("idle");
     }
   }
 
   return (
     <ProductShell
-      description="This verifier uses Bun-signed challenge state, launches either the server-created Didit flow or a Privado reusable-proof request, and still treats backend verification as the only authoritative result."
+      description="This verifier uses Bun-signed challenge state, launches the selected verification option through generic runtime helpers, and still treats backend verification as the only authoritative result."
       eyebrow="HUMANIFY / VERIFIER"
       panels={[
         {
@@ -593,34 +624,31 @@ function VerificationRoute() {
                     Humanify never treats a browser-only provider screen as verified. Only the signed server handoff can move
                     the canonical session forward.
                   </p>
-                  {diditLaunchContract ? (
+                  {providerLaunchContract && activeOptionRuntime.browserLaunch ? (
                     <>
-                      <p>
-                        Didit is Humanify&apos;s default first-time verification path because it handles document capture,
-                        liveness, and broad country coverage. The tradeoff is that Didit briefly processes the raw identity
-                        material before Humanify reduces the result to a minimal receipt.
-                      </p>
+                      <p>{activeOptionRuntime.browserLaunch.intro(activeProviderDefinition)}</p>
                       <Button
-                        isDisabled={diditState === "launching"}
-                        onPress={handleDiditStart}
+                        isDisabled={browserLaunchState === "launching"}
+                        onPress={handleBrowserLaunchStart}
                         variant="primary"
                       >
-                        {diditState === "launching" ? "Opening Didit…" : "Start Didit verification"}
+                        {activeOptionRuntime.browserLaunch.launchButtonLabel(activeProviderDefinition, browserLaunchState)}
                       </Button>
                       <p className="text-xs leading-6">
-                        If Didit says you are done but Humanify still shows pending, wait for the webhook reconciliation or
-                        refresh this page.
+                        {activeOptionRuntime.browserLaunch.pendingNote(activeProviderDefinition)}
                       </p>
                     </>
                   ) : null}
-                  {selectedProvider === "privado" && providerStartEndpoint && providerStartToken ? (
+                  {activeOptionRuntime.reusableProof && providerStartEndpoint && providerStartToken ? (
                     <>
                       <div className="rounded-2xl border border-content3 bg-content2 px-4 py-4">
-                        <p className="font-semibold text-foreground">Privado reusable proof</p>
+                        <p className="font-semibold text-foreground">
+                          {activeOptionRuntime.reusableProof.summaryTitle(activeProviderDefinition)}
+                        </p>
                         <ul className="mt-2 list-disc space-y-1 pl-5 text-xs leading-6">
-                          <li>You keep the credential and wallet state.</li>
-                          <li>Humanify only learns whether the requested claims passed, plus minimal proof receipt data.</li>
-                          <li>Humanify does not ingest your full credential payload or document images.</li>
+                          {activeOptionRuntime.reusableProof.summaryBullets(activeProviderDefinition).map((item) => (
+                            <li key={item}>{item}</li>
+                          ))}
                         </ul>
                       </div>
                       <div className="flex flex-wrap gap-3">
@@ -629,7 +657,7 @@ function VerificationRoute() {
                           onPress={handleStartReusableProof}
                           variant="primary"
                         >
-                          {proofStartData ? "Create a new Privado proof request" : "Create Privado proof request"}
+                          {activeOptionRuntime.reusableProof.createRequestLabel(activeProviderDefinition, Boolean(proofStartData))}
                         </Button>
                         <Button
                           isDisabled={!proofStartData?.flow.universalLink}
@@ -640,7 +668,7 @@ function VerificationRoute() {
                           }}
                           variant="outline"
                         >
-                          Open Privado wallet
+                          {activeOptionRuntime.reusableProof.openWalletLabel(activeProviderDefinition)}
                         </Button>
                         <Button
                           isDisabled={!providerSessionToken || actionState === "submitting"}

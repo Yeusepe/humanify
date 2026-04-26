@@ -57,11 +57,12 @@ The current bot spine makes the first real moderation intake surface concrete:
 
 | Surface | Current behavior | Safety posture |
 | --- | --- | --- |
+| `/humanify setup` | server-admin entry point for future guild setup and capability checks; the API can already persist the selected moderator alert plus optional review/audit/log channels | admin-only at command registration and runtime; current reply stays honest that the setup flow is not implemented yet |
 | `/report user reason [notes]` | opens a report via the API and plans a case when one does not already exist | replies honestly that persistence is still pending and offers a verification shortcut only as additional intake |
-| `/case open user reason [notes]` | opens a manual case via the report intake route | no moderation action is executed from the command response |
-| `/verify user [capability]` | creates a verification session tied to the Discord member | session creation is reported as planned, not durably completed |
+| `/case open user reason [notes]` | opens a manual case via the report intake route | trusted-moderator-only at runtime; no moderation action is executed from the command response |
+| `/verify user [capability]` | creates a verification session tied to the Discord member | self-verification stays available; verifying another member requires a trusted moderator and session creation is still reported as planned, not durably completed |
 | message context `Report message to Humanify` | opens a report and then attaches canonical Discord message metadata (`messageId`, `channelId`, message URL, preview) as evidence | evidence is queued as planned canonical write work, not synthetic success |
-| button `Start verification` | creates a verification session bound to the case/user pair encoded in the shared Humanify custom ID | button handlers reject mismatched guild context and do not imply release or enforcement |
+| button `Start verification` | creates a verification session bound to the case/user pair encoded in the shared Humanify custom ID | self-verification stays available, cross-user starts require a trusted moderator, and button handlers reject mismatched guild context without implying release or enforcement |
 
 ## 3. Event intake inventory
 
@@ -124,6 +125,21 @@ Current executor rule for the first slice: if the API returns only `planned_not_
 | verification role release | manage roles | only after verification session reaches a passed/released state |
 
 Guild setup should persist the current capability snapshot so the API can clamp actions before they reach the executor.
+The setup/channel-config slice now also has a canonical API write for:
+
+- required `moderatorAlertChannelId`
+- optional `reviewChannelId`
+- optional `auditLogChannelId`
+- optional `moderationLogChannelId`
+
+Moderator warning and review flows should read those canonical channel IDs instead of relying on command-local state.
+
+Authorization rules for the current command surface:
+
+1. `/humanify setup` is server-admin-only.
+2. Trusted moderator actions must fail closed when the actor lacks current guild permissions or the runtime cannot read them.
+3. The shared trusted-moderator gate covers the current moderation-oriented entry points (`/case open` and starting verification for another member).
+4. Member-facing verification entry points must remain available for the actor's own account.
 
 ## 7. Observability and audit requirements
 

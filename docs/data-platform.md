@@ -52,7 +52,7 @@ The current implementation anchors these decisions in a Bun-first migration pack
 The first migration now creates the canonical table families for:
 
 - tenant + identity: `guilds`, `user_identities`, `guild_members`, `moderators`
-- policy + verification: `guild_policy_versions`, `verification_requirements`, `verification_sessions`, `verification_artifacts`
+- policy + verification: `guild_policy_versions`, `guild_channel_configs`, `verification_requirements`, `verification_sessions`, `verification_artifacts`
 - observation + scoring: `risk_inputs`, `risk_feature_snapshots`, `risk_decisions`, `action_recommendations`
 - cases + evidence + outcomes: `cases`, `reports`, `case_events`, `case_outcomes`, `appeals`, `evidence_records`, `blob_objects`, `blob_derivatives`, `evidence_links`
 - learning + vectors: `learned_signals`, `signal_examples`, `signal_embeddings`, `reputation_views`
@@ -93,7 +93,8 @@ Notes:
 
 | Entity | Stored in | Core fields |
 | --- | --- | --- |
-| `guild_policy_versions` | Postgres | thresholds, action ladder, quarantine role/channel config, trust-network settings, effective timestamps |
+| `guild_policy_versions` | Postgres | thresholds, action ladder, quarantine role config, trust-network settings, effective timestamps |
+| `guild_channel_configs` | Postgres | moderator alert channel plus optional review/audit/log channel selections for setup and warning workflows |
 | `verification_requirements` | Postgres | role-based verification strategy requirements, challenge rules, fallback paths, retention rules |
 | `verification_sessions` | Postgres | `session_id`, `guild_id`, `user_id`, required checks, selected strategy refs, challenge state, expiry, result summary |
 | `verification_artifacts` | Postgres | capture session refs, reusable-proof receipt refs, verified claim predicates, nullifier/replay guard refs, attestation status, expiry |

@@ -21,6 +21,14 @@
  */
 
 export {
+  createPostgresGuildChannelConfigRepository,
+} from "./guild-channel-config";
+export type {
+  GuildChannelConfigRecord,
+  GuildChannelConfigRepository,
+  PersistedGuildChannelConfigResult,
+} from "./guild-channel-config";
+export {
   createDatabaseConfigFromEnv,
   getConnectionTarget,
   getDiscoveredMigrations,

@@ -107,7 +107,14 @@ export const diditCaptureVerificationPipeline = defineVerificationStrategyPipeli
     captureProviderId: "didit",
     policyConsumerId: "humanify",
   },
-  supportedClaimKeys: ["age_over_18", "nationality", "document_identity", "liveness"],
+  supportedClaimKeys: [
+    "age_over_18",
+    "age_over_21",
+    "nationality",
+    "document_identity",
+    "liveness",
+    "face_verification",
+  ],
   summary: "Humanify binds the Discord challenge, Didit performs first-time capture, and Bun policy decides whether release can happen.",
   title: "Verify for the first time",
 });

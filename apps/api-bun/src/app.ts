@@ -29,7 +29,6 @@ import {
   buildDiscordOAuthAuthorizeUrl,
   createSessionCookieOptions,
   issueDiscordOAuthState,
-  issueReusableProofSessionToken,
   issueReusableProofStartToken,
   issueVerifierChallengeToken,
   verifyDiscordOAuthState,
@@ -40,11 +39,9 @@ import {
 import {
   loadAdvisoryServiceConfig,
   loadDataPlaneConfig,
-  loadDiditConfig,
   loadDiscordOAuthConfig,
   loadObservabilityConfig,
   loadPolicyClampConfig,
-  loadPrivadoVerifierConfig,
   loadServiceIdentityConfig,
   loadSessionConfig,
   summarizeConfigForLogs,
@@ -60,10 +57,12 @@ import {
 } from "@humanify/contracts";
 import { createDiscordAuditReason, createBotGatewayIntents, resolveDiscordExecutionPlan } from "@humanify/discord-core";
 import {
+  createPostgresGuildChannelConfigRepository,
   createPostgresReportCasesRepository,
   createPostgresVerificationSessionsRepository,
   createIdempotencyReceipt,
   createOutboxEvent,
+  type GuildChannelConfigRepository,
   parsePostgresConnectionString,
   planCanonicalWrite,
   redactPostgresConnectionString,
@@ -71,7 +70,6 @@ import {
   type CaseOutcomeKind,
   type ReportCasesRepository,
   type VerificationSessionRecord,
-  type VerificationSessionState,
   type VerificationSessionsRepository,
 } from "@humanify/db";
 import {
@@ -96,17 +94,9 @@ import {
   type TraceContext,
 } from "@humanify/telemetry";
 import {
-  buildPrivadoWalletLaunch,
-  createPrivadoReusableCredentialBridge,
-  createPrivadoVerificationPlan,
   getSupportedHumanifyClaimIds,
   isHumanifyClaimKey,
-  normalizePrivadoVerificationResult,
   parseVerificationProviderSelection,
-  type PrivadoVerificationPlan,
-  type PrivadoVerifierBackendSignInRequest,
-  type PrivadoVerifierBackendSignInResponse,
-  type PrivadoVerifierBackendStatusResponse,
   resolveVerificationProviderConfiguration,
   resolveVerificationProviderCatalog,
   verificationProviderSupportsClaims,
@@ -114,8 +104,16 @@ import {
   type VerificationProviderConfiguration,
 } from "@humanify/verification-providers";
 
-import { createDiditClient } from "./didit";
-export type { DiditClient } from "./didit";
+import { ApiRouteError, type ApiErrorCode } from "./api-route-error";
+import {
+  createApiVerificationOptionEnvironment,
+  buildProviderBoundaryFromRecord,
+  buildReusableProofProviderStartEndpoint,
+  getApiVerificationOptionRuntime,
+  type ApiVerificationOptionRuntimeOverrides,
+  type PrivadoVerifierBackendClient,
+} from "./verification-options/runtime";
+export type { ApiVerificationOptionRuntimeOverrides, PrivadoVerifierBackendClient } from "./verification-options/runtime";
 
 const routeGroups = [
   "health",
@@ -140,17 +138,6 @@ const caseOutcomeKinds = [
   "dismissed",
   "overturned",
 ] as const;
-
-type ApiErrorCode =
-  | "unauthorized"
-  | "forbidden"
-  | "validation_failed"
-  | "conflict"
-  | "not_found"
-  | "rate_limited"
-  | "provider_callback_invalid"
-  | "dependency_unavailable"
-  | "internal_error";
 
 type ApiEnvelope<TData> = {
   contractVersion: typeof humanifyContractVersion;
@@ -191,39 +178,16 @@ export type LearningServiceClient = {
   ): Promise<LearningServiceSummary>;
 };
 
-export type PrivadoVerifierBackendClient = {
-  createProofRequest(
-    request: PrivadoVerifierBackendSignInRequest,
-    requestTelemetry?: RequestTelemetryContext,
-  ): Promise<PrivadoVerifierBackendSignInResponse>;
-  readProofStatus(
-    sessionId: string,
-    requestTelemetry?: RequestTelemetryContext,
-  ): Promise<PrivadoVerifierBackendStatusResponse>;
-};
-
 export type ApiAppOptions = {
-  diditClient?: import("./didit").DiditClient;
   env?: EnvSource;
+  guildChannelConfigRepository?: GuildChannelConfigRepository;
   learningServiceClient?: LearningServiceClient;
   logger?: LoggerLike;
   now?: () => number;
-  privadoVerifierBackendClient?: PrivadoVerifierBackendClient;
   reportCasesRepository?: ReportCasesRepository;
+  verificationOptionRuntimeOverrides?: ApiVerificationOptionRuntimeOverrides;
   verificationSessionsRepository?: VerificationSessionsRepository;
 };
-
-class ApiRouteError extends Error {
-  constructor(
-    readonly status: number,
-    readonly errorCode: ApiErrorCode,
-    message: string,
-    readonly retryable = false,
-  ) {
-    super(message);
-    this.name = "ApiRouteError";
-  }
-}
 
 function redactUrlSecret(url: string): string {
   const parsed = new URL(url);
@@ -318,41 +282,6 @@ function buildVerificationSessionFromRecord(record: VerificationSessionRecord) {
   };
 }
 
-function buildProviderBoundaryFromRecord(record: VerificationSessionRecord) {
-  const status = record.providerStatus as {
-    launch?: Record<string, unknown>;
-    providerSessionId?: string;
-    requestedClaims?: string[];
-    selectedProvider?: string;
-    status?: string;
-  };
-  const selectedProvider = status.selectedProvider;
-  const isDidit = selectedProvider === "didit";
-  const isPrivado = selectedProvider === "privado";
-
-  return {
-    handoffKind: isDidit ? "signed_webhook" : isPrivado ? "server_verified_proof" : undefined,
-    launch: status.launch,
-    nextStep: record.state === "passed" ? "release_available" : selectedProvider ? "provider_verification_required" : "complete_challenge",
-    providerFlowConfigured: Boolean(status.launch) || Boolean(selectedProvider),
-    providerServerEndpoint: isDidit
-      ? "/callbacks/providers/didit"
-      : isPrivado
-        ? "/verification/providers/privado/proof"
-        : undefined,
-    providerSessionId: status.providerSessionId,
-    releaseEligible: record.state === "passed",
-    requestedClaims: status.requestedClaims,
-    selectedProvider,
-    serverVerificationNote: isDidit
-      ? "Humanify only trusts the Didit result after a signed webhook triggers a server-side decision reconciliation."
-      : isPrivado
-        ? "Humanify only trusts the Privado result after a server-side proof status read reduces it to minimal receipts, nullifiers, and satisfied predicates."
-      : undefined,
-    status: status.status ?? "challenge_link_verified",
-  };
-}
-
 function readReusableCredentialBridgeFromRecord(record: VerificationSessionRecord) {
   const bridge = (record.providerStatus as {
     reusableCredentialBridge?: Record<string, unknown>;
@@ -363,111 +292,6 @@ function readReusableCredentialBridgeFromRecord(record: VerificationSessionRecor
 
 function readVerificationSummaryFromRecord(record: VerificationSessionRecord) {
   return Object.keys(record.resultSummary).length > 0 ? record.resultSummary : undefined;
-}
-
-function readDiditDecisionArray(decision: Record<string, unknown>, key: string) {
-  const entries = decision[key];
-  if (!Array.isArray(entries)) {
-    return [];
-  }
-
-  return entries.filter((entry) => Boolean(entry && typeof entry === "object")) as Array<Record<string, unknown>>;
-}
-
-function readDiditApprovedArray(decision: Record<string, unknown>, key: string) {
-  return readDiditDecisionArray(decision, key).filter((entry) =>
-    Boolean(entry && typeof entry === "object" && String((entry as Record<string, unknown>).status ?? "").toLowerCase() === "approved")
-  ) as Array<Record<string, unknown>>;
-}
-
-function normalizeDiditDecision(input: {
-  decision: Record<string, unknown>;
-  providerSessionId: string;
-  requestedClaims: string[];
-  status: string;
-}) {
-  const approvedIdVerifications = readDiditApprovedArray(input.decision, "idVerifications").length > 0
-    ? readDiditApprovedArray(input.decision, "idVerifications")
-    : readDiditApprovedArray(input.decision, "id_verifications");
-  const livenessChecks = readDiditDecisionArray(input.decision, "livenessChecks").length > 0
-    ? readDiditDecisionArray(input.decision, "livenessChecks")
-    : readDiditDecisionArray(input.decision, "liveness_checks");
-  const approvedLivenessChecks = readDiditApprovedArray(input.decision, "livenessChecks").length > 0
-    ? readDiditApprovedArray(input.decision, "livenessChecks")
-    : readDiditApprovedArray(input.decision, "liveness_checks");
-  const satisfiedClaims: string[] = [];
-  const faceVerificationPerformed = livenessChecks.length > 0;
-  const faceVerificationPassed = approvedLivenessChecks.length > 0;
-  const primaryIdVerification = approvedIdVerifications[0];
-  const nationality = typeof primaryIdVerification?.nationality === "string" && primaryIdVerification.nationality.trim().length > 0
-    ? primaryIdVerification.nationality.trim()
-    : undefined;
-  const ageValue = Number(primaryIdVerification?.age);
-  const ageOver18 = Number.isFinite(ageValue) && ageValue >= 18;
-
-  if (approvedIdVerifications.length > 0) {
-    satisfiedClaims.push("document_identity");
-    if (ageOver18) {
-      satisfiedClaims.push("age_over_18");
-    }
-
-    if (nationality) {
-      satisfiedClaims.push("nationality");
-    }
-  }
-
-  if (approvedLivenessChecks.length > 0) {
-    satisfiedClaims.push("liveness");
-  }
-
-  const normalizedStatus = input.status.toLowerCase();
-  const state: Exclude<VerificationSessionState, "challenge_issued" | "released"> =
-    normalizedStatus === "approved"
-      ? "passed"
-      : normalizedStatus === "declined"
-        ? "failed"
-        : normalizedStatus === "expired"
-          ? "expired"
-          : normalizedStatus === "abandoned"
-            ? "cancelled"
-            : "provider_pending";
-
-  return {
-    bridgeFacts: {
-      ageOver18,
-      documentIdentityVerified: approvedIdVerifications.length > 0,
-      faceVerificationPassed,
-      faceVerificationPerformed,
-      livenessVerified: approvedLivenessChecks.length > 0,
-      nationality,
-      satisfiedClaims: Array.from(new Set(satisfiedClaims)) as HumanifyClaimKey[],
-    },
-    resultSummary: {
-      authoritativeSource: "didit_decision_api",
-      faceVerificationPassed,
-      faceVerificationPerformed,
-      providerReferenceId: input.providerSessionId,
-      providerStatus: input.status,
-      requestedClaims: input.requestedClaims,
-      satisfiedClaims: Array.from(new Set(satisfiedClaims)),
-    },
-    state,
-  };
-}
-
-function buildReusableProofProviderStartEndpoint(sessionId: string, providerId: string) {
-  return `/verification/sessions/${encodeURIComponent(sessionId)}/providers/${encodeURIComponent(providerId)}/start`;
-}
-
-function isReusableProofProviderConfigured(
-  providerId: string,
-  privadoVerifierConfig: ReturnType<typeof loadPrivadoVerifierConfig>,
-) {
-  if (providerId === "privado") {
-    return privadoVerifierConfig.enabled;
-  }
-
-  return false;
 }
 
 function buildErrorEnvelope(requestId: string, errorCode: ApiErrorCode, message: string, retryable: boolean) {
@@ -644,45 +468,6 @@ function createLearningServiceClient(input: {
   };
 }
 
-function createPrivadoVerifierBackendClient(input: {
-  baseUrl: string;
-  fetchFn?: typeof fetch;
-}): PrivadoVerifierBackendClient {
-  const fetchFn = input.fetchFn ?? fetch;
-
-  return {
-    async createProofRequest(request, requestTelemetry = createRequestTelemetryContext()) {
-      const response = await fetchFn(`${input.baseUrl}/sign-in`, {
-        body: JSON.stringify(request),
-        headers: injectRequestTelemetryHeaders({
-          accept: "application/json",
-          "content-type": "application/json",
-        }, requestTelemetry),
-        method: "POST",
-      });
-
-      if (!response.ok) {
-        throw new Error(`privado_verifier_backend_unavailable:${response.status}`);
-      }
-
-      return await response.json() as PrivadoVerifierBackendSignInResponse;
-    },
-    async readProofStatus(sessionId, requestTelemetry = createRequestTelemetryContext()) {
-      const response = await fetchFn(`${input.baseUrl}/status?sessionID=${encodeURIComponent(sessionId)}`, {
-        headers: injectRequestTelemetryHeaders({
-          accept: "application/json",
-        }, requestTelemetry),
-      });
-
-      if (!response.ok) {
-        throw new Error(`privado_verifier_backend_unavailable:${response.status}`);
-      }
-
-      return await response.json() as PrivadoVerifierBackendStatusResponse;
-    },
-  };
-}
-
 function requireAbsoluteRequestUrl(value: string | undefined, fieldName: string) {
   const trimmed = value?.trim();
   if (!trimmed) {
@@ -841,19 +626,20 @@ export function createApiApp(options: ApiAppOptions = {}) {
   const identity = loadServiceIdentityConfig(env, { serviceName: "@humanify/api-bun" });
   const advisoryServices = loadAdvisoryServiceConfig(env);
   const dataPlaneConfig = loadDataPlaneConfig(env);
-  const diditConfig = loadDiditConfig(env);
   const discordOAuthConfig = loadDiscordOAuthConfig(env);
   const observability = loadObservabilityConfig(env);
   const policyClampConfig = loadPolicyClampConfig(env);
-  const privadoVerifierConfig = loadPrivadoVerifierConfig(env);
+  const verificationOptionEnvironment = createApiVerificationOptionEnvironment({
+    env,
+    overrides: options.verificationOptionRuntimeOverrides,
+  });
   const learningServiceClient = options.learningServiceClient ?? createLearningServiceClient({
     baseUrl: advisoryServices.learningServiceUrl,
   });
-  const privadoVerifierBackendClient = privadoVerifierConfig.enabled
-    ? options.privadoVerifierBackendClient ?? createPrivadoVerifierBackendClient({
-      baseUrl: privadoVerifierConfig.verifierBaseUrl!,
-    })
-    : options.privadoVerifierBackendClient;
+  const guildChannelConfigRepository =
+    options.guildChannelConfigRepository ?? createPostgresGuildChannelConfigRepository({
+      connectionString: dataPlaneConfig.postgresUrl,
+    });
   const reportCasesRepository = options.reportCasesRepository ?? createPostgresReportCasesRepository({
     connectionString: dataPlaneConfig.postgresUrl,
   });
@@ -862,9 +648,6 @@ export function createApiApp(options: ApiAppOptions = {}) {
       connectionString: dataPlaneConfig.postgresUrl,
     });
   const sessionConfig = loadSessionConfig(env);
-  const diditClient = diditConfig
-    ? options.diditClient ?? createDiditClient(diditConfig)
-    : options.diditClient;
   const verificationProviderCatalog = resolveVerificationProviderCatalog({
     enabledProviderIds: parseVerificationProviderSelection(env.HUMANIFY_ENABLED_VERIFICATION_PROVIDERS),
   });
@@ -948,6 +731,14 @@ export function createApiApp(options: ApiAppOptions = {}) {
     enabledProviderIds: t.Array(t.String({ minLength: 1 })),
     suspiciousRoleIds: t.Optional(t.Array(t.String({ minLength: 1 }))),
     trustedRoleIds: t.Optional(t.Array(t.String({ minLength: 1 }))),
+  });
+
+  const channelConfigSchema = t.Object({
+    actorUserId: t.String({ minLength: 1 }),
+    auditLogChannelId: t.Optional(t.Nullable(t.String({ minLength: 1 }))),
+    moderationLogChannelId: t.Optional(t.Nullable(t.String({ minLength: 1 }))),
+    moderatorAlertChannelId: t.String({ minLength: 1 }),
+    reviewChannelId: t.Optional(t.Nullable(t.String({ minLength: 1 }))),
   });
 
   const evidenceSchema = t.Object({
@@ -1310,15 +1101,77 @@ export function createApiApp(options: ApiAppOptions = {}) {
           },
           { body: verificationConfigSchema },
         )
-        .put("/channels", ({ request, set }) => {
-          ensureResponseContext(request, set);
-          throw new ApiRouteError(
-            503,
-            "dependency_unavailable",
-            "Channel configuration persistence is pending the dashboard and bot executor todos.",
-            true,
-          );
-        })
+        .put(
+          "/channels",
+          async ({ body, params, request, set }) => {
+            const requestContext = ensureResponseContext(request, set);
+            const channelConfig = {
+              auditLogChannelId: body.auditLogChannelId ?? undefined,
+              moderationLogChannelId: body.moderationLogChannelId ?? undefined,
+              moderatorAlertChannelId: body.moderatorAlertChannelId,
+              reviewChannelId: body.reviewChannelId ?? undefined,
+            };
+            const artifacts = buildWriteArtifacts({
+              aggregateId: params.guildId,
+              aggregateType: "guild_channel_config",
+              auditRefs: [createAuditRef(requestContext.requestId, "guild_channel_config", "update")],
+              canonicalMutations: [
+                {
+                  dataRef: `${params.guildId}:channels`,
+                  operation: "insert",
+                  primaryKey: "guild_id",
+                  table: "guild_channel_configs",
+                },
+                {
+                  dataRef: `${params.guildId}:audit`,
+                  operation: "insert",
+                  primaryKey: "audit_record_id",
+                  table: "audit_records",
+                },
+              ],
+              idempotencyKey:
+                request.headers.get("x-idempotency-key") ?? `guild-channel-config:${params.guildId}:${requestContext.requestId}`,
+              kind: "guild.channels.updated",
+              payload: {
+                actorUserId: body.actorUserId,
+                auditLogChannelId: channelConfig.auditLogChannelId ?? null,
+                guildId: params.guildId,
+                moderationLogChannelId: channelConfig.moderationLogChannelId ?? null,
+                moderatorAlertChannelId: channelConfig.moderatorAlertChannelId,
+                reviewChannelId: channelConfig.reviewChannelId ?? null,
+                routeGroup: "guild-config",
+              },
+              requestContext,
+              requestFingerprint: JSON.stringify({
+                auditLogChannelId: channelConfig.auditLogChannelId ?? null,
+                moderationLogChannelId: channelConfig.moderationLogChannelId ?? null,
+                moderatorAlertChannelId: channelConfig.moderatorAlertChannelId,
+                reviewChannelId: channelConfig.reviewChannelId ?? null,
+              }),
+              scope: `guild-channel-config:${params.guildId}`,
+              stream: "projection.refresh",
+              transactionName: "guild_channel_config_update",
+            });
+
+            const persisted = await guildChannelConfigRepository.upsertConfig({
+              artifacts: {
+                idempotency: artifacts.idempotency,
+                queueEnvelope: artifacts.queueEnvelope,
+              },
+              body: {
+                actorUserId: body.actorUserId,
+                ...channelConfig,
+              },
+              guildId: params.guildId,
+              requestFingerprint: artifacts.requestFingerprint,
+              traceId: requestContext.traceContext.traceId,
+            });
+
+            set.status = 200;
+            return buildEnvelope(requestContext.requestId, persisted);
+          },
+          { body: channelConfigSchema },
+        )
         .get("/cases", async ({ params, request, set }) => {
           const requestContext = ensureResponseContext(request, set);
           const items = await reportCasesRepository.listCases({
@@ -1991,12 +1844,9 @@ export function createApiApp(options: ApiAppOptions = {}) {
         const verified = verifyVerifierChallengeToken(body.token, sessionConfig.sessionSecret, now());
         const providerId = requireKnownVerificationProvider(body.providerId, "providerId", verificationProviderCatalog.ids());
         const providerDefinition = verificationProviderCatalog.require(providerId);
+        const optionRuntime = getApiVerificationOptionRuntime(providerId);
         const requestedClaims = requireKnownHumanifyClaims(body.requestedClaims, "requestedClaims", supportedHumanifyClaimIds);
-        const providerFlowConfigured = providerDefinition.role === "reusable_proof_backend"
-          ? isReusableProofProviderConfigured(providerId, privadoVerifierConfig)
-          : providerId === "didit"
-            ? Boolean(diditConfig && diditClient)
-            : false;
+        const providerFlowConfigured = optionRuntime.isConfigured(verificationOptionEnvironment);
         const providerStartToken = providerDefinition.role === "reusable_proof_backend"
           ? issueReusableProofStartToken(
             {
@@ -2038,42 +1888,17 @@ export function createApiApp(options: ApiAppOptions = {}) {
           throw new ApiRouteError(400, "validation_failed", "Challenge token does not match the requested userId.");
         }
 
-        if (providerId === "didit") {
-          if (!diditConfig || !diditClient) {
-            throw new ApiRouteError(
-              503,
-              "dependency_unavailable",
-              "Didit capture is not configured in this Humanify environment.",
-              true,
-            );
-          }
-
-          const persistedSession = await verificationSessionsRepository.getSession(body.sessionId);
-          if (!persistedSession) {
-            throw new ApiRouteError(404, "not_found", "Verification session was not found in canonical state.");
-          }
-
-          const callbackUrl = new URL("/verify", diditConfig.verifierBaseUrl);
-          callbackUrl.searchParams.set("sessionId", body.sessionId);
-          callbackUrl.searchParams.set("token", body.token);
-          const diditSession = await diditClient.createSession({
-            callbackUrl: callbackUrl.toString(),
-            metadata: {
-              humanifyChallengeId: params.challengeId,
-            },
-            vendorData: body.sessionId,
-            workflowId: diditConfig.workflowId,
-          });
-          const updatedSession = await verificationSessionsRepository.markDiditSessionCreated({
-            callbackUrl: callbackUrl.toString(),
-            providerSessionId: diditSession.sessionId,
-            providerSessionStatus: diditSession.sessionStatus,
+        if (optionRuntime.completeChallenge) {
+          const updatedSession = await optionRuntime.completeChallenge({
+            challengeId: params.challengeId,
+            provider: providerDefinition,
             requestedClaims,
+            requiredCapabilities: verified.requiredCapabilities,
+            runtimeEnvironment: verificationOptionEnvironment,
             sessionId: body.sessionId,
-            verificationUrl: diditSession.verificationUrl,
-            workflowId: diditSession.workflowId,
+            token: body.token,
+            verificationSessionsRepository,
           });
-
           set.status = 201;
           return buildEnvelope(requestContext.requestId, {
             challenge: {
@@ -2085,26 +1910,10 @@ export function createApiApp(options: ApiAppOptions = {}) {
             },
             persistence: "persisted",
             providerBoundary: {
-              handoffKind: providerDefinition.integration.handoffKind,
-              launch: {
-                mode: "didit_sdk",
-                packageName: "@didit-protocol/sdk-web",
-                providerId: "didit",
-                providerSessionId: diditSession.sessionId,
-                providerStatus: diditSession.sessionStatus,
-                url: diditSession.verificationUrl,
-              },
-              nextStep: "provider_verification_required",
-              providerFlowConfigured: true,
-              providerServerEndpoint: providerDefinition.integration.serverEndpointPath,
-              releaseEligible: false,
-              requestedClaims,
+              ...buildProviderBoundaryFromRecord(updatedSession, verificationProviderCatalog),
               requiredCapabilities: verified.requiredCapabilities,
-              selectedProvider: providerId,
-              serverVerificationNote: providerDefinition.integration.serverVerificationNote,
-              status: "didit_session_created",
             },
-            session: updatedSession ? buildVerificationSessionFromRecord(updatedSession) : buildDerivedVerificationSession(verified, "provider_pending"),
+            session: buildVerificationSessionFromRecord(updatedSession),
           });
         }
 
@@ -2185,6 +1994,7 @@ export function createApiApp(options: ApiAppOptions = {}) {
         const verifiedStart = verifyReusableProofStartToken(body.providerStartToken, sessionConfig.sessionSecret, now());
         const providerId = requireKnownVerificationProvider(params.providerId, "providerId", verificationProviderCatalog.ids());
         const providerDefinition = verificationProviderCatalog.require(providerId);
+        const optionRuntime = getApiVerificationOptionRuntime(providerId);
         const backUrl = requireAbsoluteRequestUrl(body.backUrl, "backUrl");
         const finishUrl = requireAbsoluteRequestUrl(body.finishUrl, "finishUrl");
 
@@ -2200,7 +2010,7 @@ export function createApiApp(options: ApiAppOptions = {}) {
           throw new ApiRouteError(400, "validation_failed", `providerId "${providerId}" is not a reusable-proof backend.`);
         }
 
-        if (providerId !== "privado" || !privadoVerifierConfig.enabled || !privadoVerifierBackendClient) {
+        if (!optionRuntime.startReusableProof) {
           throw new ApiRouteError(
             503,
             "dependency_unavailable",
@@ -2214,65 +2024,28 @@ export function createApiApp(options: ApiAppOptions = {}) {
           "providerStartToken.requestedClaims",
           supportedHumanifyClaimIds,
         );
-        const verificationPlan: PrivadoVerificationPlan = createPrivadoVerificationPlan({
-          chainId: privadoVerifierConfig.chainId,
-          nullifierSessionId: verifiedStart.sessionId,
-          now: now(),
-          requestedClaims,
-          trustedIssuers: privadoVerifierConfig.trustedIssuers,
-        });
-        const providerSession = await privadoVerifierBackendClient.createProofRequest(verificationPlan.request, createRequestTelemetryContext({
-          requestId: requestContext.requestId,
-          traceContext: requestContext.traceContext,
-        }));
-        const walletLaunch = buildPrivadoWalletLaunch({
+        const runtimeResult = await optionRuntime.startReusableProof({
           backUrl,
+          challengeId: verifiedStart.challengeId,
           finishUrl,
-          qrCode: providerSession.qrCode,
+          guildId: verifiedStart.guildId,
+          now,
+          provider: providerDefinition,
+          providerStartToken: body.providerStartToken,
+          requestContext,
+          requiredCapabilities: verifiedStart.requiredCapabilities,
+          requestedClaims,
+          runtimeEnvironment: verificationOptionEnvironment,
+          sessionConfig,
+          sessionId: verifiedStart.sessionId,
+          userId: verifiedStart.userId,
         });
-        const providerSessionToken = issueReusableProofSessionToken(
-          {
-            challengeId: verifiedStart.challengeId,
-            guildId: verifiedStart.guildId,
-            providerId,
-            providerSessionId: providerSession.sessionID,
-            requiredCapabilities: verifiedStart.requiredCapabilities,
-            requestedClaims,
-            sessionId: verifiedStart.sessionId,
-            userId: verifiedStart.userId,
-          },
-          sessionConfig.sessionSecret,
-          900,
-          now(),
-        );
 
         set.status = 202;
         return buildEnvelope(requestContext.requestId, {
-          flow: {
-            providerId,
-            providerSessionId: providerSession.sessionID,
-            providerSessionToken,
-            qrCodeValue: walletLaunch.qrCodeValue,
-            request: verificationPlan.request,
-            requestUri: walletLaunch.requestUri,
-            universalLink: walletLaunch.universalLink,
-          },
+          flow: runtimeResult.flow,
           persistence: "provider_request_created",
-          providerBoundary: {
-            handoffKind: providerDefinition.integration.handoffKind,
-            nextStep: "provider_verification_required",
-            providerFlowConfigured: true,
-            providerServerEndpoint: providerDefinition.integration.serverEndpointPath,
-            providerSessionToken,
-            providerStartEndpoint: buildReusableProofProviderStartEndpoint(verifiedStart.sessionId, providerId),
-            providerStartToken: body.providerStartToken,
-            releaseEligible: false,
-            requestedClaims,
-            requiredCapabilities: verifiedStart.requiredCapabilities,
-            selectedProvider: providerId,
-            serverVerificationNote: providerDefinition.integration.serverVerificationNote,
-            status: "proof_request_created",
-          },
+          providerBoundary: runtimeResult.boundary,
           session: {
             challengeExpiresAt: new Date(verifiedStart.exp * 1_000).toISOString(),
             challengeId: verifiedStart.challengeId,
@@ -2304,12 +2077,12 @@ export function createApiApp(options: ApiAppOptions = {}) {
         }
 
         const persistedSession = await verificationSessionsRepository.getSession(params.sessionId);
-        if (persistedSession) {
-          return buildEnvelope(requestContext.requestId, {
-            providerBoundary: buildProviderBoundaryFromRecord(persistedSession),
-            persistence: "persisted",
-            reusableCredentialBridge: readReusableCredentialBridgeFromRecord(persistedSession),
-            session: buildVerificationSessionFromRecord(persistedSession),
+          if (persistedSession) {
+            return buildEnvelope(requestContext.requestId, {
+              providerBoundary: buildProviderBoundaryFromRecord(persistedSession, verificationProviderCatalog),
+              persistence: "persisted",
+              reusableCredentialBridge: readReusableCredentialBridgeFromRecord(persistedSession),
+              session: buildVerificationSessionFromRecord(persistedSession),
             verification: readVerificationSummaryFromRecord(persistedSession),
           });
         }
@@ -2337,6 +2110,7 @@ export function createApiApp(options: ApiAppOptions = {}) {
         const verifiedSession = verifyReusableProofSessionToken(body.providerSessionToken, sessionConfig.sessionSecret, now());
         const providerId = requireKnownVerificationProvider(params.providerId, "providerId", verificationProviderCatalog.ids());
         const providerDefinition = verificationProviderCatalog.require(providerId);
+        const optionRuntime = getApiVerificationOptionRuntime(providerId);
 
         if (verifiedSession.providerId !== providerId) {
           throw new ApiRouteError(400, "validation_failed", "Reusable-proof session token does not match the requested providerId.");
@@ -2346,7 +2120,7 @@ export function createApiApp(options: ApiAppOptions = {}) {
           throw new ApiRouteError(400, "validation_failed", `providerId "${providerId}" is not a reusable-proof backend.`);
         }
 
-        if (providerId !== "privado" || !privadoVerifierConfig.enabled || !privadoVerifierBackendClient) {
+        if (!optionRuntime.verifyReusableProof) {
           throw new ApiRouteError(
             503,
             "dependency_unavailable",
@@ -2360,68 +2134,35 @@ export function createApiApp(options: ApiAppOptions = {}) {
           "providerSessionToken.requestedClaims",
           supportedHumanifyClaimIds,
         );
-        const providerStatus = await privadoVerifierBackendClient.readProofStatus(
-          verifiedSession.providerSessionId,
-          createRequestTelemetryContext({
-            requestId: requestContext.requestId,
-            traceContext: requestContext.traceContext,
-          }),
-        );
-        const normalizedResult = await normalizePrivadoVerificationResult({
-          expectedClaims: requestedClaims,
-          nullifierSessionId: verifiedSession.sessionId,
+        const runtimeResult = await optionRuntime.verifyReusableProof({
+          now,
+          provider: providerDefinition,
           providerSessionId: verifiedSession.providerSessionId,
-          status: providerStatus,
-          trustedIssuers: privadoVerifierConfig.trustedIssuers,
-        });
-        const resultSummary = {
-          authoritativeSource: "privado_verifier_backend_status",
-          message: normalizedResult.message,
-          nullifierRefs: normalizedResult.evidence.nullifiers.map((entry) => entry.nullifier),
-          proofReceiptHash: normalizedResult.evidence.proofReceiptHash,
-          proofReceiptRef: normalizedResult.evidence.proofReceiptRef,
-          providerReferenceId: verifiedSession.providerSessionId,
-          providerStatus: providerStatus.status,
+          providerSessionToken: body.providerSessionToken,
+          requestContext,
+          requiredCapabilities: verifiedSession.requiredCapabilities,
           requestedClaims,
-          satisfiedClaims: normalizedResult.satisfiedClaims,
-          trustedIssuerScopes: normalizedResult.evidence.trustedIssuerScopes,
-          verifiablePresentationCount: normalizedResult.evidence.verifiablePresentationCount,
-        };
-        const updatedSession = await verificationSessionsRepository.recordReusableProofResult({
-          providerId,
-          providerSessionId: verifiedSession.providerSessionId,
-          requestedClaims,
-          resultSummary,
+          runtimeEnvironment: verificationOptionEnvironment,
           sessionId: verifiedSession.sessionId,
-          state: normalizedResult.status === "verified"
-            ? "passed"
-            : normalizedResult.status === "failed"
-              ? "failed"
-              : "provider_pending",
+          verificationSessionsRepository,
         });
-        if (!updatedSession) {
-          throw new ApiRouteError(404, "not_found", "Verification session was not found while recording the proof result.");
-        }
 
         set.status = 200;
         return buildEnvelope(requestContext.requestId, {
           persistence: "persisted",
           providerBoundary: {
-            ...buildProviderBoundaryFromRecord(updatedSession),
-            handoffKind: providerDefinition.integration.handoffKind,
+            ...buildProviderBoundaryFromRecord(runtimeResult.updatedSession, verificationProviderCatalog),
             providerFlowConfigured: true,
-            providerServerEndpoint: providerDefinition.integration.serverEndpointPath,
             providerSessionToken: body.providerSessionToken,
             requiredCapabilities: verifiedSession.requiredCapabilities,
-            serverVerificationNote: providerDefinition.integration.serverVerificationNote,
           },
-          session: buildVerificationSessionFromRecord(updatedSession),
+          session: buildVerificationSessionFromRecord(runtimeResult.updatedSession),
           verification: {
-            ...readVerificationSummaryFromRecord(updatedSession),
-            proofReceipt: normalizedResult.evidence,
+            ...readVerificationSummaryFromRecord(runtimeResult.updatedSession),
+            proofReceipt: runtimeResult.normalizedResult.evidence,
             providerId,
             providerSessionId: verifiedSession.providerSessionId,
-            status: normalizedResult.status,
+            status: runtimeResult.normalizedResult.status,
           },
         });
       },
@@ -2465,116 +2206,34 @@ export function createApiApp(options: ApiAppOptions = {}) {
           );
         })
         .post("/providers/:providerId", async ({ params, request, requestContext, set }) => {
-          if (params.providerId !== "didit") {
-            throw new ApiRouteError(
-              503,
-              "dependency_unavailable",
-              `Provider callbacks for "${params.providerId}" are not configured in this Humanify environment.`,
-              true,
-            );
-          }
+          const providerId = requireKnownVerificationProvider(params.providerId, "providerId", verificationProviderCatalog.ids());
+          const providerDefinition = verificationProviderCatalog.require(providerId);
+          const optionRuntime = getApiVerificationOptionRuntime(providerId);
 
-          if (!diditClient) {
+          if (!optionRuntime.handleCallback) {
             throw new ApiRouteError(
               503,
               "dependency_unavailable",
-              "Didit callbacks are not configured in this Humanify environment.",
+              `Provider callbacks for "${providerId}" are not configured in this Humanify environment.`,
               true,
             );
           }
 
           const rawBody = await request.text();
-          const signature = request.headers.get("x-signature-v2");
-          const timestamp = request.headers.get("x-timestamp");
-          if (!diditClient.verifyWebhookSignature({ rawBody, signature, timestamp })) {
-            throw new ApiRouteError(401, "provider_callback_invalid", "Didit webhook signature verification failed.");
-          }
-
-          const payload = JSON.parse(rawBody) as {
-            session_id?: string;
-            status?: string;
-            timestamp?: number;
-            vendor_data?: string;
-            webhook_type?: string;
-            workflow_id?: string;
-          };
-          const internalSessionId = payload.vendor_data?.trim();
-          if (!internalSessionId) {
-            throw new ApiRouteError(400, "provider_callback_invalid", "Didit webhook is missing vendor_data.");
-          }
-
-          const persistedSession = await verificationSessionsRepository.getSession(internalSessionId);
-          if (!persistedSession) {
-            throw new ApiRouteError(404, "not_found", "Verification session was not found for the Didit webhook.");
-          }
-
-          const launch = persistedSession.providerStatus.launch as { providerSessionId?: string } | undefined;
-          if (!launch?.providerSessionId || launch.providerSessionId !== payload.session_id) {
-            throw new ApiRouteError(409, "provider_callback_invalid", "Didit webhook does not match the stored provider session.");
-          }
-
-          const decision = await diditClient.retrieveDecision(payload.session_id);
-          if (decision.vendorData && decision.vendorData !== internalSessionId) {
-            throw new ApiRouteError(409, "provider_callback_invalid", "Didit decision vendor_data does not match the stored session.");
-          }
-
-          const requestedClaims = Array.isArray(persistedSession.providerStatus.requestedClaims)
-            ? persistedSession.providerStatus.requestedClaims as string[]
-            : [];
-          const normalizedDecision = normalizeDiditDecision({
-            decision: decision.decision ?? {},
-            providerSessionId: payload.session_id,
-            requestedClaims,
-            status: decision.status,
+          const updatedSession = await optionRuntime.handleCallback({
+            now,
+            provider: providerDefinition,
+            rawBody,
+            requestContext,
+            requestHeaders: request.headers,
+            runtimeEnvironment: verificationOptionEnvironment,
+            verificationSessionsRepository,
           });
-          const reusableCredentialBridge = normalizedDecision.state === "passed"
-            ? createPrivadoReusableCredentialBridge({
-              source: {
-                guildId: persistedSession.guildId,
-                providerSessionId: payload.session_id,
-                sessionId: internalSessionId,
-                userId: persistedSession.userId,
-              },
-              verifiedDiditFacts: normalizedDecision.bridgeFacts,
-            })
-            : undefined;
-          const purge = await diditClient.deleteSession(payload.session_id);
-          const updatedSession = await verificationSessionsRepository.recordDiditResult({
-            providerSessionId: payload.session_id,
-            providerStatus: decision.status,
-            purge: {
-              attemptedAt: new Date(now()).toISOString(),
-              ...purge,
-            },
-            requestedClaims,
-            reusableCredentialBridge: reusableCredentialBridge
-              ? {
-                artifactPayload: reusableCredentialBridge,
-                artifactStatus: reusableCredentialBridge.status,
-                bridgeId: reusableCredentialBridge.bridgeId,
-                expiresAt: reusableCredentialBridge.temporaryRetention.expiresAt,
-                summary: reusableCredentialBridge,
-                targetProvider: reusableCredentialBridge.targetProvider,
-              }
-              : undefined,
-            resultSummary: normalizedDecision.resultSummary,
-            sessionId: internalSessionId,
-            state: normalizedDecision.state === "provider_pending" ? "provider_pending" : normalizedDecision.state,
-            webhook: {
-              providerStatus: payload.status ?? decision.status,
-              timestamp: timestamp ?? payload.timestamp ?? null,
-              webhookType: payload.webhook_type ?? "status.updated",
-              workflowId: payload.workflow_id ?? decision.workflowId ?? null,
-            },
-          });
-          if (!updatedSession) {
-            throw new ApiRouteError(404, "not_found", "Verification session was not found while recording the Didit result.");
-          }
 
           set.status = 200;
           return buildEnvelope(requestContext.requestId, {
             persistence: "persisted",
-            providerBoundary: buildProviderBoundaryFromRecord(updatedSession),
+            providerBoundary: buildProviderBoundaryFromRecord(updatedSession, verificationProviderCatalog),
             reusableCredentialBridge: readReusableCredentialBridgeFromRecord(updatedSession),
             session: buildVerificationSessionFromRecord(updatedSession),
             verification: updatedSession.resultSummary,

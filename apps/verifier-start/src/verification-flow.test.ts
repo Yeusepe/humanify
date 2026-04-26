@@ -25,16 +25,16 @@ import {
   completeVerificationChallenge,
   fetchVerificationSession,
   getDefaultHumanifyIdClaimBundle,
-  getDiditLaunchContract,
   getHumanifyIdClaimBundles,
   getDefaultVerificationProviderId,
+  getVerificationOptionLaunch,
   getVerifierApiBaseUrl,
   getVerificationProviderClaimCompatibility,
   getVerificationProviderOptions,
   hasVerificationLink,
   parseVerificationSearch,
   startReusableProofFlow,
-  startDiditVerification,
+  startVerificationOptionLaunch,
   verifyReusableProofResult,
 } from "./verification-flow";
 import { routeTree } from "./routeTree.gen";
@@ -355,7 +355,7 @@ test("verifyReusableProofResult posts the provider session token and returns min
 
 test("didit launch contracts are read from the generic provider boundary", () => {
   expect(
-    getDiditLaunchContract({
+    getVerificationOptionLaunch({
       handoffKind: "signed_webhook",
       launch: {
         mode: "didit_sdk",
@@ -385,7 +385,7 @@ test("didit launch contracts are read from the generic provider boundary", () =>
 test("startDiditVerification launches the SDK and reports completed, cancelled, and failed outcomes honestly", async () => {
   const completedStates: Array<{ kind: string; message: string; refreshStatus: boolean }> = [];
   const startCalls: Array<{ configuration?: Record<string, unknown>; url: string }> = [];
-  const sdk = {
+  const sharedSdk = {
     async startVerification(input: { configuration?: Record<string, unknown>; url: string }) {
       startCalls.push(input);
       this.onComplete?.({
@@ -405,29 +405,27 @@ test("startDiditVerification launches the SDK and reports completed, cancelled, 
       this.onComplete?.({
         error: {
           message: "Camera access denied.",
-          type: "cameraAccessDenied",
         },
         type: "failed",
       });
     },
-    onComplete: undefined as
-      | ((result: {
-          error?: {
-            message: string;
-            type: string;
-          };
-          session?: {
-            sessionId: string;
-            status: string;
-          };
-          type: string;
-        }) => void)
-      | undefined,
-    onEvent: undefined as undefined,
-    onStateChange: undefined as undefined | ((state: string, error?: string) => void),
+    onComplete: undefined as ((result: {
+      error?: { message?: string };
+      session?: { sessionId: string; status: string };
+      type: "cancelled" | "completed" | "failed";
+    }) => void) | undefined,
   };
 
-  await startDiditVerification(sdk, {
+  const originalWindow = globalThis.window;
+  Object.assign(globalThis, {
+    window: {
+      DiditSdk: {
+        shared: sharedSdk,
+      },
+    },
+  });
+
+  await startVerificationOptionLaunch({
     launch: {
       mode: "didit_sdk",
       packageName: "@didit-protocol/sdk-web",
@@ -439,6 +437,10 @@ test("startDiditVerification launches the SDK and reports completed, cancelled, 
     onBrowserResult(result) {
       completedStates.push(result);
     },
+  });
+
+  Object.assign(globalThis, {
+    window: originalWindow,
   });
 
   expect(startCalls).toEqual([
@@ -453,12 +455,12 @@ test("startDiditVerification launches the SDK and reports completed, cancelled, 
   expect(completedStates).toEqual([
     expect.objectContaining({
       kind: "completed",
-      message: expect.stringContaining("Didit finished in your browser"),
+      message: expect.stringContaining("Verification finished in your browser"),
       refreshStatus: true,
     }),
     expect.objectContaining({
       kind: "cancelled",
-      message: expect.stringContaining("closed Didit"),
+      message: expect.stringContaining("closed the browser verification flow"),
       refreshStatus: false,
     }),
     expect.objectContaining({

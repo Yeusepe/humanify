@@ -46,7 +46,10 @@ test("database config prefers HUMANIFY_DATABASE_URL when provided", () => {
 test("migration inventory contains the canonical Postgres spine bootstrap", () => {
   const migrations = getDiscoveredMigrations();
 
-  expect(migrations.map((migration) => migration.fileName)).toEqual(["0001_canonical_spine.sql"]);
+  expect(migrations.map((migration) => migration.fileName)).toEqual([
+    "0001_canonical_spine.sql",
+    "0002_guild_channel_configs.sql",
+  ]);
   expect(migrations[0]?.sql).toContain("CREATE EXTENSION IF NOT EXISTS vector");
   expect(migrations[0]?.sql).toContain("CREATE TABLE IF NOT EXISTS guilds");
   expect(migrations[0]?.sql).toContain("CREATE TABLE IF NOT EXISTS verification_sessions");
@@ -59,4 +62,5 @@ test("migration inventory contains the canonical Postgres spine bootstrap", () =
   expect(migrations[0]?.sql).toContain("CREATE TABLE IF NOT EXISTS audit_records");
   expect(migrations[0]?.sql).toContain("CREATE TABLE IF NOT EXISTS action_execution_receipts");
   expect(migrations[0]?.sql).toContain("CREATE TABLE IF NOT EXISTS signal_embeddings");
+  expect(migrations[1]?.sql).toContain("CREATE TABLE IF NOT EXISTS guild_channel_configs");
 });

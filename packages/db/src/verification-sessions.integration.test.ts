@@ -74,35 +74,64 @@ integrationTest("Didit callback persistence keeps only normalized summaries, web
     requestedClaims: ["age_over_18", "nationality"],
     reusableCredentialBridge: {
       artifactPayload: {
-        approvedClaims: ["age_over_18", "nationality"],
+        approvedClaims: ["age_over_18", "age_over_21", "nationality"],
         bridgeId: `bridge_${scope}`,
+        claims: {
+          disclosedAttributes: {
+            nationality: "ESP",
+          },
+          proofOnlyPredicates: ["age_over_18", "age_over_21"],
+        },
+        contractVersion: "reusable_identity_handoff_v1",
         custody: {
           storesDocumentImages: false,
           storesFullReusableCredential: false,
           storesRawDiditPayload: false,
         },
-        inputFacts: {
-          ageOver18: true,
-          faceVerificationPassed: true,
-          faceVerificationPerformed: true,
-          nationality: "ESP",
+        handoff: {
+          disclosedAttributeKeys: ["nationality"],
+          handoffKind: "external_issuer_request",
+          note: "Issuer handoff required.",
+          proofOnlyClaimKeys: ["age_over_18", "age_over_21"],
+          requestedClaims: ["age_over_18", "age_over_21", "nationality"],
+          requiredExternalInputs: ["holderDid", "issuerDid", "credentialSchema", "issuerSigningKeyRef"],
+          targetBackend: "privado",
+        },
+        policyInputs: {
+          faceVerification: {
+            evidenceSource: "capture_provider",
+            passed: true,
+            performed: true,
+            satisfiesFaceVerificationRequirement: true,
+          },
         },
         status: "issuer_handoff_required",
         targetProvider: "privado",
         temporaryRetention: {
           expiresAt: "2026-01-01T01:00:00.000Z",
+          retainedClaims: ["age_over_18", "age_over_21", "nationality"],
+          retainedPolicyInputs: ["faceVerification"],
         },
       },
       artifactStatus: "issuer_handoff_required",
       bridgeId: `bridge_${scope}`,
       expiresAt: "2026-01-01T01:00:00.000Z",
       summary: {
-        approvedClaims: ["age_over_18", "nationality"],
-        inputFacts: {
-          ageOver18: true,
-          faceVerificationPassed: true,
-          faceVerificationPerformed: true,
-          nationality: "ESP",
+        approvedClaims: ["age_over_18", "age_over_21", "nationality"],
+        claims: {
+          disclosedAttributes: {
+            nationality: "ESP",
+          },
+          proofOnlyPredicates: ["age_over_18", "age_over_21"],
+        },
+        contractVersion: "reusable_identity_handoff_v1",
+        policyInputs: {
+          faceVerification: {
+            evidenceSource: "capture_provider",
+            passed: true,
+            performed: true,
+            satisfiesFaceVerificationRequirement: true,
+          },
         },
         status: "issuer_handoff_required",
         targetProvider: "privado",
@@ -116,7 +145,7 @@ integrationTest("Didit callback persistence keeps only normalized summaries, web
       providerReferenceId: `didit_${scope}`,
       providerStatus: "Approved",
       requestedClaims: ["age_over_18", "nationality"],
-      satisfiedClaims: ["document_identity", "age_over_18", "nationality", "liveness"],
+      satisfiedClaims: ["document_identity", "age_over_18", "age_over_21", "nationality", "liveness", "face_verification"],
     },
     sessionId,
     state: "passed",
@@ -137,12 +166,21 @@ integrationTest("Didit callback persistence keeps only normalized summaries, web
       },
       requestedClaims: ["age_over_18", "nationality"],
       reusableCredentialBridge: {
-        approvedClaims: ["age_over_18", "nationality"],
-        inputFacts: {
-          ageOver18: true,
-          faceVerificationPassed: true,
-          faceVerificationPerformed: true,
-          nationality: "ESP",
+        approvedClaims: ["age_over_18", "age_over_21", "nationality"],
+        claims: {
+          disclosedAttributes: {
+            nationality: "ESP",
+          },
+          proofOnlyPredicates: ["age_over_18", "age_over_21"],
+        },
+        contractVersion: "reusable_identity_handoff_v1",
+        policyInputs: {
+          faceVerification: {
+            evidenceSource: "capture_provider",
+            passed: true,
+            performed: true,
+            satisfiesFaceVerificationRequirement: true,
+          },
         },
         status: "issuer_handoff_required",
         targetProvider: "privado",
@@ -163,7 +201,7 @@ integrationTest("Didit callback persistence keeps only normalized summaries, web
       providerReferenceId: `didit_${scope}`,
       providerStatus: "Approved",
       requestedClaims: ["age_over_18", "nationality"],
-      satisfiedClaims: ["document_identity", "age_over_18", "nationality", "liveness"],
+      satisfiedClaims: ["document_identity", "age_over_18", "age_over_21", "nationality", "liveness", "face_verification"],
     },
     state: "passed",
   });
@@ -194,7 +232,7 @@ integrationTest("Didit callback persistence keeps only normalized summaries, web
         providerReferenceId: `didit_${scope}`,
         providerStatus: "Approved",
         requestedClaims: ["age_over_18", "nationality"],
-        satisfiedClaims: ["document_identity", "age_over_18", "nationality", "liveness"],
+        satisfiedClaims: ["document_identity", "age_over_18", "age_over_21", "nationality", "liveness", "face_verification"],
       },
     },
     {
@@ -202,23 +240,43 @@ integrationTest("Didit callback persistence keeps only normalized summaries, web
       provider_name: "privado",
       provider_reference_id: `bridge_${scope}`,
       redacted_payload: {
-        approvedClaims: ["age_over_18", "nationality"],
+        approvedClaims: ["age_over_18", "age_over_21", "nationality"],
         bridgeId: `bridge_${scope}`,
+        claims: {
+          disclosedAttributes: {
+            nationality: "ESP",
+          },
+          proofOnlyPredicates: ["age_over_18", "age_over_21"],
+        },
+        contractVersion: "reusable_identity_handoff_v1",
         custody: {
           storesDocumentImages: false,
           storesFullReusableCredential: false,
           storesRawDiditPayload: false,
         },
-        inputFacts: {
-          ageOver18: true,
-          faceVerificationPassed: true,
-          faceVerificationPerformed: true,
-          nationality: "ESP",
+        handoff: {
+          disclosedAttributeKeys: ["nationality"],
+          handoffKind: "external_issuer_request",
+          note: "Issuer handoff required.",
+          proofOnlyClaimKeys: ["age_over_18", "age_over_21"],
+          requestedClaims: ["age_over_18", "age_over_21", "nationality"],
+          requiredExternalInputs: ["holderDid", "issuerDid", "credentialSchema", "issuerSigningKeyRef"],
+          targetBackend: "privado",
+        },
+        policyInputs: {
+          faceVerification: {
+            evidenceSource: "capture_provider",
+            passed: true,
+            performed: true,
+            satisfiesFaceVerificationRequirement: true,
+          },
         },
         status: "issuer_handoff_required",
         targetProvider: "privado",
         temporaryRetention: {
           expiresAt: "2026-01-01T01:00:00.000Z",
+          retainedClaims: ["age_over_18", "age_over_21", "nationality"],
+          retainedPolicyInputs: ["faceVerification"],
         },
       },
     },

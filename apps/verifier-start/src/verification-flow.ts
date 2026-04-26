@@ -14,14 +14,6 @@
  * - apps/verifier-start/src/verification-flow.test.ts
  */
 
-import type {
-  DiditSdk as DiditSdkInstance,
-  EventCallback as DiditEventCallback,
-  StateChangeCallback as DiditStateChangeCallback,
-  VerificationCallback as DiditVerificationCallback,
-  VerificationResult as DiditVerificationResult,
-} from "@didit-protocol/sdk-web";
-
 import { createRequestTelemetryContext, injectRequestTelemetryHeaders } from "@humanify/telemetry";
 import {
   getDefaultHumanifyIdClaimBundle as getSharedDefaultHumanifyIdClaimBundle,
@@ -34,6 +26,13 @@ import {
   type VerificationProviderDefinition,
   type VerificationProviderHandoffKind,
 } from "@humanify/verification-providers";
+
+import {
+  getVerificationOptionBrowserLaunch,
+  startVerificationOptionBrowserLaunch,
+  type VerificationOptionBrowserResult,
+  type VerificationOptionLaunch,
+} from "./verification-options/runtime";
 
 export type VerificationRouteSearch = {
   serverName?: string;
@@ -57,20 +56,9 @@ export type VerificationSessionSnapshot = {
   userId: string;
 };
 
-export type DiditProviderLaunch = {
-  mode: "didit_sdk";
-  packageName: "@didit-protocol/sdk-web";
-  providerId: "didit";
-  providerSessionId: string;
-  providerStatus: string;
-  url: string;
-};
-
-export type VerificationProviderLaunch = DiditProviderLaunch;
-
 export type VerificationProviderBoundary = {
   handoffKind?: VerificationProviderHandoffKind;
-  launch?: VerificationProviderLaunch;
+  launch?: VerificationOptionLaunch;
   nextStep: string;
   providerFlowConfigured: boolean;
   providerServerEndpoint?: string;
@@ -163,18 +151,6 @@ export type VerificationChecklistItem = {
   title: string;
 };
 
-export type DiditBrowserResult = {
-  kind: "cancelled" | "completed" | "failed";
-  message: string;
-  refreshStatus: boolean;
-};
-
-export type DiditSdkLike = {
-  onComplete?: DiditVerificationCallback;
-  onEvent?: DiditEventCallback;
-  onStateChange?: DiditStateChangeCallback;
-} & Pick<DiditSdkInstance, "startVerification">;
-
 type ApiEnvelope<TData> = {
   contractVersion: string;
   data: TData;
@@ -247,16 +223,8 @@ export function getVerificationProviderClaimCompatibility(
   return verificationProviderSupportsClaims(provider, requestedClaims);
 }
 
-export function getDiditLaunchContract(boundary: VerificationProviderBoundary): DiditProviderLaunch | null {
-  if (
-    boundary.launch?.mode === "didit_sdk"
-    && boundary.launch.providerId === "didit"
-    && typeof boundary.launch.url === "string"
-  ) {
-    return boundary.launch;
-  }
-
-  return null;
+export function getVerificationOptionLaunch(boundary: VerificationProviderBoundary): VerificationOptionLaunch | null {
+  return getVerificationOptionBrowserLaunch(boundary);
 }
 
 export function parseVerificationSearch(search: Record<string, unknown>): VerificationRouteSearch {
@@ -457,47 +425,13 @@ export function buildVerificationChecklist(input: {
   return items;
 }
 
-function summarizeDiditBrowserResult(result: DiditVerificationResult): DiditBrowserResult {
-  switch (result.type) {
-    case "completed":
-      return {
-        kind: "completed",
-        message: `Didit finished in your browser with status "${result.session?.status ?? "Unknown"}". Humanify is now checking the server-confirmed result.`,
-        refreshStatus: true,
-      };
-    case "cancelled":
-      return {
-        kind: "cancelled",
-        message: "You closed Didit before Humanify received a finished result. Your verification is still pending.",
-        refreshStatus: false,
-      };
-    case "failed":
-      return {
-        kind: "failed",
-        message: result.error?.message
-          ? `Didit could not continue: ${result.error.message}`
-          : "Didit could not continue. Please try again or choose another proof path.",
-        refreshStatus: false,
-      };
-  }
-}
-
-export async function startDiditVerification(
-  sdk: DiditSdkLike,
+export async function startVerificationOptionLaunch(
   input: {
-    launch: DiditProviderLaunch;
-    onBrowserResult: (result: DiditBrowserResult) => void;
+    launch: VerificationOptionLaunch;
+    onBrowserResult: (result: VerificationOptionBrowserResult) => void;
   },
 ) {
-  sdk.onComplete = (result) => {
-    input.onBrowserResult(summarizeDiditBrowserResult(result));
-  };
-
-  await sdk.startVerification({
-    configuration: {
-      closeModalOnComplete: true,
-      showExitConfirmation: true,
-    },
-    url: input.launch.url,
+  await startVerificationOptionBrowserLaunch(input.launch, {
+    onBrowserResult: input.onBrowserResult,
   });
 }

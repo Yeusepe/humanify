@@ -20,6 +20,23 @@ export const worldIdReusableProofBackendStrategy = defineVerificationStrategy({
     "Designed around privacy-preserving nullifiers so uniqueness checks are harder to link together.",
     "Fits anti-Sybil or uniqueness-heavy communities better than broad KYC capture flows.",
   ],
+  capabilities: {
+    claimDelivery: [
+      { claimKey: "unique_person", deliveryKind: "personhood_proof" },
+    ],
+    faceVerification: {
+      satisfiesFaceVerificationPolicy: true,
+      summary:
+        "World ID can satisfy face-verification-related requirements through its proof-of-personhood lane, even though it is not a broad KYC attribute provider.",
+      supportLevel: "proof_of_personhood",
+    },
+    reusableIdentity: {
+      contractRole: "none",
+      disclosedAttributeKeys: [],
+      proofOnlyClaimKeys: [],
+      summary: "World ID remains a proof-of-personhood lane and is not the current target of Humanify's reusable identity handoff contract.",
+    },
+  },
   defaultRank: 3,
   goodFor: "People who want a uniqueness-focused reusable proof backend when World ID is supported for them.",
   id: "world_id",

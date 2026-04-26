@@ -14,10 +14,42 @@
  */
 
 export type VerificationClaimDefinition = {
+  category: VerificationClaimCategory;
+  disclosureMode: VerificationClaimDisclosureMode;
   id: string;
+  sourceAttributes: readonly VerificationClaimSourceAttribute[];
   summary: string;
   title: string;
 };
+
+export const verificationClaimCategories = [
+  "age",
+  "citizenship",
+  "identity",
+  "biometric",
+  "personhood",
+  "gender",
+] as const;
+
+export const verificationClaimDisclosureModes = [
+  "proof_only",
+  "disclosed_attribute",
+  "attested_fact",
+] as const;
+
+export const verificationClaimSourceAttributes = [
+  "date_of_birth",
+  "nationality",
+  "identity_document",
+  "liveness_signal",
+  "face_check",
+  "personhood_signal",
+  "gender_marker",
+] as const;
+
+export type VerificationClaimCategory = (typeof verificationClaimCategories)[number];
+export type VerificationClaimDisclosureMode = (typeof verificationClaimDisclosureModes)[number];
+export type VerificationClaimSourceAttribute = (typeof verificationClaimSourceAttributes)[number];
 
 export type VerificationClaimBundle = {
   bestFor: string;
@@ -31,29 +63,84 @@ export type VerificationClaimBundle = {
 
 const verificationClaimDefinitions = [
   {
+    category: "age",
+    disclosureMode: "proof_only",
     id: "age_over_18",
+    sourceAttributes: ["date_of_birth"],
     summary: "Threshold proof that the holder is 18 or older without disclosing a birth date.",
     title: "Age over 18",
   },
   {
+    category: "age",
+    disclosureMode: "proof_only",
+    id: "age_over_21",
+    sourceAttributes: ["date_of_birth"],
+    summary: "Threshold proof that the holder is 21 or older without disclosing a birth date.",
+    title: "Age over 21",
+  },
+  {
+    category: "citizenship",
+    disclosureMode: "disclosed_attribute",
     id: "nationality",
+    sourceAttributes: ["nationality"],
     summary: "Selective-disclosure proof of nationality without exposing the full underlying document.",
     title: "Nationality",
   },
   {
+    category: "identity",
+    disclosureMode: "attested_fact",
     id: "document_identity",
+    sourceAttributes: ["identity_document"],
     summary: "Normalized proof that a first-time capture flow verified a supported identity document for the session.",
     title: "Document identity",
   },
   {
+    category: "biometric",
+    disclosureMode: "attested_fact",
     id: "liveness",
+    sourceAttributes: ["liveness_signal"],
     summary: "Normalized anti-spoof or live-presence proof emitted by a capture flow without storing raw biometric data.",
     title: "Liveness",
   },
   {
+    category: "biometric",
+    disclosureMode: "proof_only",
+    id: "face_verification",
+    sourceAttributes: ["face_check"],
+    summary: "Proof that a provider ran and passed the face check required by policy without storing selfies or raw biometric payloads.",
+    title: "Face check passed",
+  },
+  {
+    category: "personhood",
+    disclosureMode: "proof_only",
     id: "unique_person",
+    sourceAttributes: ["personhood_signal"],
     summary: "Proof-of-personhood / uniqueness predicate backed by replay-safe nullifiers or equivalent anti-Sybil signals.",
     title: "Unique person",
+  },
+  {
+    category: "gender",
+    disclosureMode: "proof_only",
+    id: "gender_marker_female",
+    sourceAttributes: ["gender_marker"],
+    summary: "Predicate that the source document or credential matches the woman / female marker without storing the raw gender field.",
+    title: "Gender marker: woman / female",
+  },
+  {
+    category: "gender",
+    disclosureMode: "proof_only",
+    id: "gender_marker_male",
+    sourceAttributes: ["gender_marker"],
+    summary: "Predicate that the source document or credential matches the man / male marker without storing the raw gender field.",
+    title: "Gender marker: man / male",
+  },
+  {
+    category: "gender",
+    disclosureMode: "proof_only",
+    id: "gender_marker_x",
+    sourceAttributes: ["gender_marker"],
+    summary: "Predicate that the source document or credential matches a non-binary / X marker without storing the raw gender field.",
+    title: "Gender marker: X / non-binary",
   },
 ] as const satisfies readonly VerificationClaimDefinition[];
 
@@ -61,6 +148,17 @@ export type HumanifyClaimKey = (typeof verificationClaimDefinitions)[number]["id
 
 const supportedClaimIds = verificationClaimDefinitions.map((claim) => claim.id) as HumanifyClaimKey[];
 const supportedClaimIdSet = new Set<string>(supportedClaimIds);
+const claimDefinitionById = new Map<HumanifyClaimKey, VerificationClaimDefinition>(
+  verificationClaimDefinitions.map((claim) => [claim.id, claim]),
+);
+const proofOnlyClaimIds = verificationClaimDefinitions
+  .filter((claim) => claim.disclosureMode === "proof_only")
+  .map((claim) => claim.id) as HumanifyClaimKey[];
+const disclosedAttributeClaimIds = verificationClaimDefinitions
+  .filter((claim) => claim.disclosureMode === "disclosed_attribute")
+  .map((claim) => claim.id) as HumanifyClaimKey[];
+const proofOnlyClaimIdSet = new Set<string>(proofOnlyClaimIds);
+const disclosedAttributeClaimIdSet = new Set<string>(disclosedAttributeClaimIds);
 
 const verificationClaimBundles = [
   {
@@ -138,8 +236,28 @@ export function getSupportedVerificationClaimIds(): HumanifyClaimKey[] {
   return [...supportedClaimIds];
 }
 
+export function getVerificationClaimDefinition(claimKey: HumanifyClaimKey) {
+  return { ...claimDefinitionById.get(claimKey)! };
+}
+
+export function getProofOnlyVerificationClaimIds(): HumanifyClaimKey[] {
+  return [...proofOnlyClaimIds];
+}
+
+export function getDisclosedAttributeVerificationClaimIds(): HumanifyClaimKey[] {
+  return [...disclosedAttributeClaimIds];
+}
+
 export function isHumanifyClaimKey(value: string): value is HumanifyClaimKey {
   return supportedClaimIdSet.has(value);
+}
+
+export function isProofOnlyHumanifyClaimKey(value: string): value is HumanifyClaimKey {
+  return proofOnlyClaimIdSet.has(value);
+}
+
+export function isDisclosedAttributeHumanifyClaimKey(value: string): value is HumanifyClaimKey {
+  return disclosedAttributeClaimIdSet.has(value);
 }
 
 export function getDefaultVerificationClaimBundle(): VerificationClaimBundle {

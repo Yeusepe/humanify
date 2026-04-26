@@ -22,6 +22,30 @@ export const privadoReusableProofBackendStrategy = defineVerificationStrategy({
     "Turns verifier requests into wallet-friendly universal links or QR flows instead of forcing fresh document capture.",
     "Keeps the underlying credential with the holder while Humanify stores only proof receipts and satisfied predicates.",
   ],
+  capabilities: {
+    claimDelivery: [
+      { claimKey: "age_over_18", deliveryKind: "reusable_proof" },
+      { claimKey: "nationality", deliveryKind: "reusable_proof" },
+    ],
+    faceVerification: {
+      satisfiesFaceVerificationPolicy: false,
+      summary: "Privado proofs do not automatically imply that a face check ran or passed; Humanify must carry face-check policy inputs separately.",
+      supportLevel: "not_automatic",
+    },
+    reusableIdentity: {
+      contractRole: "consume",
+      disclosedAttributeKeys: ["nationality"],
+      proofOnlyClaimKeys: [
+        "age_over_18",
+        "age_over_21",
+        "gender_marker_female",
+        "gender_marker_male",
+        "gender_marker_x",
+      ],
+      summary:
+        "Humanify can target Privado in a reusable identity handoff contract with disclosed nationality plus proof-only age or gender predicates, while current reusable proof verification stays limited to supported live queries.",
+    },
+  },
   defaultRank: 1,
   goodFor: "People who already hold a reusable credential and want the default Humanify reusable-proof path.",
   id: "privado",
