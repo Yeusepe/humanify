@@ -410,6 +410,7 @@ export async function fetchGuildVerificationConfig(
   const response = await fetchImpl(
     buildApiUrl(input.apiBaseUrl, `/guilds/${encodeURIComponent(input.guildId)}/verification`),
     {
+      credentials: "include",
       headers: {
         accept: "application/json",
       },
@@ -456,6 +457,7 @@ export async function saveGuildVerificationConfig(
         suspiciousRoleIds: splitRoleIdsInput(input.suspiciousRoleIdsInput),
         trustedRoleIds: splitRoleIdsInput(input.trustedRoleIdsInput),
       }),
+      credentials: "include",
       headers: {
         accept: "application/json",
         "content-type": "application/json",

@@ -52,7 +52,7 @@ The current implementation anchors these decisions in a Bun-first migration pack
 The first migration now creates the canonical table families for:
 
 - tenant + identity: `guilds`, `user_identities`, `guild_members`, `moderators`
-- policy + verification: `guild_policy_versions`, `guild_channel_configs`, `verification_requirements`, `verification_sessions`, `verification_artifacts`
+- policy + verification: `guild_policy_versions`, `guild_channel_configs`, `verification_requirements`, `verification_sessions`, `verification_artifacts`, `moderator_warning_message_refs`
 - observation + scoring: `risk_inputs`, `risk_feature_snapshots`, `risk_decisions`, `action_recommendations`
 - cases + evidence + outcomes: `cases`, `reports`, `case_events`, `case_outcomes`, `appeals`, `evidence_records`, `blob_objects`, `blob_derivatives`, `evidence_links`
 - learning + vectors: `learned_signals`, `signal_examples`, `signal_embeddings`, `reputation_views`
@@ -96,8 +96,9 @@ Notes:
 | `guild_policy_versions` | Postgres | thresholds, action ladder, quarantine role config, trust-network settings, effective timestamps |
 | `guild_channel_configs` | Postgres | moderator alert channel plus optional review/audit/log channel selections for setup and warning workflows |
 | `verification_requirements` | Postgres | role-based verification strategy requirements, challenge rules, fallback paths, retention rules |
-| `verification_sessions` | Postgres | `session_id`, `guild_id`, `user_id`, required checks, selected strategy refs, challenge state, expiry, result summary |
+| `verification_sessions` | Postgres | `session_id`, `guild_id`, `user_id`, optional `case_id`, required checks, selected strategy refs, challenge state, expiry, result summary |
 | `verification_artifacts` | Postgres | capture session refs, reusable-proof receipt refs, verified claim predicates, nullifier/replay guard refs, attestation status, expiry |
+| `moderator_warning_message_refs` | Postgres | current Discord channel/message pointer for the advisory warning card tied to a case plus subject and message state |
 
 Notes:
 - Didit is the default first-time capture provider when a workflow needs live capture, and Privado is the primary reusable-ID / reusable-proof backend for reusable verification.
@@ -111,6 +112,7 @@ The current canonical tables carry the following exact verification fields:
 
 | Table / column | Stored fields |
 | --- | --- |
+| `verification_sessions.case_id` | optional originating case linkage used by moderator warning-card and review reads; nullable so pre-warning or self-started sessions can still exist honestly |
 | `verification_sessions.provider_status` after Didit reconciliation | `selectedProvider`, `status`, `requestedClaims`, Didit launch refs, `verifiedWebhook.{webhookType,timestamp,workflowId,providerStatus}`, `purge.{attemptedAt,outcome}`, optional `reusableCredentialBridge` summary |
 | `verification_sessions.result_summary` after Didit reconciliation | `authoritativeSource`, `providerReferenceId`, `providerStatus`, `requestedClaims`, `satisfiedClaims`, `faceVerificationPerformed`, `faceVerificationPassed` |
 | `verification_sessions.provider_status` after Privado proof read | `selectedProvider`, `providerSessionId`, `requestedClaims`, `status` |
@@ -118,6 +120,7 @@ The current canonical tables carry the following exact verification fields:
 | `verification_artifacts` Didit row | `provider_name = didit`, `artifact_kind = capture_attestation`, `provider_reference_id = <didit session id>`, `redacted_payload =` the normalized Didit summary above |
 | `verification_artifacts` Privado bridge row | `provider_name = privado`, `artifact_kind = reusable_credential_bridge`, `provider_reference_id = <bridgeId>`, `expires_at = temporaryRetention.expiresAt`, `redacted_payload =` bridge contract summary only |
 | `verification_artifacts` Privado proof row | `provider_name = privado`, `artifact_kind = reusable_proof_receipt`, `provider_reference_id = <backend session id>`, `redacted_payload =` the normalized Privado proof summary above |
+| `moderator_warning_message_refs` row | `guild_id`, `case_id`, `subject_user_id`, `channel_id`, `message_id`, `message_state`, `last_actor_service`, timestamps only; the card body itself is always recomputed from canonical case + verification state |
 
 These tables must not contain raw Didit callback bodies, full Didit decision arrays, JWZ payloads, full verifiable presentations, document images, or imported reusable credentials.
 

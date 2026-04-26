@@ -34,7 +34,6 @@ import {
   getVerificationOptionLaunch,
   getVerificationProvider,
   getVerificationProviderAvailability,
-  getVerificationProviderClaimCompatibility,
   getVerifierApiBaseUrl,
   hasVerificationLink,
   parseVerificationSearch,
@@ -225,6 +224,15 @@ function VerificationRoute() {
     const initialSelection = getInitialGuildVerificationSelection(effectiveVerificationConfig ?? undefined, providerEnv);
     const selectedBundle = claimBundleOptions.find((bundle) => bundle.bundleId === selectedClaimBundleId) ?? claimBundleOptions[0];
     const currentProvider = providerOptions.find((provider) => provider.id === selectedProvider);
+    const firstAllowedProvider = selectedBundle
+      ? providerOptions.find((provider) =>
+          getVerificationProviderAvailability({
+            faceVerificationRequired: effectiveVerificationConfig?.faceVerificationRequired ?? false,
+            provider,
+            requestedClaims: selectedBundle.claims,
+          }).allowed
+        )
+      : undefined;
     const currentProviderAvailable = currentProvider && selectedBundle
       ? getVerificationProviderAvailability({
           faceVerificationRequired: effectiveVerificationConfig?.faceVerificationRequired ?? false,
@@ -237,8 +245,9 @@ function VerificationRoute() {
       setSelectedClaimBundleId(initialSelection.claimBundleId);
     }
 
-    if (!currentProviderAvailable && initialSelection.providerId !== selectedProvider) {
-      setSelectedProvider(initialSelection.providerId);
+    const fallbackProviderId = firstAllowedProvider?.id ?? initialSelection.providerId;
+    if (!currentProviderAvailable && fallbackProviderId !== selectedProvider) {
+      setSelectedProvider(fallbackProviderId);
       return;
     }
 
@@ -614,6 +623,7 @@ function VerificationRoute() {
               <ProviderLaneCard
                 description="Use a fresh capture flow when you do not already hold a reusable proof. Humanify keeps the app generic by reading these options from the shared strategy catalog."
                 emptyState="This server has not enabled a first-time capture flow."
+                faceVerificationRequired={effectiveVerificationConfig?.faceVerificationRequired ?? false}
                 providers={providerRoleGroups.captureProviders}
                 selectedBundleClaims={humanifyIdBundle.claims}
                 selectedProvider={selectedProvider}
@@ -623,6 +633,7 @@ function VerificationRoute() {
               <ProviderLaneCard
                 description="Use a reusable proof when you already have a wallet credential. The credential stays with you while Humanify verifies only the required proof."
                 emptyState="This server has not enabled a reusable proof backend."
+                faceVerificationRequired={effectiveVerificationConfig?.faceVerificationRequired ?? false}
                 providers={providerRoleGroups.reusableProofBackends}
                 selectedBundleClaims={humanifyIdBundle.claims}
                 selectedProvider={selectedProvider}
@@ -650,8 +661,18 @@ function VerificationRoute() {
                   <p>
                     Selected provider: <span className="font-semibold text-foreground">{selectedProviderDefinition.title}</span>
                   </p>
+                  {!selectedProviderAvailability.allowed && selectedProviderAvailability.reason ? (
+                    <p className="rounded-2xl border border-content3 px-4 py-3 text-sm leading-6">
+                      {selectedProviderAvailability.reason}
+                    </p>
+                  ) : null}
                   <Button
-                    isDisabled={!effectiveSession || actionState === "submitting" || challengeCompleted}
+                    isDisabled={
+                      !effectiveSession
+                      || actionState === "submitting"
+                      || challengeCompleted
+                      || !selectedProviderAvailability.allowed
+                    }
                     onPress={handleChallengeConfirmation}
                     variant="primary"
                   >
@@ -798,6 +819,100 @@ function VerificationRoute() {
                 </Card.Content>
               </Card>
             </div>
+
+            {(activeVerificationSummary || activeReusableCredentialBridge) ? (
+              <div className="grid gap-4 xl:grid-cols-2">
+                <Card>
+                  <Card.Header className="gap-2">
+                    <Card.Title>Current proof summary</Card.Title>
+                    <Card.Description>
+                      Humanify shows the current server-side proof summary exactly as the API returned it.
+                    </Card.Description>
+                  </Card.Header>
+                  <Card.Content className="space-y-3 text-sm leading-7 text-muted">
+                    {activeVerificationSummary ? (
+                      <>
+                        {activeVerificationSummary.status ? (
+                          <DetailRow label="Status" value={activeVerificationSummary.status} />
+                        ) : null}
+                        {activeVerificationSummary.providerReferenceId ? (
+                          <DetailRow label="Provider reference" value={activeVerificationSummary.providerReferenceId} />
+                        ) : null}
+                        {activeVerificationSummary.proofReceiptRef ? (
+                          <DetailRow label="Receipt ref" value={activeVerificationSummary.proofReceiptRef} />
+                        ) : null}
+                        {activeVerificationSummary.proofReceiptHash ? (
+                          <DetailRow label="Receipt hash" value={activeVerificationSummary.proofReceiptHash} />
+                        ) : null}
+                        {activeVerificationSummary.satisfiedClaims?.length ? (
+                          <DetailRow
+                            label="Satisfied claims"
+                            value={activeVerificationSummary.satisfiedClaims.map((claim) => formatVerificationLabel(claim)).join(", ")}
+                          />
+                        ) : null}
+                        {typeof activeVerificationSummary.faceVerificationPerformed === "boolean" ? (
+                          <DetailRow
+                            label="Face check performed"
+                            value={activeVerificationSummary.faceVerificationPerformed ? "Yes" : "No"}
+                          />
+                        ) : null}
+                        {typeof activeVerificationSummary.faceVerificationPassed === "boolean" ? (
+                          <DetailRow
+                            label="Face check passed"
+                            value={activeVerificationSummary.faceVerificationPassed ? "Yes" : "No"}
+                          />
+                        ) : null}
+                      </>
+                    ) : (
+                      <p>No server-side proof summary is available yet.</p>
+                    )}
+                  </Card.Content>
+                </Card>
+
+                <Card>
+                  <Card.Header className="gap-2">
+                    <Card.Title>Reusable credential bridge</Card.Title>
+                    <Card.Description>
+                      If Humanify prepared a reusable handoff, show that bridge honestly instead of pretending the wallet step already happened.
+                    </Card.Description>
+                  </Card.Header>
+                  <Card.Content className="space-y-3 text-sm leading-7 text-muted">
+                    {activeReusableCredentialBridge ? (
+                      <>
+                        {activeReusableCredentialBridge.status ? (
+                          <DetailRow label="Bridge status" value={activeReusableCredentialBridge.status} />
+                        ) : null}
+                        {activeReusableCredentialBridge.targetProvider ? (
+                          <DetailRow label="Target proof path" value={activeReusableCredentialBridge.targetProvider} />
+                        ) : null}
+                        {activeReusableCredentialBridge.approvedClaims?.length ? (
+                          <DetailRow
+                            label="Approved claims"
+                            value={activeReusableCredentialBridge.approvedClaims.map((claim) => formatVerificationLabel(claim)).join(", ")}
+                          />
+                        ) : null}
+                        {activeReusableCredentialBridge.claims?.disclosedAttributes ? (
+                          <DetailRow
+                            label="Disclosed attributes"
+                            value={Object.entries(activeReusableCredentialBridge.claims.disclosedAttributes)
+                              .map(([key, value]) => `${formatVerificationLabel(key)}: ${value}`)
+                              .join(", ")}
+                          />
+                        ) : null}
+                        {activeReusableCredentialBridge.temporaryRetention?.expiresAt ? (
+                          <DetailRow
+                            label="Temporary retention"
+                            value={activeReusableCredentialBridge.temporaryRetention.expiresAt}
+                          />
+                        ) : null}
+                      </>
+                    ) : (
+                      <p>No reusable credential bridge is attached to this session yet.</p>
+                    )}
+                  </Card.Content>
+                </Card>
+              </div>
+            ) : null}
           </>
         )}
       </div>
@@ -817,6 +932,7 @@ function DetailRow({ label, value }: Readonly<{ label: string; value: string }>)
 function ProviderLaneCard({
   description,
   emptyState,
+  faceVerificationRequired,
   providers,
   selectedBundleClaims,
   selectedProvider,
@@ -825,8 +941,9 @@ function ProviderLaneCard({
 }: Readonly<{
   description: string;
   emptyState: string;
+  faceVerificationRequired: boolean;
   providers: readonly VerificationProviderOption[];
-  selectedBundleClaims: Parameters<typeof getVerificationProviderClaimCompatibility>[1];
+  selectedBundleClaims: Parameters<typeof getVerificationProviderAvailability>[0]["requestedClaims"];
   selectedProvider: VerificationProviderId;
   setSelectedProvider: (providerId: VerificationProviderId) => void;
   title: string;
@@ -854,7 +971,11 @@ function ProviderLaneCard({
       <Card.Content className="space-y-4 text-sm leading-7 text-muted">
         {providers.map((provider) => {
           const current = selectedProvider === provider.id;
-          const compatible = getVerificationProviderClaimCompatibility(provider, selectedBundleClaims);
+          const availability = getVerificationProviderAvailability({
+            faceVerificationRequired,
+            provider,
+            requestedClaims: selectedBundleClaims,
+          });
           return (
             <div
               className={`rounded-2xl border px-4 py-4 ${current ? "border-foreground/20 bg-content2" : "border-content3"}`}
@@ -868,7 +989,7 @@ function ProviderLaneCard({
                       {provider.privacySummary}
                     </span>
                     <span className="rounded-full border border-content3 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-foreground">
-                      {compatible ? "Works with this proof" : "Not available for this proof"}
+                      {availability.allowed ? "Works with this proof" : "Blocked for this server"}
                     </span>
                   </div>
                   <p>{provider.summary}</p>
@@ -894,9 +1015,12 @@ function ProviderLaneCard({
                       <li key={limitation}>{limitation}</li>
                     ))}
                   </ul>
+                  {!availability.allowed && availability.reason ? (
+                    <p className="text-xs leading-6 text-foreground">{availability.reason}</p>
+                  ) : null}
                 </div>
                 <Button
-                  isDisabled={!compatible}
+                  isDisabled={!availability.allowed}
                   onPress={() => setSelectedProvider(provider.id)}
                   variant={current ? "primary" : "outline"}
                 >
@@ -937,12 +1061,10 @@ function buildHumanifyKnowledgeSummary(selectedClaims: readonly string[], provid
 }
 
 function buildFaceVerificationSummary(input: {
+  faceVerificationRequired: boolean;
   providerRole: string;
-  requestedClaims: readonly string[];
   requiredCapabilities: readonly string[];
 }) {
-  const faceCheckRequired = input.requiredCapabilities.includes("human_presence") || input.requestedClaims.includes("liveness");
-
   if (input.providerRole !== "capture_provider") {
     return {
       detail:
@@ -951,7 +1073,7 @@ function buildFaceVerificationSummary(input: {
     };
   }
 
-  if (faceCheckRequired) {
+  if (input.faceVerificationRequired || input.requiredCapabilities.includes("face_verification")) {
     return {
       detail:
         "This server currently asks for a live selfie or liveness step before release. Humanify stores only whether that check ran and whether it passed.",

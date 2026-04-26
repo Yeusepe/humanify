@@ -59,6 +59,7 @@ import { createDiscordAuditReason, createBotGatewayIntents, resolveDiscordExecut
 import {
   createPostgresGuildChannelConfigRepository,
   createPostgresGuildVerificationConfigRepository,
+  createPostgresModeratorWarningCardsRepository,
   createPostgresReportCasesRepository,
   createPostgresVerificationSessionsRepository,
   createIdempotencyReceipt,
@@ -66,11 +67,13 @@ import {
   type GuildChannelConfigRepository,
   type GuildVerificationConfigRecord,
   type GuildVerificationConfigRepository,
+  type ModeratorWarningCardsRepository,
   parsePostgresConnectionString,
   planCanonicalWrite,
   redactPostgresConnectionString,
   type LearningFeedbackSummary,
   type CaseOutcomeKind,
+  type ModeratorWarningCard,
   type ReportCasesRepository,
   type VerificationSessionRecord,
   type VerificationSessionsRepository,
@@ -216,6 +219,7 @@ export type ApiAppOptions = {
   guildVerificationConfigRepository?: GuildVerificationConfigRepository;
   learningServiceClient?: LearningServiceClient;
   logger?: LoggerLike;
+  moderatorWarningCardsRepository?: ModeratorWarningCardsRepository;
   now?: () => number;
   reportCasesRepository?: ReportCasesRepository;
   verificationOptionRuntimeOverrides?: ApiVerificationOptionRuntimeOverrides;
@@ -303,6 +307,7 @@ function buildDerivedVerificationSession(
 
 function buildVerificationSessionFromRecord(record: VerificationSessionRecord) {
   return {
+    caseId: record.caseId,
     challengeExpiresAt: record.challengeExpiresAt,
     challengeId: record.challengeId,
     guildId: record.guildId,
@@ -714,6 +719,10 @@ export function createApiApp(options: ApiAppOptions = {}) {
   const reportCasesRepository = options.reportCasesRepository ?? createPostgresReportCasesRepository({
     connectionString: dataPlaneConfig.postgresUrl,
   });
+  const moderatorWarningCardsRepository =
+    options.moderatorWarningCardsRepository ?? createPostgresModeratorWarningCardsRepository({
+      connectionString: dataPlaneConfig.postgresUrl,
+    });
   const verificationSessionsRepository =
     options.verificationSessionsRepository ?? createPostgresVerificationSessionsRepository({
       connectionString: dataPlaneConfig.postgresUrl,
@@ -875,6 +884,13 @@ export function createApiApp(options: ApiAppOptions = {}) {
     initiatedBy: t.Optional(t.String({ minLength: 1 })),
     requiredCapabilities: t.Array(t.String({ minLength: 1 })),
     userId: t.String({ minLength: 1 }),
+  });
+
+  const warningAlertMessageSchema = t.Object({
+    actorService: t.String({ minLength: 1 }),
+    channelId: t.String({ minLength: 1 }),
+    messageId: t.String({ minLength: 1 }),
+    messageState: t.Optional(t.Union([t.Literal("active"), t.Literal("deleted")])),
   });
 
   const verificationConfigSchema = t.Object({
@@ -1426,6 +1442,93 @@ export function createApiApp(options: ApiAppOptions = {}) {
             source: "canonical_postgres_case_detail",
           });
         })
+        .get("/cases/:caseId/warning-card", async ({ params, request, set }) => {
+          const requestContext = ensureResponseContext(request, set);
+          const warningCard = await moderatorWarningCardsRepository.getWarningCard({
+            caseId: params.caseId,
+            guildId: params.guildId,
+          });
+
+          if (!warningCard) {
+            throw new ApiRouteError(404, "not_found", `Case ${params.caseId} was not found in guild ${params.guildId}.`);
+          }
+
+          return buildEnvelope(requestContext.requestId, {
+            ...warningCard,
+            readModelStatus: "canonical_postgres",
+            scope: { caseId: params.caseId, guildId: params.guildId },
+            source: "canonical_postgres_warning_card",
+          });
+        })
+        .put(
+          "/cases/:caseId/warning-card/alert-message",
+          async ({ body, params, request, set }) => {
+            const requestContext = ensureResponseContext(request, set);
+            const artifacts = buildWriteArtifacts({
+              aggregateId: params.caseId,
+              aggregateType: "moderator_warning_card",
+              auditRefs: [createAuditRef(requestContext.requestId, "moderator_warning_card", "alert_message")],
+              canonicalMutations: [
+                {
+                  dataRef: `${params.caseId}:warning-message-ref`,
+                  operation: "update",
+                  primaryKey: "warning_message_ref_id",
+                  table: "moderator_warning_message_refs",
+                },
+                {
+                  dataRef: `${params.caseId}:event`,
+                  operation: "insert",
+                  primaryKey: "case_event_id",
+                  table: "case_events",
+                },
+              ],
+              idempotencyKey:
+                request.headers.get("x-idempotency-key")
+                  ?? `moderator-warning:${params.caseId}:${body.channelId}:${body.messageId}:${body.messageState ?? "active"}`,
+              kind: "moderator.warning_card.alert_message.upserted",
+              payload: {
+                caseId: params.caseId,
+                channelId: body.channelId,
+                guildId: params.guildId,
+                messageId: body.messageId,
+                messageState: body.messageState ?? "active",
+              },
+              requestFingerprint: `${body.channelId}:${body.messageId}:${body.messageState ?? "active"}`,
+              requestContext,
+              scope: `moderator-warning:${params.caseId}`,
+              stream: "projection.refresh",
+              transactionName: "moderator_warning_alert_message_upsert",
+            });
+
+            let persisted;
+            try {
+              persisted = await moderatorWarningCardsRepository.upsertAlertMessageRef({
+                artifacts: {
+                  idempotency: artifacts.idempotency,
+                  queueEnvelope: artifacts.queueEnvelope,
+                },
+                body,
+                caseId: params.caseId,
+                guildId: params.guildId,
+                traceId: requestContext.traceContext.traceId,
+              });
+            } catch (error) {
+              if (error instanceof Error && error.message.includes("was not found")) {
+                throw new ApiRouteError(404, "not_found", error.message);
+              }
+
+              throw error;
+            }
+
+            set.status = 200;
+            return buildEnvelope(requestContext.requestId, {
+              ...persisted,
+              queueEnvelope: artifacts.queueEnvelope,
+              writePlan: artifacts.writePlan,
+            });
+          },
+          { body: warningAlertMessageSchema },
+        )
         .post(
           "/cases/:caseId/review",
           async ({ body, params, request, set }) => {
@@ -1862,27 +1965,6 @@ export function createApiApp(options: ApiAppOptions = {}) {
           const sessionId = crypto.randomUUID();
           const challengeId = crypto.randomUUID();
           const challengeExpiresAt = new Date(now() + 300_000).toISOString();
-          const challengeToken = issueVerifierChallengeToken(
-            {
-              challengeId,
-              guildId: params.guildId,
-              requiredCapabilities: body.requiredCapabilities,
-              sessionId,
-              userId: body.userId,
-            },
-            sessionConfig.sessionSecret,
-            300,
-            now(),
-          );
-          await verificationSessionsRepository.createSession({
-            challengeExpiresAt,
-            challengeId,
-            guildId: params.guildId,
-            initiatedBy: body.initiatedBy ?? "system",
-            requiredCapabilities: body.requiredCapabilities,
-            sessionId,
-            userId: body.userId,
-          });
           const artifacts = buildWriteArtifacts({
             aggregateId: sessionId,
             aggregateType: "verification_session",
@@ -1894,12 +1976,14 @@ export function createApiApp(options: ApiAppOptions = {}) {
                 primaryKey: "session_id",
                 table: "verification_sessions",
               },
-              {
-                dataRef: `${sessionId}:receipt`,
-                operation: "insert",
-                primaryKey: "idempotency_receipt_id",
-                table: "idempotency_receipts",
-              },
+              ...(body.caseId
+                ? [{
+                    dataRef: `${body.caseId}:event`,
+                    operation: "insert" as const,
+                    primaryKey: "case_event_id",
+                    table: "case_events",
+                  }]
+                : []),
             ],
             idempotencyKey:
               request.headers.get("x-idempotency-key") ?? `verification-session:${params.guildId}:${body.userId}`,
@@ -1917,24 +2001,65 @@ export function createApiApp(options: ApiAppOptions = {}) {
             transactionName: "verification_session_create",
           });
 
+          let persistedSession;
+          try {
+            persistedSession = await verificationSessionsRepository.createSession({
+              artifacts: {
+                idempotency: artifacts.idempotency,
+                queueEnvelope: artifacts.queueEnvelope,
+              },
+              caseId: body.caseId,
+              challengeExpiresAt,
+              challengeId,
+              guildId: params.guildId,
+              initiatedBy: body.initiatedBy ?? "system",
+              requiredCapabilities: body.requiredCapabilities,
+              sessionId,
+              traceId: requestContext.traceContext.traceId,
+              userId: body.userId,
+            });
+          } catch (error) {
+            if (error instanceof Error && error.message.includes("was not found")) {
+              throw new ApiRouteError(404, "not_found", error.message);
+            }
+            if (error instanceof Error && error.message.includes("belongs to")) {
+              throw new ApiRouteError(400, "validation_failed", error.message);
+            }
+
+            throw error;
+          }
+
+          const challengeToken = issueVerifierChallengeToken(
+            {
+              challengeId: persistedSession.challengeId,
+              guildId: persistedSession.guildId,
+              requiredCapabilities: persistedSession.requiredCapabilities,
+              sessionId: persistedSession.sessionId,
+              userId: persistedSession.userId,
+            },
+            sessionConfig.sessionSecret,
+            300,
+            now(),
+          );
+
           set.status = 201;
           return buildEnvelope(requestContext.requestId, {
             challengeToken,
             persistence: "persisted",
             queueEnvelope: artifacts.queueEnvelope,
               session: {
-                caseId: body.caseId,
-                challengeId,
-                challengeExpiresAt,
-                guildId: params.guildId,
-                initiatedBy: body.initiatedBy ?? "system",
-                requiredCapabilities: body.requiredCapabilities,
-                sessionId,
-              state: "challenge_issued",
-              userId: body.userId,
-            },
-            verificationConfig,
-            writePlan: artifacts.writePlan,
+                caseId: persistedSession.caseId,
+                challengeId: persistedSession.challengeId,
+                challengeExpiresAt: persistedSession.challengeExpiresAt,
+                guildId: persistedSession.guildId,
+                initiatedBy: persistedSession.initiatedBy,
+                requiredCapabilities: persistedSession.requiredCapabilities,
+                sessionId: persistedSession.sessionId,
+               state: persistedSession.state,
+               userId: persistedSession.userId,
+             },
+             verificationConfig,
+             writePlan: artifacts.writePlan,
           });
         }, { body: verificationSessionSchema })
         .get("/audit", ({ params, request, set }) =>

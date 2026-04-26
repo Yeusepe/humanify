@@ -29,6 +29,7 @@ import type { DiditClient } from "./didit";
 import {
   createInMemoryGuildChannelConfigRepository,
   createInMemoryGuildVerificationConfigRepository,
+  createInMemoryModeratorWarningCardsRepository,
   createInMemoryReportCasesRepository,
   createInMemoryVerificationSessionsRepository,
 } from "./test-support";
@@ -214,23 +215,33 @@ function createTestApp(input: {
   guildChannelConfigRepository?: ReturnType<typeof createInMemoryGuildChannelConfigRepository>;
   guildVerificationConfigRepository?: ReturnType<typeof createInMemoryGuildVerificationConfigRepository>;
   learningServiceClient?: LearningServiceClient;
+  moderatorWarningCardsRepository?: ReturnType<typeof createInMemoryModeratorWarningCardsRepository>;
   privadoVerifierBackendClient?: PrivadoVerifierBackendClient;
   reportCasesRepository?: ReturnType<typeof createInMemoryReportCasesRepository>;
   verificationSessionsRepository?: ReturnType<typeof createInMemoryVerificationSessionsRepository>;
 } = {}) {
+  const reportCasesRepository = input.reportCasesRepository ?? createInMemoryReportCasesRepository();
+  const verificationSessionsRepository =
+    input.verificationSessionsRepository ?? createInMemoryVerificationSessionsRepository();
+
   return createApiApp({
     env: input.env ?? testEnv,
     guildChannelConfigRepository: input.guildChannelConfigRepository ?? createInMemoryGuildChannelConfigRepository(),
     guildVerificationConfigRepository:
       input.guildVerificationConfigRepository ?? createInMemoryGuildVerificationConfigRepository(),
     learningServiceClient: input.learningServiceClient ?? createFakeLearningServiceClient(),
+    moderatorWarningCardsRepository:
+      input.moderatorWarningCardsRepository ?? createInMemoryModeratorWarningCardsRepository({
+        reportCasesRepository,
+        verificationSessionsRepository,
+      }),
     now: () => fixedNow,
-    reportCasesRepository: input.reportCasesRepository ?? createInMemoryReportCasesRepository(),
+    reportCasesRepository,
     verificationOptionRuntimeOverrides: {
       diditClient: input.diditClient ?? createFakeDiditClient(),
       privadoVerifierBackendClient: input.privadoVerifierBackendClient,
     },
-    verificationSessionsRepository: input.verificationSessionsRepository ?? createInMemoryVerificationSessionsRepository(),
+    verificationSessionsRepository,
   });
 }
 
@@ -463,6 +474,9 @@ test("verification config persists canonical provider, bundle, and role policy",
       persistence: string;
       queueDelivery: string;
       verificationConfig: {
+        availableBundles: Array<{
+          bundleId: string;
+        }>;
         availableProviderIds: string[];
         defaultProviderId: string;
         defaultReusableProofBackendId?: string;
@@ -683,6 +697,7 @@ test("channel config persists moderator alert settings for setup and warning wor
     data?: {
       channelConfig: {
         auditLogChannelId?: string;
+        guildId: string;
         moderationLogChannelId?: string;
         moderatorAlertChannelId?: string;
         reviewChannelId?: string;
@@ -712,6 +727,7 @@ test("channel config read stays honest when a guild has not saved setup channels
     data: {
       channelConfig: {
         auditLogChannelId?: string;
+        guildId: string;
         moderationLogChannelId?: string;
         moderatorAlertChannelId?: string;
         reviewChannelId?: string;
@@ -840,6 +856,317 @@ test("report intake persists a canonical case backbone that case reads can retur
       reportId: created.data.report.reportId,
     }),
   ]);
+});
+
+test("warning card reads stay honest when no verification session or alert ref exists yet", async () => {
+  const app = createTestApp();
+
+  const createResponse = await app.handle(
+    new Request("http://humanify.local/guilds/guild_123/reports", {
+      body: JSON.stringify({
+        intakeSource: "slash_command",
+        openCase: true,
+        reportReason: "suspicious DM link",
+        reporterNotes: "asked for backup code",
+        reporterUserId: "mod_123",
+        subjectUserId: "user_456",
+        triggerFingerprint: "discord-message:guild_123:channel_123:message_456",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    }),
+  );
+  const created = (await createResponse.json()) as {
+    data: {
+      report: {
+        caseId?: string;
+      };
+    };
+  };
+
+  const warningResponse = await app.handle(
+    new Request(`http://humanify.local/guilds/guild_123/cases/${created.data.report.caseId}/warning-card`),
+  );
+  const warningJson = (await warningResponse.json()) as {
+    data: {
+      alertMessageRef?: unknown;
+      case: {
+        caseId: string;
+        subjectUserId: string;
+      };
+      evidenceSummary: {
+        evidenceCount: number;
+      };
+      readModelStatus: string;
+      reportsSummary: {
+        reportCount: number;
+      };
+      verification?: unknown;
+    };
+  };
+
+  expect(warningResponse.status).toBe(200);
+  expect(warningJson.data.readModelStatus).toBe("canonical_postgres");
+  expect(warningJson.data.case.caseId).toBe(created.data.report.caseId!);
+  expect(warningJson.data.case.subjectUserId).toBe("user_456");
+  expect(warningJson.data.reportsSummary.reportCount).toBe(1);
+  expect(warningJson.data.evidenceSummary.evidenceCount).toBe(0);
+  expect(warningJson.data.alertMessageRef).toBeUndefined();
+  expect(warningJson.data.verification).toBeUndefined();
+});
+
+test("warning card reads join case-linked verification state, reusable bridge, face-check, and alert ref", async () => {
+  const reportCasesRepository = createInMemoryReportCasesRepository();
+  const verificationSessionsRepository = createInMemoryVerificationSessionsRepository();
+  const app = createTestApp({
+    reportCasesRepository,
+    verificationSessionsRepository,
+  });
+
+  const createResponse = await app.handle(
+    new Request("http://humanify.local/guilds/guild_123/reports", {
+      body: JSON.stringify({
+        intakeSource: "message_context",
+        openCase: true,
+        reportReason: "fake Nitro lure",
+        reporterNotes: "same copy as prior scam",
+        reporterUserId: "mod_123",
+        subjectUserId: "user_789",
+        triggerFingerprint: "discord-message:guild_123:channel_123:message_789",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    }),
+  );
+  const created = (await createResponse.json()) as {
+    data: {
+      report: {
+        caseId?: string;
+        reportId: string;
+      };
+    };
+  };
+
+  await app.handle(
+    new Request(`http://humanify.local/guilds/guild_123/reports/${created.data.report.reportId}/evidence`, {
+      body: JSON.stringify({
+        actorUserId: "mod_123",
+        captureSource: "discord_message_context",
+        channelId: "channel_123",
+        evidenceType: "message_link",
+        externalRef: "https://discord.com/channels/guild_123/channel_123/message_789",
+        messageId: "message_789",
+        messagePreview: "Claim your free Nitro gift now",
+        subjectUserId: "user_789",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    }),
+  );
+
+  const verificationCreateResponse = await app.handle(
+    new Request("http://humanify.local/guilds/guild_123/verification/sessions", {
+      body: JSON.stringify({
+        caseId: created.data.report.caseId,
+        initiatedBy: "mod_123",
+        requiredCapabilities: ["document_identity", "face_verification"],
+        userId: "user_789",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    }),
+  );
+  const verificationCreated = (await verificationCreateResponse.json()) as {
+    data: {
+      session: {
+        sessionId: string;
+      };
+    };
+  };
+
+  await verificationSessionsRepository.recordDiditResult({
+    providerSessionId: "didit_warning_case_123",
+    providerStatus: "Approved",
+    purge: {
+      attemptedAt: "2026-01-01T00:00:00.000Z",
+      outcome: "deleted",
+    },
+    requestedClaims: ["age_over_18", "nationality"],
+    reusableCredentialBridge: {
+      artifactPayload: {
+        approvedClaims: ["age_over_18", "nationality"],
+        claims: {
+          disclosedAttributes: {
+            nationality: "ESP",
+          },
+          proofOnlyPredicates: ["age_over_18"],
+        },
+        contractVersion: "reusable_identity_handoff_v1",
+        policyInputs: {
+          faceVerification: {
+            evidenceSource: "capture_provider",
+            passed: true,
+            performed: true,
+            satisfiesFaceVerificationRequirement: true,
+          },
+        },
+        status: "issuer_handoff_required",
+        targetProvider: "privado",
+      },
+      artifactStatus: "issuer_handoff_required",
+      bridgeId: "bridge_warning_case_123",
+      expiresAt: "2026-01-01T01:00:00.000Z",
+      summary: {
+        approvedClaims: ["age_over_18", "nationality"],
+        claims: {
+          disclosedAttributes: {
+            nationality: "ESP",
+          },
+          proofOnlyPredicates: ["age_over_18"],
+        },
+        contractVersion: "reusable_identity_handoff_v1",
+        policyInputs: {
+          faceVerification: {
+            evidenceSource: "capture_provider",
+            passed: true,
+            performed: true,
+            satisfiesFaceVerificationRequirement: true,
+          },
+        },
+        status: "issuer_handoff_required",
+        targetProvider: "privado",
+      },
+      targetProvider: "privado",
+    },
+    resultSummary: {
+      authoritativeSource: "didit_decision_api",
+      faceVerificationPassed: true,
+      faceVerificationPerformed: true,
+      providerReferenceId: "didit_warning_case_123",
+      providerStatus: "Approved",
+      requestedClaims: ["age_over_18", "nationality"],
+      satisfiedClaims: ["age_over_18", "nationality", "face_verification"],
+    },
+    sessionId: verificationCreated.data.session.sessionId,
+    state: "passed",
+    webhook: {
+      providerStatus: "Approved",
+      timestamp: "1735689600",
+      webhookType: "status.updated",
+      workflowId: "11111111-2222-3333-4444-555555555555",
+    },
+  });
+
+  const alertRefResponse = await app.handle(
+    new Request(`http://humanify.local/guilds/guild_123/cases/${created.data.report.caseId}/warning-card/alert-message`, {
+      body: JSON.stringify({
+        actorService: "bot-bun",
+        channelId: "channel_alerts",
+        messageId: "message_alert_123",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "PUT",
+    }),
+  );
+  const alertRefJson = (await alertRefResponse.json()) as {
+    data: {
+      alertMessageRef: {
+        messageUrl: string;
+      };
+      persistence: string;
+    };
+  };
+
+  expect(alertRefResponse.status).toBe(200);
+  expect(alertRefJson.data.persistence).toBe("persisted");
+  expect(alertRefJson.data.alertMessageRef.messageUrl).toBe(
+    "https://discord.com/channels/guild_123/channel_alerts/message_alert_123",
+  );
+
+  const warningResponse = await app.handle(
+    new Request(`http://humanify.local/guilds/guild_123/cases/${created.data.report.caseId}/warning-card`),
+  );
+  const warningJson = (await warningResponse.json()) as {
+    data: {
+      alertMessageRef: {
+        channelId: string;
+        messageId: string;
+        messageState: string;
+      };
+      case: {
+        caseId: string;
+      };
+      evidenceSummary: {
+        evidenceCount: number;
+        latestEvidence?: {
+          messagePreview?: string;
+        };
+      };
+      faceCheck?: {
+        passed: boolean;
+        performed: boolean;
+        source: string;
+        satisfiesFaceVerificationRequirement?: boolean;
+      };
+      reportsSummary: {
+        latestReportReason?: string;
+        reportCount: number;
+      };
+      reusableCredentialBridge?: {
+        status: string;
+        targetProvider: string;
+      };
+      verification?: {
+        caseLinkage: string;
+        providerId?: string;
+        sessionId: string;
+        state: string;
+        summary?: {
+          faceVerificationPassed: boolean;
+        };
+      };
+    };
+  };
+
+  expect(warningResponse.status).toBe(200);
+  expect(warningJson.data.case.caseId).toBe(created.data.report.caseId!);
+  expect(warningJson.data.reportsSummary.reportCount).toBe(1);
+  expect(warningJson.data.reportsSummary.latestReportReason).toBe("fake Nitro lure");
+  expect(warningJson.data.evidenceSummary.evidenceCount).toBe(1);
+  expect(warningJson.data.evidenceSummary.latestEvidence?.messagePreview).toBe("Claim your free Nitro gift now");
+  expect(warningJson.data.verification).toEqual(expect.objectContaining({
+    caseLinkage: "case_linked",
+    providerId: "didit",
+    sessionId: verificationCreated.data.session.sessionId,
+    state: "passed",
+    summary: expect.objectContaining({
+      faceVerificationPassed: true,
+    }),
+  }));
+  expect(warningJson.data.reusableCredentialBridge).toEqual(expect.objectContaining({
+    status: "issuer_handoff_required",
+    targetProvider: "privado",
+  }));
+  expect(warningJson.data.faceCheck).toEqual(expect.objectContaining({
+    passed: true,
+    performed: true,
+    source: "verification_summary",
+  }));
+  expect(warningJson.data.alertMessageRef).toEqual(expect.objectContaining({
+    channelId: "channel_alerts",
+    messageId: "message_alert_123",
+    messageState: "active",
+  }));
 });
 
 test("case review persists canonical outcomes and applies learned candidates from moderator-confirmed evidence", async () => {

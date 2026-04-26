@@ -21,6 +21,7 @@ import { expect, test } from "bun:test";
 import { GatewayIntentBits, MessageFlags, PermissionFlagsBits, PermissionsBitField } from "discord.js";
 
 import {
+  buildComponentCustomId,
   createBotGatewayIntents,
   parseComponentCustomId,
   parseSetupFlowCustomId,
@@ -28,9 +29,12 @@ import {
 
 import {
   type BotApiClient,
+  type BotCaseWarningCardReadResponse,
+  type ModeratorWarningMessageRuntime,
   createBotApiClient,
   createInteractionHandler,
   decideApprovedActionExecution,
+  syncModeratorWarningCard,
 } from "./index";
 
 function createGuildInteractionPermissions(...permissions: bigint[]) {
@@ -125,6 +129,9 @@ function createTestApiClient(overrides: Partial<BotApiClient> = {}): BotApiClien
     },
     createVerificationSession: async () => {
       throw new Error("test did not provide createVerificationSession");
+    },
+    getCaseWarningCard: async () => {
+      throw new Error("test did not provide getCaseWarningCard");
     },
     getGuildChannelConfig: async () => ({
       channelConfig: {
@@ -233,7 +240,82 @@ function createTestApiClient(overrides: Partial<BotApiClient> = {}): BotApiClien
         trustedRoleIds: body.trustedRoleIds,
       },
     }),
+    updateWarningCardAlertMessage: async (guildId, caseId, body) => ({
+      alertMessageRef: {
+        caseId,
+        channelId: body.channelId,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        lastActorService: body.actorService,
+        messageId: body.messageId,
+        messageState: body.messageState ?? "active",
+        messageUrl: `https://discord.com/channels/${guildId}/${body.channelId}/${body.messageId}`,
+        subjectUserId: "user_123",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+      persistence: "persisted",
+      queueDelivery: "pending_outbox_publish",
+    }),
     ...overrides,
+  };
+}
+
+function createWarningCard(overrides: Partial<BotCaseWarningCardReadResponse> = {}): BotCaseWarningCardReadResponse {
+  return {
+    case: {
+      caseId: "case_123",
+      openedAt: "2026-01-01T00:00:00.000Z",
+      reason: "fake Nitro lure",
+      severity: 7,
+      status: "open",
+      subjectUserId: "user_123",
+    },
+    evidenceSummary: {
+      evidenceCount: 1,
+      latestEvidence: {
+        createdAt: "2026-01-01T00:05:00.000Z",
+        evidenceId: "evidence_123",
+        messagePreview: "Claim your free Nitro gift now",
+      },
+    },
+    readModelStatus: "canonical_postgres",
+    reportsSummary: {
+      latestReportAt: "2026-01-01T00:01:00.000Z",
+      latestReportReason: "fake Nitro lure",
+      reportCount: 1,
+      reporterCount: 1,
+    },
+    scope: {
+      caseId: "case_123",
+      guildId: "guild_123",
+    },
+    source: "canonical_postgres_warning_card",
+    ...overrides,
+  };
+}
+
+function createWarningRuntime(overrides: Partial<ModeratorWarningMessageRuntime> = {}): {
+  calls: Array<Record<string, unknown>>;
+  runtime: ModeratorWarningMessageRuntime;
+} {
+  const calls: Array<Record<string, unknown>> = [];
+
+  return {
+    calls,
+    runtime: {
+      async deleteMessage(channelId, messageId) {
+        calls.push({ channelId, kind: "delete", messageId });
+      },
+      async editMessage(channelId, messageId, content) {
+        calls.push({ channelId, content, kind: "edit", messageId });
+      },
+      async sendMessage(channelId, content) {
+        calls.push({ channelId, content, kind: "send" });
+        return {
+          messageId: "message_alert_123",
+        };
+      },
+      ...overrides,
+    },
   };
 }
 
@@ -254,6 +336,7 @@ function findCustomId(payload: {
 test("report command routes moderator intake through the report API and offers a verification shortcut", async () => {
   const apiCalls: unknown[] = [];
   const replies: unknown[] = [];
+  const warningCalls: unknown[] = [];
   const handler = createInteractionHandler({
     apiClient: createTestApiClient({
       attachReportEvidence: async () => {
@@ -274,6 +357,13 @@ test("report command routes moderator intake through the report API and offers a
         throw new Error("report command should not create verification directly");
       },
     }),
+    syncModeratorWarningCard: async ({ caseId, guildId }) => {
+      warningCalls.push({ caseId, guildId });
+      return {
+        note: "Moderator warning posted in <#channel_alerts>.",
+        status: "posted",
+      };
+    },
   });
 
   await handler({
@@ -328,11 +418,18 @@ test("report command routes moderator intake through the report API and offers a
   expect(reply.flags).toBe(MessageFlags.Ephemeral);
   expect(reply.content).toContain("case_123");
   expect(reply.content).toContain("persistence is still pending");
+  expect(reply.content).toContain("Moderator warning posted in <#channel_alerts>.");
   expect(parseComponentCustomId(customId ?? "")).toMatchObject({
     entityId: "case_123~user_123",
     guildId: "guild_123",
     kind: "verification_start",
   });
+  expect(warningCalls).toEqual([
+    {
+      caseId: "case_123",
+      guildId: "guild_123",
+    },
+  ]);
 });
 
 test("humanify setup refuses members who are not server admins", async () => {
@@ -820,6 +917,8 @@ test("verify refuses members who try to start verification for someone else with
 
 test("message context intake opens a report and then attaches canonical Discord message evidence", async () => {
   const apiCalls: unknown[] = [];
+  const replies: unknown[] = [];
+  const warningCalls: unknown[] = [];
   const handler = createInteractionHandler({
     apiClient: createTestApiClient({
       attachReportEvidence: async (guildId, reportId, body) => {
@@ -847,6 +946,13 @@ test("message context intake opens a report and then attaches canonical Discord 
         throw new Error("message context report should not create verification");
       },
     }),
+    syncModeratorWarningCard: async ({ caseId, guildId }) => {
+      warningCalls.push({ caseId, guildId });
+      return {
+        note: "Moderator warning updated in <#channel_alerts>.",
+        status: "updated",
+      };
+    },
   });
 
   await handler({
@@ -856,7 +962,9 @@ test("message context intake opens a report and then attaches canonical Discord 
     isButton: () => false,
     isChatInputCommand: () => false,
     isMessageContextMenuCommand: () => true,
-    reply: async () => undefined,
+    reply: async (payload: unknown) => {
+      replies.push(payload);
+    },
     targetMessage: {
       author: { id: "user_123" },
       channelId: "channel_123",
@@ -892,6 +1000,300 @@ test("message context intake opens a report and then attaches canonical Discord 
       reportId: "report_123",
     },
   ]);
+  expect(warningCalls).toEqual([
+    {
+      caseId: "case_123",
+      guildId: "guild_123",
+    },
+  ]);
+  expect(replies).toEqual([
+    expect.objectContaining({
+      content: expect.stringContaining("Moderator warning updated in <#channel_alerts>."),
+      flags: MessageFlags.Ephemeral,
+    }),
+  ]);
+});
+
+test("verification shortcut refreshes the advisory warning card for the linked case", async () => {
+  const replies: unknown[] = [];
+  const warningCalls: unknown[] = [];
+  const handler = createInteractionHandler({
+    apiClient: createTestApiClient({
+      createVerificationSession: async (guildId, body) => ({
+        challengeToken: "challenge_123",
+        persistence: "persisted",
+        session: {
+          caseId: body.caseId,
+          challengeId: "challenge_123",
+          guildId,
+          sessionId: "session_123",
+          state: "pending",
+          userId: body.userId,
+        },
+      }),
+    }),
+    syncModeratorWarningCard: async ({ caseId, guildId }) => {
+      warningCalls.push({ caseId, guildId });
+      return {
+        note: "Moderator warning updated in <#channel_alerts>.",
+        status: "updated",
+      };
+    },
+  });
+
+  await handler(
+    createComponentInteraction({
+      customId: buildComponentCustomId({
+        entityId: "case_123~user_123",
+        guildId: "guild_123",
+        kind: "verification_start",
+      }),
+      kind: "button",
+      memberPermissions: createGuildInteractionPermissions(PermissionFlagsBits.KickMembers),
+      reply: async (payload) => {
+        replies.push(payload);
+      },
+      userId: "mod_123",
+    }),
+  );
+
+  expect(warningCalls).toEqual([
+    {
+      caseId: "case_123",
+      guildId: "guild_123",
+    },
+  ]);
+  expect(replies).toEqual([
+    expect.objectContaining({
+      content: expect.stringContaining("Moderator warning updated in <#channel_alerts>."),
+      flags: MessageFlags.Ephemeral,
+    }),
+  ]);
+});
+
+test("warning-card sync posts a new advisory message and persists the canonical alert ref", async () => {
+  const apiCalls: unknown[] = [];
+  const { calls, runtime } = createWarningRuntime();
+
+  const result = await syncModeratorWarningCard({
+    apiClient: createTestApiClient({
+      getCaseWarningCard: async (guildId, caseId) => {
+        apiCalls.push({ caseId, guildId, kind: "warning-card" });
+        return createWarningCard({
+          case: {
+            caseId,
+            openedAt: "2026-01-01T00:00:00.000Z",
+            reason: "fake Nitro lure",
+            severity: 7,
+            status: "open",
+            subjectUserId: "user_123",
+          },
+          scope: { caseId, guildId },
+        });
+      },
+      getGuildChannelConfig: async (guildId) => ({
+        channelConfig: {
+          guildId,
+          moderatorAlertChannelId: "channel_alerts",
+          source: "persisted",
+        },
+        persistence: "persisted",
+      }),
+      updateWarningCardAlertMessage: async (guildId, caseId, body) => {
+        apiCalls.push({ body, caseId, guildId, kind: "warning-alert-ref" });
+        return {
+          alertMessageRef: {
+            caseId,
+            channelId: body.channelId,
+            createdAt: "2026-01-01T00:00:00.000Z",
+            lastActorService: body.actorService,
+            messageId: body.messageId,
+            messageState: body.messageState ?? "active",
+            messageUrl: `https://discord.com/channels/${guildId}/${body.channelId}/${body.messageId}`,
+            subjectUserId: "user_123",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+          },
+          persistence: "persisted",
+          queueDelivery: "pending_outbox_publish",
+        };
+      },
+    }),
+    caseId: "case_123",
+    guildId: "guild_123",
+    messageRuntime: runtime,
+  });
+
+  expect(apiCalls).toEqual([
+    {
+      caseId: "case_123",
+      guildId: "guild_123",
+      kind: "warning-card",
+    },
+    {
+      body: {
+        actorService: "bot-bun",
+        channelId: "channel_alerts",
+        messageId: "message_alert_123",
+        messageState: "active",
+      },
+      caseId: "case_123",
+      guildId: "guild_123",
+      kind: "warning-alert-ref",
+    },
+  ]);
+  expect(calls).toEqual([
+    expect.objectContaining({
+      channelId: "channel_alerts",
+      kind: "send",
+    }),
+  ]);
+  expect((calls[0] as { content: string }).content).toContain("Case: `case_123`");
+  expect((calls[0] as { content: string }).content).toContain("Suspected user: <@user_123> (`user_123`)");
+  expect((calls[0] as { content: string }).content).toContain("Evidence: 1 linked item.");
+  expect((calls[0] as { content: string }).content).toContain("Advisory only");
+  expect(result).toEqual({
+    note: "Moderator warning posted in <#channel_alerts> for case case_123.",
+    status: "posted",
+  });
+});
+
+test("warning-card sync edits the persisted advisory message instead of reposting duplicates", async () => {
+  const apiCalls: unknown[] = [];
+  const { calls, runtime } = createWarningRuntime({
+    async sendMessage() {
+      throw new Error("sync should edit the existing message instead of sending a duplicate");
+    },
+  });
+
+  const result = await syncModeratorWarningCard({
+    apiClient: createTestApiClient({
+      getCaseWarningCard: async () => createWarningCard({
+        alertMessageRef: {
+          caseId: "case_123",
+          channelId: "channel_alerts",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          lastActorService: "bot-bun",
+          messageId: "message_alert_123",
+          messageState: "active",
+          messageUrl: "https://discord.com/channels/guild_123/channel_alerts/message_alert_123",
+          subjectUserId: "user_123",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+        faceCheck: {
+          passed: true,
+          performed: true,
+          source: "verification_summary",
+        },
+        reusableCredentialBridge: {
+          approvedClaims: ["age_over_18", "nationality"],
+          status: "issuer_handoff_required",
+          targetProvider: "privado",
+        },
+        verification: {
+          caseLinkage: "case_linked",
+          initiatedBy: "mod_123",
+          providerId: "didit",
+          providerStatus: "provider_webhook_verified",
+          sessionId: "session_123",
+          state: "passed",
+          summary: {
+            faceVerificationPassed: true,
+            satisfiedClaims: ["age_over_18", "nationality", "face_verification"],
+          },
+          updatedAt: "2026-01-01T00:10:00.000Z",
+        },
+      }),
+      getGuildChannelConfig: async (guildId) => ({
+        channelConfig: {
+          guildId,
+          moderatorAlertChannelId: "channel_alerts",
+          source: "persisted",
+        },
+        persistence: "persisted",
+      }),
+      updateWarningCardAlertMessage: async (guildId, caseId, body) => {
+        apiCalls.push({ body, caseId, guildId });
+        return {
+          alertMessageRef: {
+            caseId,
+            channelId: body.channelId,
+            createdAt: "2026-01-01T00:00:00.000Z",
+            lastActorService: body.actorService,
+            messageId: body.messageId,
+            messageState: body.messageState ?? "active",
+            messageUrl: `https://discord.com/channels/${guildId}/${body.channelId}/${body.messageId}`,
+            subjectUserId: "user_123",
+            updatedAt: "2026-01-01T00:10:00.000Z",
+          },
+          persistence: "persisted",
+          queueDelivery: "pending_outbox_publish",
+        };
+      },
+    }),
+    caseId: "case_123",
+    guildId: "guild_123",
+    messageRuntime: runtime,
+  });
+
+  expect(calls).toEqual([
+    expect.objectContaining({
+      channelId: "channel_alerts",
+      kind: "edit",
+      messageId: "message_alert_123",
+    }),
+  ]);
+  expect((calls[0] as { content: string }).content).toContain("Verification: passed via didit.");
+  expect((calls[0] as { content: string }).content).toContain("Reusable proof handoff: issuer_handoff_required via privado.");
+  expect((calls[0] as { content: string }).content).toContain("Face check: passed.");
+  expect(apiCalls).toEqual([
+    {
+      body: {
+        actorService: "bot-bun",
+        channelId: "channel_alerts",
+        messageId: "message_alert_123",
+        messageState: "active",
+      },
+      caseId: "case_123",
+      guildId: "guild_123",
+    },
+  ]);
+  expect(result).toEqual({
+    note: "Moderator warning updated in <#channel_alerts> for case case_123.",
+    status: "updated",
+  });
+});
+
+test("warning-card sync refuses to pretend success when the moderator alert channel is not configured", async () => {
+  const { calls, runtime } = createWarningRuntime({
+    async editMessage() {
+      throw new Error("warning sync should stop before Discord operations");
+    },
+    async sendMessage() {
+      throw new Error("warning sync should stop before Discord operations");
+    },
+  });
+
+  const result = await syncModeratorWarningCard({
+    apiClient: createTestApiClient({
+      getGuildChannelConfig: async (guildId) => ({
+        channelConfig: {
+          guildId,
+          source: "not_configured",
+        },
+        persistence: "not_configured",
+      }),
+      getCaseWarningCard: async () => createWarningCard(),
+    }),
+    caseId: "case_123",
+    guildId: "guild_123",
+    messageRuntime: runtime,
+  });
+
+  expect(calls).toEqual([]);
+  expect(result).toEqual({
+    note: "Moderator warning was not published because the canonical alert channel is not configured.",
+    status: "skipped",
+  });
 });
 
 test("executor planning blocks action execution until Bun approval is durably persisted", () => {

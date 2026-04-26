@@ -21,6 +21,7 @@ import type {
   LearnedSignalCandidateRecord,
   LearnedSignalFamily,
   LearningFeedbackSummary,
+  ModeratorWarningCardsRepository,
   PersistedCaseReviewResult,
   RiskQueueItem,
   ReportCasesRepository,
@@ -851,9 +852,12 @@ export function createInMemoryVerificationSessionsRepository(): VerificationSess
 
   return {
     async createSession(input) {
+      const createdAt = new Date().toISOString();
       const record: VerificationSessionRecord = {
+        caseId: input.caseId,
         challengeExpiresAt: input.challengeExpiresAt,
         challengeId: input.challengeId,
+        createdAt,
         guildId: input.guildId,
         initiatedBy: input.initiatedBy,
         providerStatus: {},
@@ -861,6 +865,7 @@ export function createInMemoryVerificationSessionsRepository(): VerificationSess
         resultSummary: {},
         sessionId: input.sessionId,
         state: "challenge_issued",
+        updatedAt: createdAt,
         userId: input.userId,
       };
       sessions.set(input.sessionId, record);
@@ -886,6 +891,18 @@ export function createInMemoryVerificationSessionsRepository(): VerificationSess
       };
     },
 
+    async listSessionsForSubject(input) {
+      return Array.from(sessions.values())
+        .filter((entry) => entry.guildId === input.guildId && entry.userId === input.userId)
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || right.createdAt.localeCompare(left.createdAt))
+        .map((entry) => ({
+          ...entry,
+          providerStatus: { ...entry.providerStatus },
+          requiredCapabilities: [...entry.requiredCapabilities],
+          resultSummary: { ...entry.resultSummary },
+        }));
+    },
+
     async markDiditSessionCreated(input) {
       const current = sessions.get(input.sessionId);
       if (!current) {
@@ -908,6 +925,7 @@ export function createInMemoryVerificationSessionsRepository(): VerificationSess
         workflowId: input.workflowId,
       };
       current.state = "provider_pending";
+      current.updatedAt = new Date().toISOString();
       sessions.set(input.sessionId, current);
       return await this.getSession(input.sessionId);
     },
@@ -931,6 +949,7 @@ export function createInMemoryVerificationSessionsRepository(): VerificationSess
         ...input.resultSummary,
       };
       current.state = input.state;
+      current.updatedAt = new Date().toISOString();
       sessions.set(input.sessionId, current);
       return await this.getSession(input.sessionId);
     },
@@ -956,12 +975,197 @@ export function createInMemoryVerificationSessionsRepository(): VerificationSess
         ...input.resultSummary,
       };
       current.state = input.state;
+      current.updatedAt = new Date().toISOString();
       sessions.set(input.sessionId, current);
       return await this.getSession(input.sessionId);
     },
 
     async close() {
       sessions.clear();
+    },
+  };
+}
+
+function readReusableCredentialBridgeFromSession(record: VerificationSessionRecord) {
+  const bridge = (record.providerStatus as {
+    reusableCredentialBridge?: Record<string, unknown>;
+  }).reusableCredentialBridge;
+
+  return bridge && typeof bridge === "object" ? bridge : undefined;
+}
+
+function readFaceCheckFromSession(record: VerificationSessionRecord) {
+  if (
+    typeof record.resultSummary.faceVerificationPerformed === "boolean"
+    && typeof record.resultSummary.faceVerificationPassed === "boolean"
+  ) {
+    return {
+      passed: record.resultSummary.faceVerificationPassed,
+      performed: record.resultSummary.faceVerificationPerformed,
+      source: "verification_summary" as const,
+    };
+  }
+
+  const faceVerification = (readReusableCredentialBridgeFromSession(record) as {
+    policyInputs?: {
+      faceVerification?: {
+        passed?: boolean;
+        performed?: boolean;
+        satisfiesFaceVerificationRequirement?: boolean;
+      };
+    };
+  } | undefined)?.policyInputs?.faceVerification;
+
+  if (typeof faceVerification?.performed === "boolean" && typeof faceVerification.passed === "boolean") {
+    return {
+      passed: faceVerification.passed,
+      performed: faceVerification.performed,
+      satisfiesFaceVerificationRequirement:
+        typeof faceVerification.satisfiesFaceVerificationRequirement === "boolean"
+          ? faceVerification.satisfiesFaceVerificationRequirement
+          : undefined,
+      source: "reusable_credential_bridge" as const,
+    };
+  }
+
+  return undefined;
+}
+
+export function createInMemoryModeratorWarningCardsRepository(input: {
+  reportCasesRepository: ReportCasesRepository;
+  verificationSessionsRepository: VerificationSessionsRepository;
+}): ModeratorWarningCardsRepository {
+  const alertRefs = new Map<string, Awaited<ReturnType<ModeratorWarningCardsRepository["upsertAlertMessageRef"]>>["alertMessageRef"]>();
+  const idempotencyReceipts = new Map<string, unknown>();
+
+  function buildIdempotencyReceiptKey(scope: string, key: string) {
+    return `${scope}::${key}`;
+  }
+
+  function readIdempotencyReceipt<TResult>(scope: string, key: string) {
+    return idempotencyReceipts.get(buildIdempotencyReceiptKey(scope, key)) as TResult | undefined;
+  }
+
+  function storeIdempotencyReceipt<TResult>(scope: string, key: string, result: TResult) {
+    idempotencyReceipts.set(buildIdempotencyReceiptKey(scope, key), result);
+  }
+
+  return {
+    async getWarningCard({ caseId, guildId }) {
+      const caseDetail = await input.reportCasesRepository.getCaseDetail({
+        caseId,
+        guildId,
+      });
+      if (!caseDetail) {
+        return undefined;
+      }
+
+      const subjectSessions = await input.verificationSessionsRepository.listSessionsForSubject({
+        guildId,
+        userId: caseDetail.case.subjectUserId,
+      });
+      const latestVerification = subjectSessions
+        .sort((left, right) => {
+          const leftScore = left.caseId === caseId ? 1 : 0;
+          const rightScore = right.caseId === caseId ? 1 : 0;
+          return rightScore - leftScore || right.updatedAt.localeCompare(left.updatedAt);
+        })
+        .at(0);
+      const reusableCredentialBridge = latestVerification ? readReusableCredentialBridgeFromSession(latestVerification) : undefined;
+      const latestReport = caseDetail.reports.at(-1);
+      const latestEvidence = caseDetail.evidence.at(-1);
+
+      return {
+        alertMessageRef: alertRefs.get(caseId),
+        case: caseDetail.case,
+        evidenceSummary: {
+          evidenceCount: caseDetail.evidence.length,
+          latestEvidence: latestEvidence
+            ? {
+                channelId: latestEvidence.channelId,
+                createdAt: latestEvidence.createdAt,
+                evidenceId: latestEvidence.evidenceId,
+                externalRef: latestEvidence.externalRef,
+                messageId: latestEvidence.messageId,
+                messagePreview: latestEvidence.messagePreview,
+              }
+            : undefined,
+        },
+        faceCheck: latestVerification ? readFaceCheckFromSession(latestVerification) : undefined,
+        reportsSummary: {
+          latestReportAt: latestReport?.createdAt,
+          latestReportReason: latestReport?.reportReason,
+          reportCount: caseDetail.reports.length,
+          reporterCount: new Set(caseDetail.reports.map((entry) => entry.reporterUserId).filter(Boolean)).size,
+        },
+        reusableCredentialBridge,
+        verification: latestVerification
+          ? {
+              caseLinkage: latestVerification.caseId === caseId ? "case_linked" : "subject_latest",
+              initiatedBy: latestVerification.initiatedBy,
+              providerId: typeof latestVerification.providerStatus.selectedProvider === "string"
+                ? latestVerification.providerStatus.selectedProvider
+                : undefined,
+              providerStatus: typeof latestVerification.providerStatus.status === "string"
+                ? latestVerification.providerStatus.status
+                : undefined,
+              sessionId: latestVerification.sessionId,
+              state: latestVerification.state,
+              summary: Object.keys(latestVerification.resultSummary).length > 0
+                ? { ...latestVerification.resultSummary }
+                : undefined,
+              updatedAt: latestVerification.updatedAt,
+            }
+          : undefined,
+      };
+    },
+
+    async upsertAlertMessageRef(args) {
+      const existing = readIdempotencyReceipt<Awaited<ReturnType<ModeratorWarningCardsRepository["upsertAlertMessageRef"]>>>(
+        args.artifacts.idempotency.scope,
+        args.artifacts.idempotency.key,
+      );
+      if (existing) {
+        return existing;
+      }
+
+      const caseDetail = await input.reportCasesRepository.getCaseDetail({
+        caseId: args.caseId,
+        guildId: args.guildId,
+      });
+      if (!caseDetail) {
+        throw new Error(`Case ${args.caseId} was not found in guild ${args.guildId}.`);
+      }
+
+      const now = new Date().toISOString();
+      const previous = alertRefs.get(args.caseId);
+      const alertMessageRef = {
+        caseId: args.caseId,
+        channelId: args.body.channelId,
+        createdAt: previous?.createdAt ?? now,
+        lastActorService: args.body.actorService,
+        messageId: args.body.messageId,
+        messageState: args.body.messageState ?? "active",
+        messageUrl: `https://discord.com/channels/${args.guildId}/${args.body.channelId}/${args.body.messageId}`,
+        subjectUserId: caseDetail.case.subjectUserId,
+        updatedAt: now,
+      } as const;
+
+      alertRefs.set(args.caseId, alertMessageRef);
+
+      const result = {
+        alertMessageRef,
+        persistence: "persisted",
+        queueDelivery: "pending_outbox_publish",
+      } satisfies Awaited<ReturnType<ModeratorWarningCardsRepository["upsertAlertMessageRef"]>>;
+
+      storeIdempotencyReceipt(args.artifacts.idempotency.scope, args.artifacts.idempotency.key, result);
+
+      return result;
+    },
+
+    async close() {
+      return;
     },
   };
 }

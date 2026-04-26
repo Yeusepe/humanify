@@ -52,6 +52,15 @@ export type {
   MigrationStatus,
 } from "./migrator";
 export {
+  createPostgresModeratorWarningCardsRepository,
+} from "./moderator-warning-cards";
+export type {
+  ModeratorWarningAlertMessageRef,
+  ModeratorWarningCard,
+  ModeratorWarningCardsRepository,
+  PersistedModeratorWarningAlertMessageRefResult,
+} from "./moderator-warning-cards";
+export {
   createPostgresReportCasesRepository,
 } from "./reports-cases";
 export type {

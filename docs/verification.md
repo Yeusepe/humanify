@@ -54,7 +54,7 @@ It does **not** grant moderation authority to strategy adapters or clients. Adap
 
 | Entity | Purpose | Canonical owner |
 | --- | --- | --- |
-| `verification_sessions` | user+guild scoped verification attempt and current state | Postgres |
+| `verification_sessions` | user+guild scoped verification attempt and current state, with optional originating `case_id` for moderator warning/review reads | Postgres |
 | `verification_requirements` | guild-configured capabilities and fallback rules | Postgres |
 | `verification_artifacts` | redacted strategy result metadata and attestation refs | Postgres |
 | short-lived challenge secret | Discord-bound one-time proof | derived server secret + Postgres metadata |
@@ -296,6 +296,7 @@ Humanify treats provider cleanup as part of the verification receipt contract:
 3. The durable post-handoff record remains the source attestation ref, approved reusable claims, disclosed-attribute / proof-only summaries, face-verification policy fields, target backend id, and handoff audit ref.
 4. Privado proof persistence is limited to receipt refs/hashes, nullifier refs, issuer scopes, predicate results, and proof-status messages. Humanify never stores the wallet credential, raw proof token, or the full verifier-backend success payload.
 5. Deletion and expiry decisions stay Postgres-owned and auditable. Queue trimming or provider-side deletion never becomes the source of truth for retention.
+6. Moderator warning-card reads prefer a session linked directly through `verification_sessions.case_id`; when no case-linked session exists yet, the bot may read the latest session for the same guild subject only if the payload keeps that fallback explicit.
 
 ### 4.5.3 Face-verification storage and use
 

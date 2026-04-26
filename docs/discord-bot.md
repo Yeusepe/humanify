@@ -57,7 +57,7 @@ The current bot spine makes the first real moderation intake surface concrete:
 
 | Surface | Current behavior | Safety posture |
 | --- | --- | --- |
-| `/humanify setup` | server-admin entry point for future guild setup and capability checks; the API can already persist the selected moderator alert plus optional review/audit/log channels | admin-only at command registration and runtime; current reply stays honest that the setup flow is not implemented yet |
+| `/humanify setup` | server-admin guided setup flow for channel, role, verification-path, proof-bundle, and face-check choices without leaving Discord | admin-only at command registration and runtime; reads current guild config from the API, keeps the language plain, and only saves through the real guild-config routes |
 | `/report user reason [notes]` | opens a report via the API and plans a case when one does not already exist | replies honestly that persistence is still pending and offers a verification shortcut only as additional intake |
 | `/case open user reason [notes]` | opens a manual case via the report intake route | trusted-moderator-only at runtime; no moderation action is executed from the command response |
 | `/verify user [capability]` | creates a verification session tied to the Discord member | self-verification stays available; verifying another member requires a trusted moderator and session creation is still reported as planned, not durably completed |
@@ -125,14 +125,30 @@ Current executor rule for the first slice: if the API returns only `planned_not_
 | verification role release | manage roles | only after verification session reaches a passed/released state |
 
 Guild setup should persist the current capability snapshot so the API can clamp actions before they reach the executor.
-The setup/channel-config slice now also has a canonical API write for:
+The setup/channel-config slice now also has canonical API reads and writes for:
 
+- current channel setup hydration via `GET /guilds/:guildId/channels`
 - required `moderatorAlertChannelId`
 - optional `reviewChannelId`
 - optional `auditLogChannelId`
 - optional `moderationLogChannelId`
 
-Moderator warning and review flows should read those canonical channel IDs instead of relying on command-local state.
+Moderator warning, review flows, and `/humanify setup` should read those canonical channel IDs instead of relying on command-local state.
+
+Moderator warning cards now have a canonical advisory read/update loop at the API boundary:
+
+- `GET /guilds/:guildId/cases/:caseId/warning-card` returns the bounded card payload the bot should render or refresh: case summary, evidence summary, latest linked-or-subject verification summary, reusable-credential bridge status when present, face-check state when present, and the persisted Discord alert-message ref when one exists
+- `PUT /guilds/:guildId/cases/:caseId/warning-card/alert-message` persists the current Discord message pointer for that case so later bot passes can edit the existing warning card instead of reposting a duplicate
+
+These warning cards remain advisory-only. Persisting or reading a warning card does not authorize moderation or invent enforcement state.
+
+The current bot runtime now wires that advisory loop into the realistic touchpoints it already owns:
+
+- after `/report` and `/case open` create or reuse a case
+- after message-context reporting attaches canonical Discord message-link evidence
+- after the case-linked `Start verification` shortcut creates or refreshes a verification session
+
+At each touchpoint the bot reads the latest warning-card model, prefers editing the persisted Discord alert message when the canonical ref still points at the configured moderator alert channel, and otherwise posts a fresh advisory message and persists its new ref through the API. If the canonical alert channel is missing or Discord delivery fails, the bot must say so plainly instead of implying moderation succeeded.
 
 Authorization rules for the current command surface:
 
@@ -140,6 +156,19 @@ Authorization rules for the current command surface:
 2. Trusted moderator actions must fail closed when the actor lacks current guild permissions or the runtime cannot read them.
 3. The shared trusted-moderator gate covers the current moderation-oriented entry points (`/case open` and starting verification for another member).
 4. Member-facing verification entry points must remain available for the actor's own account.
+
+### 6.1 Guided setup flow
+
+`/humanify setup` now walks a server admin through these plain-language steps inside Discord:
+
+1. choose alert/review/audit/mod-log channels
+2. choose trusted moderator roles and suspicious roles
+3. choose enabled verification paths and the default path
+4. choose required proof bundles
+5. choose whether a face check is required
+6. confirm and save through `PUT /guilds/:guildId/channels` plus `PUT /guilds/:guildId/verification`
+
+The flow stays honest about unsaved progress: nothing is saved until the admin reaches the final confirm step and the API accepts the writes.
 
 ## 7. Observability and audit requirements
 
