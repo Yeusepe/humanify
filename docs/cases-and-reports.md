@@ -78,6 +78,7 @@ flowchart LR
   B --> C{Existing open case<br/>for same subject + trigger?}
   C -->|yes| D[Append report to case]
   C -->|no| E[Open new case]
+  B --> B2[Refresh subject report anomaly view]
   D --> F[Create case event]
   E --> F
   B --> G[Create evidence records]
@@ -85,6 +86,7 @@ flowchart LR
   H --> I[Evidence service normalization + derivatives]
   I --> J[Postgres metadata writeback]
   F --> K[Review queue + learning inputs]
+  B2 --> K
   J --> K
 ```
 
@@ -92,7 +94,12 @@ First canonical slice now implemented:
 
 1. `POST /guilds/:guildId/reports` writes `reports`, opens or reuses a `cases` row by `opening_fingerprint` when `openCase !== false`, appends a `case_events` intake entry, and records matching `audit_records`, `idempotency_receipts`, and `outbox_events`.
 2. `POST /guilds/:guildId/reports/:reportId/evidence` durably supports Discord `message_link` evidence only. The API persists the evidence metadata plus canonical Discord URL and optional bounded preview, then appends the matching case/audit/outbox records.
-3. Binary/blob-backed evidence kinds (`attachment`, `screenshot`, provider exports, redaction derivatives) remain explicitly deferred until object-storage upload, hashing, and redaction work is real.
+3. `POST /guilds/:guildId/cases/:caseId/review` now durably records moderator-confirmed outcomes in `case_outcomes`, appends an outcome `case_events` entry, updates the case summary status, and triggers the first real learning/suppression flow described in `docs\learning.md`.
+4. The same canonical intake and review path now makes the first trust/anomaly slice real:
+   - report intake refreshes `reputation_views` for `subject_report_anomaly`
+   - moderator-confirmed case outcomes refresh `reputation_views` for `reporter_reputation`
+   - `GET /guilds/:guildId/risk-queue` reads those Postgres-backed summaries and returns advisory-only anomaly flags plus aggregated reporter-trust counts
+5. Binary/blob-backed evidence kinds (`attachment`, `screenshot`, provider exports, redaction derivatives) remain explicitly deferred until object-storage upload, hashing, and redaction work is real.
 
 ## 5. Intake surfaces
 
@@ -119,6 +126,7 @@ For the first durable implementation slice:
 - report idempotency defaults to `report:{guildId}:{triggerFingerprint}:{reporterUserId}`
 - report-level case dedupe currently reuses an existing case by exact `opening_fingerprint`
 - message-link evidence idempotency defaults to `report-evidence:{reportId}:message_link:{messageId}`
+- case-review idempotency defaults to `case-review:{caseId}:{requestId}` and keeps `case_outcomes.supersedes_outcome_id` explicit when a later moderator decision replaces an earlier one
 - message previews are stored only as bounded optional snapshots in `evidence_links.redacted_text_snapshot`; the raw Discord message remains an external reference, not a copied blob payload
 - evidence routes must fail closed for blob-backed kinds instead of pretending bytes were ingested
 
@@ -139,6 +147,8 @@ The first canonical persistence slice now enforces three concrete abuse controls
 1. repeated retries reuse `idempotency_receipts` instead of duplicating report or evidence rows
 2. repeated case-open attempts for the same trigger collapse onto the same `cases.opening_fingerprint`
 3. message-context evidence requires the canonical Discord URL for the submitted guild/channel/message tuple, preventing ambiguous evidence refs
+4. report intake recalculates `subject_report_anomaly` from canonical counts so moderators can see coordinated-report bursts without auto-escalating enforcement
+5. moderator-confirmed outcomes recalculate `reporter_reputation` from reviewed cases only, so report weighting remains explicit, attributable, and reversible
 
 ## 8. What later work depends on this doc
 

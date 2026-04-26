@@ -141,14 +141,19 @@ Notes:
 | Entity | Stored in | Core fields |
 | --- | --- | --- |
 | `learned_signals` | Postgres | signal type, source outcome, confidence, decay state, suppress/disable flags |
-| `signal_examples` | Postgres | links to source case, evidence, normalized text/domain hashes, outcome label |
-| `signal_embeddings` | Postgres + `pgvector` | owning entity type, owning entity ID, embedding model/version, vector, freshness state |
-| `reputation_views` | Postgres | invite reputation, domain reputation, reporter reputation, false-positive counters |
+| `signal_examples` | Postgres | links to source case, source outcome, evidence, normalized text/domain hashes, outcome label |
+| `signal_embeddings` | Postgres + `pgvector` | owning entity type, owning entity ID, embedding model/version, vector or pending-projection placeholder, freshness state |
+| `reputation_views` | Postgres | invite reputation, domain reputation, reporter reputation, false-positive counters, advisory report-anomaly views |
 
 Notes:
 - Vector rows should point back to their owning case, evidence, or learned signal.
 - Learned signals are mutable; raw outcomes and examples are not rewritten to fit updated models.
 - The current first advisory path lets Bun read canonical learned-signal rows, pass candidate text and metadata to `services\inference-rs`, and receive fastembed-backed similarity results without moving vector ownership out of Postgres.
+- The first moderator-confirmed learning slice records `signal_examples.source_outcome_id` and may create `signal_embeddings` rows with `pending_projection` freshness when Postgres ownership is known but a later worker still has to compute or refresh the vector.
+- The first trust/anomaly slice also uses `reputation_views` for:
+  - `reporter_reputation` keyed by `(guild_id, reporter_user_id)` and refreshed only from moderator-reviewed cases
+  - `subject_report_anomaly` keyed by `(guild_id, subject_user_id)` and refreshed from canonical report velocity / repeated-trigger counts
+  - aggregated advisory summaries only; no raw cross-server trust exchange or automatic moderation authority
 
 ## 4. What lives in Postgres
 

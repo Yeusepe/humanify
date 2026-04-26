@@ -20,6 +20,7 @@ import type {
   LearnedSignalFamily,
   LearningFeedbackSummary,
   PersistedCaseReviewResult,
+  RiskQueueItem,
   ReportCasesRepository,
 } from "@humanify/db";
 
@@ -51,7 +52,9 @@ function defaultReasonCode(reasonCodes: string[], outcome: CaseOutcomeKind) {
 export function createInMemoryReportCasesRepository(): ReportCasesRepository {
   const cases = new Map<string, {
     caseId: string;
+    closedAt?: string;
     guildId: string;
+    lastEventAt: string;
     openedAt: string;
     reason: string;
     reports: Array<{
@@ -64,6 +67,7 @@ export function createInMemoryReportCasesRepository(): ReportCasesRepository {
       subjectUserId: string;
       triggerFingerprint: string;
     }>;
+    status: string;
     subjectUserId: string;
   }>();
   const reports = new Map<string, {
@@ -92,6 +96,123 @@ export function createInMemoryReportCasesRepository(): ReportCasesRepository {
   }>();
   const reviews = new Map<string, PersistedCaseReviewResult["review"][]>();
   const learnedSignals = new Map<string, LearnedSignalCandidateRecord>();
+  const idempotencyReceipts = new Map<string, unknown>();
+  const reporterReputations = new Map<string, {
+    confidence: number;
+    falsePositiveCount: number;
+    reviewedCaseCount: number;
+    score: number;
+    trusted: boolean;
+  }>();
+  const reporterCaseOutcomes = new Map<string, CaseOutcomeKind>();
+  const subjectAnomalies = new Map<string, {
+    confidence: number;
+    coordinatedReportBurst: boolean;
+    repeatedTriggerCount: number;
+    reportsLast15Minutes: number;
+    reportsLast24Hours: number;
+    score: number;
+    uniqueReportersLast15Minutes: number;
+    uniqueReportersLast24Hours: number;
+  }>();
+
+  function buildIdempotencyReceiptKey(scope: string, key: string) {
+    return `${scope}::${key}`;
+  }
+
+  function readIdempotencyReceipt<TResult>(scope: string, key: string) {
+    return idempotencyReceipts.get(buildIdempotencyReceiptKey(scope, key)) as TResult | undefined;
+  }
+
+  function storeIdempotencyReceipt<TResult>(scope: string, key: string, result: TResult) {
+    idempotencyReceipts.set(buildIdempotencyReceiptKey(scope, key), result);
+  }
+
+  function recalculateSubjectAnomaly(guildId: string, subjectUserId: string) {
+    const subjectReports = Array.from(reports.values()).filter((entry) =>
+      entry.guildId === guildId && entry.subjectUserId === subjectUserId
+    );
+    const now = Date.now();
+    const last15Minutes = subjectReports.filter((entry) => now - new Date(entry.createdAt).getTime() <= 15 * 60 * 1000);
+    const last24Hours = subjectReports.filter((entry) => now - new Date(entry.createdAt).getTime() <= 24 * 60 * 60 * 1000);
+    const repeatedTriggerCount = subjectReports.reduce((max, entry) => {
+      const matching = subjectReports.filter((candidate) => candidate.triggerFingerprint === entry.triggerFingerprint).length;
+      return Math.max(max, matching);
+    }, 0);
+    const uniqueReportersLast15Minutes = new Set(last15Minutes.map((entry) => entry.reporterUserId)).size;
+    const uniqueReportersLast24Hours = new Set(last24Hours.map((entry) => entry.reporterUserId)).size;
+    const coordinatedReportBurst = last15Minutes.length >= 3 && uniqueReportersLast15Minutes >= 3;
+    const score = Math.min(
+      10,
+      last24Hours.length
+        + uniqueReportersLast24Hours * 0.5
+        + (coordinatedReportBurst ? 1.5 : 0)
+        + (repeatedTriggerCount > 1 ? 0.5 : 0),
+    );
+    const confidence = Math.min(
+      0.95,
+      0.2 + uniqueReportersLast24Hours * 0.15 + Math.min(last24Hours.length, 4) * 0.08 + (repeatedTriggerCount > 1 ? 0.08 : 0),
+    );
+
+    subjectAnomalies.set(`${guildId}:${subjectUserId}`, {
+      confidence,
+      coordinatedReportBurst,
+      repeatedTriggerCount,
+      reportsLast15Minutes: last15Minutes.length,
+      reportsLast24Hours: last24Hours.length,
+      score,
+      uniqueReportersLast15Minutes,
+      uniqueReportersLast24Hours,
+    });
+  }
+
+  function recalculateReporterReputation(guildId: string, reporterUserId: string) {
+    const reporterReports = Array.from(reports.values()).filter((entry) =>
+      entry.guildId === guildId && entry.reporterUserId === reporterUserId && entry.caseId
+    );
+    const reviewedCaseIds = Array.from(new Set(reporterReports.map((entry) => entry.caseId!)));
+    let confirmedCount = 0;
+    let falsePositiveCount = 0;
+
+    for (const caseId of reviewedCaseIds) {
+      const outcome = reporterCaseOutcomes.get(`${guildId}:${reporterUserId}:${caseId}`);
+      if (!outcome) {
+        continue;
+      }
+
+      if (outcome === "confirmed_scam" || outcome === "confirmed_bot" || outcome === "confirmed_hacked_account") {
+        confirmedCount += 1;
+      } else {
+        falsePositiveCount += 1;
+      }
+    }
+
+    const reviewedCaseCount = confirmedCount + falsePositiveCount;
+    const score = reviewedCaseCount === 0 ? 0 : (confirmedCount + 0.5) / (reviewedCaseCount + 1);
+    const confidence = Math.min(0.95, reviewedCaseCount / 5);
+
+    reporterReputations.set(`${guildId}:${reporterUserId}`, {
+      confidence,
+      falsePositiveCount,
+      reviewedCaseCount,
+      score,
+      trusted: score >= 0.7 && confidence >= 0.2,
+    });
+  }
+
+  function mapCaseOutcomeToStatus(outcome: CaseOutcomeKind) {
+    switch (outcome) {
+      case "confirmed_scam":
+      case "confirmed_bot":
+      case "confirmed_hacked_account":
+        return "actioned";
+      case "false_positive":
+      case "dismissed":
+        return "dismissed";
+      case "overturned":
+        return "overturned";
+    }
+  }
 
   return {
     async applyLearningOutcome(input) {
@@ -119,6 +240,28 @@ export function createInMemoryReportCasesRepository(): ReportCasesRepository {
       for (const reusableText of reusableTexts) {
         const { normalized, valueHash } = await hashSignalValue(reusableText);
         if (normalized.length < 12) {
+          continue;
+        }
+
+        if (
+          (input.outcome === "false_positive" || input.outcome === "dismissed" || input.outcome === "overturned")
+          && input.learningSummary.candidateSignals.length === 0
+        ) {
+          for (const current of learnedSignals.values()) {
+            if (current.valueHash !== valueHash) {
+              continue;
+            }
+
+            current.falsePositiveCount += 1;
+            current.confidence = Math.max(0.05, current.confidence * 0.65);
+            current.weight = Math.max(0, current.weight - 0.75);
+            current.isSuppressed = input.outcome === "overturned" || current.falsePositiveCount >= Math.max(current.truePositiveCount, 1);
+            current.freshnessState = current.isSuppressed ? "suppressed" : "needs_review";
+            if (current.isSuppressed) {
+              suppressedSignalCount += 1;
+            }
+          }
+
           continue;
         }
 
@@ -190,6 +333,14 @@ export function createInMemoryReportCasesRepository(): ReportCasesRepository {
     },
 
     async attachMessageEvidence(input) {
+      const existing = readIdempotencyReceipt<Awaited<ReturnType<ReportCasesRepository["attachMessageEvidence"]>>>(
+        input.artifacts.idempotency.scope,
+        input.artifacts.idempotency.key,
+      );
+      if (existing) {
+        return existing;
+      }
+
       const report = reports.get(input.reportId);
       if (!report) {
         throw new Error(`Missing report ${input.reportId}`);
@@ -209,7 +360,7 @@ export function createInMemoryReportCasesRepository(): ReportCasesRepository {
         subjectUserId: input.body.subjectUserId,
       });
 
-      return {
+      const result = {
         evidence: {
           actorUserId: input.body.actorUserId,
           captureSource: input.body.captureSource,
@@ -230,10 +381,22 @@ export function createInMemoryReportCasesRepository(): ReportCasesRepository {
           caseId: report.caseId,
           reportId: input.reportId,
         },
-      };
+      } satisfies Awaited<ReturnType<ReportCasesRepository["attachMessageEvidence"]>>;
+
+      storeIdempotencyReceipt(input.artifacts.idempotency.scope, input.artifacts.idempotency.key, result);
+
+      return result;
     },
 
     async createReport(input) {
+      const existing = readIdempotencyReceipt<Awaited<ReturnType<ReportCasesRepository["createReport"]>>>(
+        input.artifacts.idempotency.scope,
+        input.artifacts.idempotency.key,
+      );
+      if (existing) {
+        return existing;
+      }
+
       const createdAt = new Date().toISOString();
       let caseId: string | undefined;
       let disposition: "created" | "existing" | "not_requested" = "not_requested";
@@ -249,9 +412,11 @@ export function createInMemoryReportCasesRepository(): ReportCasesRepository {
           cases.set(caseId, {
             caseId,
             guildId: input.guildId,
+            lastEventAt: createdAt,
             openedAt: createdAt,
             reason: input.body.reportReason,
             reports: [],
+            status: "open",
             subjectUserId: input.body.subjectUserId,
           });
         }
@@ -271,7 +436,8 @@ export function createInMemoryReportCasesRepository(): ReportCasesRepository {
       });
 
       if (caseId) {
-        cases.get(caseId)?.reports.push({
+        const caseEntry = cases.get(caseId);
+        caseEntry?.reports.push({
           createdAt,
           intakeSource: input.body.intakeSource,
           reportId: input.reportId,
@@ -281,9 +447,14 @@ export function createInMemoryReportCasesRepository(): ReportCasesRepository {
           subjectUserId: input.body.subjectUserId,
           triggerFingerprint: input.body.triggerFingerprint,
         });
+        if (caseEntry) {
+          caseEntry.lastEventAt = createdAt;
+        }
       }
 
-      return {
+      recalculateSubjectAnomaly(input.guildId, input.body.subjectUserId);
+
+      const result = {
         caseLinkage: {
           caseId,
           disposition,
@@ -302,7 +473,11 @@ export function createInMemoryReportCasesRepository(): ReportCasesRepository {
           subjectUserId: input.body.subjectUserId,
           triggerFingerprint: input.body.triggerFingerprint,
         },
-      };
+      } satisfies Awaited<ReturnType<ReportCasesRepository["createReport"]>>;
+
+      storeIdempotencyReceipt(input.artifacts.idempotency.scope, input.artifacts.idempotency.key, result);
+
+      return result;
     },
 
     async listLearnedSignalCandidates(input) {
@@ -312,6 +487,14 @@ export function createInMemoryReportCasesRepository(): ReportCasesRepository {
     },
 
     async recordCaseReview(input) {
+      const existing = readIdempotencyReceipt<Awaited<ReturnType<ReportCasesRepository["recordCaseReview"]>>>(
+        input.artifacts.idempotency.scope,
+        input.artifacts.idempotency.key,
+      );
+      if (existing) {
+        return existing;
+      }
+
       const caseEntry = cases.get(input.caseId);
       if (!caseEntry || caseEntry.guildId !== input.guildId) {
         throw new Error(`Case ${input.caseId} was not found in guild ${input.guildId}.`);
@@ -336,11 +519,82 @@ export function createInMemoryReportCasesRepository(): ReportCasesRepository {
 
       reviews.set(input.caseId, [...(reviews.get(input.caseId) ?? []), review]);
 
-      return {
+      for (const report of caseEntry.reports) {
+        reporterCaseOutcomes.set(`${input.guildId}:${report.reporterUserId}:${input.caseId}`, input.body.outcome);
+        recalculateReporterReputation(input.guildId, report.reporterUserId);
+      }
+
+      caseEntry.status = mapCaseOutcomeToStatus(input.body.outcome);
+      caseEntry.closedAt = new Date().toISOString();
+      caseEntry.lastEventAt = caseEntry.closedAt;
+
+      const result = {
         persistence: "persisted",
         queueDelivery: "pending_outbox_publish",
         review,
       } satisfies PersistedCaseReviewResult;
+
+      storeIdempotencyReceipt(input.artifacts.idempotency.scope, input.artifacts.idempotency.key, result);
+
+      return result;
+    },
+
+    async listRiskQueue(input) {
+      return Array.from(cases.values())
+        .filter((entry) => entry.guildId === input.guildId && ["open", "reviewing", "appealed", "reopened"].includes(entry.status))
+        .sort((left, right) => {
+          const rightScore = subjectAnomalies.get(`${input.guildId}:${right.subjectUserId}`)?.score ?? 0;
+          const leftScore = subjectAnomalies.get(`${input.guildId}:${left.subjectUserId}`)?.score ?? 0;
+          return rightScore - leftScore || right.openedAt.localeCompare(left.openedAt);
+        })
+        .slice(0, input.limit ?? 50)
+        .map((entry) => {
+          const anomaly = subjectAnomalies.get(`${input.guildId}:${entry.subjectUserId}`);
+          const reporterStats = entry.reports.reduce((accumulator, report) => {
+            const reputation = reporterReputations.get(`${input.guildId}:${report.reporterUserId}`);
+            accumulator.uniqueReporters.add(report.reporterUserId);
+            if (reputation?.trusted) {
+              accumulator.trustedReporters.add(report.reporterUserId);
+            }
+            if ((reputation?.score ?? 1) <= 0.35 && (reputation?.confidence ?? 0) >= 0.2) {
+              accumulator.lowCredibilityReporters.add(report.reporterUserId);
+            }
+            return accumulator;
+          }, {
+            lowCredibilityReporters: new Set<string>(),
+            trustedReporters: new Set<string>(),
+            uniqueReporters: new Set<string>(),
+          });
+          const uniqueReporterCount = reporterStats.uniqueReporters.size;
+          const trustedReporterCount = reporterStats.trustedReporters.size;
+          const lowCredibilityReporterCount = reporterStats.lowCredibilityReporters.size;
+          const anomalySignals = [
+            ...(anomaly?.coordinatedReportBurst ? ["coordinated_report_burst"] : []),
+            ...(trustedReporterCount > 0 ? ["trusted_reporter_consensus"] : []),
+            ...(lowCredibilityReporterCount > 0 ? ["low_credibility_reporter_present"] : []),
+          ];
+
+          return {
+            advisoryOnly: true,
+            anomalySignals,
+            caseId: entry.caseId,
+            lastEventAt: entry.lastEventAt,
+            openedAt: entry.openedAt,
+            reportCount: entry.reports.length,
+            severity: 6,
+            status: entry.status,
+            subjectUserId: entry.subjectUserId,
+            trustSignals: {
+              lowCredibilityReporterCount,
+              reporterConsensusConfidence: Math.min(0.95, uniqueReporterCount * 0.2 + trustedReporterCount * 0.1),
+              reporterConsensusScore: uniqueReporterCount === 0 ? 0 : trustedReporterCount / uniqueReporterCount,
+              subjectAnomalyConfidence: anomaly?.confidence ?? 0,
+              subjectAnomalyScore: anomaly?.score ?? 0,
+              trustedReporterCount,
+              uniqueReporterCount,
+            },
+          } satisfies RiskQueueItem;
+        });
     },
 
     async getCaseDetail(input) {
@@ -394,15 +648,16 @@ export function createInMemoryReportCasesRepository(): ReportCasesRepository {
         summary: `Moderator recorded ${review.outcome} for the case.`,
       })));
 
-      return {
-        case: {
-          caseId: caseEntry.caseId,
-          openedAt: caseEntry.openedAt,
-          reason: caseEntry.reason,
-          severity: 6,
-          status: "open",
-          subjectUserId: caseEntry.subjectUserId,
-        },
+        return {
+          case: {
+            caseId: caseEntry.caseId,
+            closedAt: caseEntry.closedAt,
+            openedAt: caseEntry.openedAt,
+            reason: caseEntry.reason,
+            severity: 6,
+            status: caseEntry.status,
+            subjectUserId: caseEntry.subjectUserId,
+          },
         evidence: caseEvidence,
         events,
         reports: caseEntry.reports,
@@ -414,13 +669,14 @@ export function createInMemoryReportCasesRepository(): ReportCasesRepository {
         .filter((entry) => entry.guildId === input.guildId)
         .map((entry) => ({
           caseId: entry.caseId,
+          closedAt: entry.closedAt,
           evidenceCount: Array.from(evidence.values()).filter((item) => reports.get(item.reportId)?.caseId === entry.caseId).length,
           lastEventAt: entry.reports.at(-1)?.createdAt,
           openedAt: entry.openedAt,
           reason: entry.reason,
           reportCount: entry.reports.length,
           severity: 6,
-          status: "open",
+          status: entry.status,
           subjectUserId: entry.subjectUserId,
         }));
     },

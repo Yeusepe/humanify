@@ -84,7 +84,7 @@ type ApiErrorEnvelope = {
   retryable: boolean;
 };
 
-type FetchLike = (input: URL | RequestInfo, init?: RequestInit) => Promise<Response>;
+type FetchLike = (input: URL | string | Request, init?: RequestInit) => Promise<Response>;
 
 function readSearchString(value: unknown): string | undefined {
   if (typeof value !== "string") {

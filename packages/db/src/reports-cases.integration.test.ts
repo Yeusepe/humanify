@@ -309,3 +309,302 @@ integrationTest("moderator outcomes create learned candidates and later false po
   expect(suppressed.suppressedSignalCount).toBeGreaterThan(0);
   expect(await repository!.listLearnedSignalCandidates({ guildId })).toEqual([]);
 });
+
+integrationTest("risk queue exposes canonical reporter trust and coordinated-report anomalies", async () => {
+  const scope = crypto.randomUUID();
+  const guildId = `guild_${scope}`;
+  const createArtifacts = (requestId: string, stream: string, aggregateId: string, aggregateType: string, kind: string) => ({
+    idempotency: {
+      key: `${kind}:${scope}:${requestId}`,
+      requestId,
+      scope: `${kind}:${aggregateId}`,
+    },
+    queueEnvelope: {
+      canonicalRef: {
+        aggregateId,
+        aggregateType,
+        eventId: crypto.randomUUID(),
+      },
+      kind,
+      messageId: crypto.randomUUID(),
+      occurredAt: new Date().toISOString(),
+      payload: {
+        aggregateId,
+        guildId,
+      },
+      producer: {
+        serviceName: "api-bun",
+      },
+      requestId,
+      schemaVersion: "1" as const,
+      stream,
+      traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+    },
+  });
+
+  const seedCaseId = crypto.randomUUID();
+  const seedReport = await repository!.createReport({
+    artifacts: createArtifacts(`req_seed_${scope}`, "risk.ingest", seedCaseId, "case", "report.received"),
+    body: {
+      intakeSource: "message_context",
+      openCase: true,
+      reportReason: "nitro scam",
+      reporterUserId: "trusted_mod",
+      subjectUserId: "seed_user",
+      triggerFingerprint: `discord-message:${guildId}:channel_seed:message_seed`,
+    },
+    guildId,
+    proposedCaseId: seedCaseId,
+    reportId: crypto.randomUUID(),
+    traceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  });
+
+  await repository!.recordCaseReview({
+    artifacts: createArtifacts(`req_seed_review_${scope}`, "learning.feedback", seedCaseId, "case", "case.review.recorded"),
+    body: {
+      actorUserId: "lead_mod",
+      confidence: 0.93,
+      outcome: "confirmed_scam",
+      reasonCodes: ["similar_to_confirmed_scam_template"],
+    },
+    caseId: seedReport.report.caseId!,
+    guildId,
+    traceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  });
+
+  const burstCaseId = crypto.randomUUID();
+  const triggerFingerprint = `discord-message:${guildId}:channel_burst:message_burst`;
+  for (const reporterUserId of ["trusted_mod", "reporter_two", "reporter_three"]) {
+    await repository!.createReport({
+      artifacts: createArtifacts(`req_${reporterUserId}_${scope}`, "risk.ingest", burstCaseId, "case", "report.received"),
+      body: {
+        intakeSource: "message_context",
+        openCase: true,
+        reportReason: "coordinated scam burst",
+        reporterUserId,
+        subjectUserId: "burst_user",
+        triggerFingerprint,
+      },
+      guildId,
+      proposedCaseId: burstCaseId,
+      reportId: crypto.randomUUID(),
+      traceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    });
+  }
+
+  const queue = await repository!.listRiskQueue({ guildId });
+  expect(queue).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      advisoryOnly: true,
+      anomalySignals: expect.arrayContaining(["coordinated_report_burst", "trusted_reporter_consensus"]),
+      caseId: burstCaseId,
+      reportCount: 3,
+      subjectUserId: "burst_user",
+      trustSignals: expect.objectContaining({
+        reporterConsensusScore: 1 / 3,
+        trustedReporterCount: 1,
+        uniqueReporterCount: 3,
+      }),
+    }),
+  ]));
+});
+
+integrationTest("report, evidence, and review retries reuse canonical idempotency receipts", async () => {
+  const scope = crypto.randomUUID();
+  const guildId = `guild_${scope}`;
+  const reporterUserId = `mod_${scope}`;
+  const subjectUserId = `user_${scope}`;
+  const reportId = crypto.randomUUID();
+  const duplicateReportId = crypto.randomUUID();
+  const caseId = crypto.randomUUID();
+  const duplicateCaseId = crypto.randomUUID();
+  const evidenceId = crypto.randomUUID();
+  const duplicateEvidenceId = crypto.randomUUID();
+  const createArtifacts = (requestId: string, stream: string, aggregateId: string, aggregateType: string, kind: string, key: string, scopeKey: string) => ({
+    idempotency: {
+      key,
+      requestId,
+      scope: scopeKey,
+    },
+    queueEnvelope: {
+      canonicalRef: {
+        aggregateId,
+        aggregateType,
+        eventId: crypto.randomUUID(),
+      },
+      kind,
+      messageId: crypto.randomUUID(),
+      occurredAt: new Date().toISOString(),
+      payload: {
+        aggregateId,
+        guildId,
+      },
+      producer: {
+        serviceName: "api-bun",
+      },
+      requestId,
+      schemaVersion: "1" as const,
+      stream,
+      traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+    },
+  });
+
+  const reportArtifacts = createArtifacts(
+    `req_report_${scope}`,
+    "risk.ingest",
+    caseId,
+    "case",
+    "report.received",
+    `report:${scope}`,
+    `report-intake:${guildId}`,
+  );
+  const firstReport = await repository!.createReport({
+    artifacts: reportArtifacts,
+    body: {
+      intakeSource: "message_context",
+      openCase: true,
+      reportReason: "raid invite spam",
+      reporterNotes: "duplicate delivery",
+      reporterUserId,
+      subjectUserId,
+      triggerFingerprint: `discord-message:${guildId}:channel_${scope}:message_${scope}`,
+    },
+    guildId,
+    proposedCaseId: caseId,
+    reportId,
+    traceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  });
+  const replayedReport = await repository!.createReport({
+    artifacts: createArtifacts(
+      `req_report_retry_${scope}`,
+      "risk.ingest",
+      duplicateCaseId,
+      "case",
+      "report.received",
+      `report:${scope}`,
+      `report-intake:${guildId}`,
+    ),
+    body: {
+      intakeSource: "message_context",
+      openCase: true,
+      reportReason: "raid invite spam",
+      reporterNotes: "changed notes should not duplicate canonical rows",
+      reporterUserId,
+      subjectUserId,
+      triggerFingerprint: `discord-message:${guildId}:channel_${scope}:message_${scope}`,
+    },
+    guildId,
+    proposedCaseId: duplicateCaseId,
+    reportId: duplicateReportId,
+    traceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  });
+
+  expect(replayedReport).toEqual(firstReport);
+
+  const firstEvidence = await repository!.attachMessageEvidence({
+    artifacts: createArtifacts(
+      `req_evidence_${scope}`,
+      "evidence.ingest",
+      evidenceId,
+      "evidence",
+      "report.evidence.attached",
+      `evidence:${scope}`,
+      `report-evidence:${firstReport.report.reportId}`,
+    ),
+    body: {
+      actorUserId: reporterUserId,
+      captureSource: "discord_message_context",
+      channelId: `channel_${scope}`,
+      externalRef: `https://discord.com/channels/${guildId}/channel_${scope}/message_${scope}`,
+      messageId: `message_${scope}`,
+      messagePreview: "raid invite spam",
+      subjectUserId,
+    },
+    evidenceId,
+    guildId,
+    reportId: firstReport.report.reportId,
+    requestFingerprint: `message_${scope}`,
+    traceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  });
+  const replayedEvidence = await repository!.attachMessageEvidence({
+    artifacts: createArtifacts(
+      `req_evidence_retry_${scope}`,
+      "evidence.ingest",
+      duplicateEvidenceId,
+      "evidence",
+      "report.evidence.attached",
+      `evidence:${scope}`,
+      `report-evidence:${firstReport.report.reportId}`,
+    ),
+    body: {
+      actorUserId: reporterUserId,
+      captureSource: "discord_message_context",
+      channelId: `channel_${scope}`,
+      externalRef: `https://discord.com/channels/${guildId}/channel_${scope}/message_${scope}`,
+      messageId: `message_${scope}`,
+      messagePreview: "changed preview should not duplicate canonical rows",
+      subjectUserId,
+    },
+    evidenceId: duplicateEvidenceId,
+    guildId,
+    reportId: firstReport.report.reportId,
+    requestFingerprint: `message_${scope}`,
+    traceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  });
+
+  expect(replayedEvidence).toEqual(firstEvidence);
+
+  const firstReview = await repository!.recordCaseReview({
+    artifacts: createArtifacts(
+      `req_review_${scope}`,
+      "learning.feedback",
+      firstReport.report.caseId!,
+      "case",
+      "case.review.recorded",
+      `review:${scope}`,
+      `case-review:${firstReport.report.caseId!}`,
+    ),
+    body: {
+      actorUserId: reporterUserId,
+      confidence: 0.93,
+      outcome: "confirmed_scam",
+      rationale: "duplicate moderator delivery",
+      reasonCodes: ["similar_to_confirmed_scam_template"],
+    },
+    caseId: firstReport.report.caseId!,
+    guildId,
+    traceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  });
+  const replayedReview = await repository!.recordCaseReview({
+    artifacts: createArtifacts(
+      `req_review_retry_${scope}`,
+      "learning.feedback",
+      firstReport.report.caseId!,
+      "case",
+      "case.review.recorded",
+      `review:${scope}`,
+      `case-review:${firstReport.report.caseId!}`,
+    ),
+    body: {
+      actorUserId: reporterUserId,
+      confidence: 0.42,
+      outcome: "confirmed_scam",
+      rationale: "retry should not create a second outcome",
+      reasonCodes: ["similar_to_confirmed_scam_template"],
+    },
+    caseId: firstReport.report.caseId!,
+    guildId,
+    traceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  });
+
+  expect(replayedReview).toEqual(firstReview);
+
+  const detail = await repository!.getCaseDetail({
+    caseId: firstReport.report.caseId!,
+    guildId,
+  });
+
+  expect(detail?.reports).toHaveLength(1);
+  expect(detail?.evidence).toHaveLength(1);
+  expect(detail?.events.filter((event) => event.eventType === "review_recorded")).toHaveLength(1);
+});

@@ -145,8 +145,19 @@ Implementation details made concrete by the current spine:
   - the API validates the `https://discord.com/channels/{guildId}/{channelId}/{messageId}` form and rejects mismatched or non-Discord URLs
   - `evidence_records`, `evidence_links`, `case_events`, `audit_records`, `idempotency_receipts`, and `outbox_events` are written transactionally when the parent report exists
   - attachment, screenshot, and other blob-backed evidence kinds remain explicitly unavailable until object storage, hashing, and redaction flows are wired
+- `POST /guilds/:guildId/cases/:caseId/review` now persists the first real moderator-confirmed learning slice:
+  - `case_events`, `case_outcomes`, `audit_records`, `idempotency_receipts`, and `outbox_events` are written canonically before the route returns `201 Created`
+  - the API hashes the subject user ID, calls `services\learning-rs` with the canonical `CaseOutcome`, and then updates `learned_signals`, `signal_examples`, and `signal_embeddings` when reusable redacted text exists
+  - the same canonical review flow now refreshes per-guild `reputation_views` for `reporter_reputation`, so later report intake and queue reads can weight moderator-confirmed reporters without exposing a hidden enforcement path
+  - if `services\learning-rs` is unavailable, the route still returns the persisted moderator outcome and explicitly reports that learning is pending retry from the canonical `learning.feedback` outbox event
 - `GET /guilds/:guildId/cases` and `GET /guilds/:guildId/cases/:caseId` now read directly from canonical Postgres tables for the first slice, returning `readModelStatus: canonical_postgres` instead of synthetic placeholders.
-- `PUT /guilds/:guildId/policy`, `PUT /guilds/:guildId/verification`, `POST /guilds/:guildId/cases/:caseId/review`, `POST /guilds/:guildId/cases/:caseId/appeal`, `POST /guilds/:guildId/verification/sessions`, `POST /verification/challenges/:challengeId/complete`, and the moderation routes still return `202 Accepted` planning envelopes containing:
+- `POST /guilds/:guildId/reports` now refreshes a canonical per-subject `reputation_views` row for `subject_report_anomaly`:
+  - counts and stores recent report velocity, unique reporter counts, repeated trigger reuse, and `coordinated_report_burst`
+  - keeps the signal explicitly advisory with privacy notes in the summary payload
+- `GET /guilds/:guildId/risk-queue` now returns a canonical Postgres-backed queue instead of a placeholder:
+  - items include advisory-only anomaly flags plus aggregated reporter-trust counts
+  - the route exposes counts and scores only; it does not expose cross-guild reporter identities or authorize moderation actions
+- `PUT /guilds/:guildId/policy`, `PUT /guilds/:guildId/verification`, `POST /guilds/:guildId/cases/:caseId/appeal`, `POST /guilds/:guildId/verification/sessions`, `POST /verification/challenges/:challengeId/complete`, and the moderation routes still return `202 Accepted` planning envelopes containing:
   - a Postgres-first canonical write plan built with `packages\db`
   - idempotency metadata at the HTTP boundary
   - an outbox/Redis Streams envelope built with `packages\queue`
@@ -159,7 +170,7 @@ Implementation details made concrete by the current spine:
 - moderation routes (`/approve`, `/quarantine`, `/timeout`, `/kick`, `/ban`) are now concretely clamped through `packages\policy-engine`; a requested action that exceeds Bun policy or Discord capability constraints must fail with `403 forbidden`.
 - moderation planning envelopes now separate durability from executor readiness: `durability: planned_not_persisted` means the bot must stop at planning, while `executorState` explains whether Bun approval exists but is still waiting on canonical persistence or is blocked by current capability.
 - API startup now validates the required session, OAuth, data-plane, policy-clamp, and observability config bundles up front, and request handling now emits structured request logs with redacted headers plus default `no-store`/`nosniff` response headers.
-- audit and risk-queue read-model routes (`/guilds/:guildId/audit`, `/guilds/:guildId/risk-queue`) still return explicit `pending_postgres_projection` status rather than synthetic data.
+- `GET /guilds/:guildId/audit` still returns explicit `pending_postgres_projection` status rather than synthetic data.
 - callback routes remain explicitly unavailable until provider-specific signature documentation and executor wiring exist; the API must not invent callback semantics.
 - `apps\dashboard-start` now consumes this boundary honestly through `/`, `/cases`, `/verification`, and `/policy` screens that surface metadata and pending states instead of fake live moderation rows.
 

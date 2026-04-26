@@ -1512,9 +1512,18 @@ export function createApiApp(options: ApiAppOptions = {}) {
         .get("/audit", ({ params, request, set }) =>
           buildReadModelPendingEnvelope(ensureResponseContext(request, set), "audit", { guildId: params.guildId }),
         )
-        .get("/risk-queue", ({ params, request, set }) =>
-          buildReadModelPendingEnvelope(ensureResponseContext(request, set), "risk_queue", { guildId: params.guildId }),
-        )
+        .get("/risk-queue", async ({ params, request, set }) => {
+          const requestContext = ensureResponseContext(request, set);
+          const items = await reportCasesRepository.listRiskQueue({
+            guildId: params.guildId,
+          });
+          return buildEnvelope(requestContext.requestId, {
+            items,
+            readModelStatus: "canonical_postgres",
+            scope: { guildId: params.guildId },
+            source: "risk_queue_canonical",
+          });
+        })
         .get("/users/:userId/profile", ({ request, set }) => {
           ensureResponseContext(request, set);
           throw new ApiRouteError(

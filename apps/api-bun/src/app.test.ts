@@ -438,6 +438,127 @@ test("case review persists canonical outcomes and applies learned candidates fro
   ]));
 });
 
+test("risk queue returns canonical trust and anomaly enrichments without turning them into enforcement", async () => {
+  const repository = createInMemoryReportCasesRepository();
+  const app = createTestApp(repository);
+
+  const seedResponse = await app.handle(
+    new Request("http://humanify.local/guilds/guild_123/reports", {
+      body: JSON.stringify({
+        intakeSource: "message_context",
+        openCase: true,
+        reportReason: "nitro scam",
+        reporterUserId: "trusted_mod",
+        subjectUserId: "seed_user",
+        triggerFingerprint: "discord-message:guild_123:channel_seed:message_seed",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    }),
+  );
+  const seeded = (await seedResponse.json()) as {
+    data: {
+      report: {
+        caseId?: string;
+        reportId: string;
+      };
+    };
+  };
+
+  await app.handle(
+    new Request(`http://humanify.local/guilds/guild_123/reports/${seeded.data.report.reportId}/evidence`, {
+      body: JSON.stringify({
+        actorUserId: "trusted_mod",
+        captureSource: "discord_message_context",
+        channelId: "channel_seed",
+        evidenceType: "message_link",
+        externalRef: "https://discord.com/channels/guild_123/channel_seed/message_seed",
+        messageId: "message_seed",
+        messagePreview: "Claim your nitro prize now",
+        subjectUserId: "seed_user",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    }),
+  );
+
+  await app.handle(
+    new Request(`http://humanify.local/guilds/guild_123/cases/${seeded.data.report.caseId}/review`, {
+      body: JSON.stringify({
+        actorUserId: "lead_mod",
+        confidence: 0.93,
+        outcome: "confirmed_scam",
+        reasonCodes: ["similar_to_confirmed_scam_template"],
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    }),
+  );
+
+  const triggerFingerprint = "discord-message:guild_123:channel_raid:message_raid";
+  for (const reporterUserId of ["trusted_mod", "reporter_two", "reporter_three"]) {
+    await app.handle(
+      new Request("http://humanify.local/guilds/guild_123/reports", {
+        body: JSON.stringify({
+          intakeSource: "message_context",
+          openCase: true,
+          reportReason: "coordinated scam burst",
+          reporterUserId,
+          subjectUserId: "burst_user",
+          triggerFingerprint,
+        }),
+        headers: {
+          "content-type": "application/json",
+        },
+        method: "POST",
+      }),
+    );
+  }
+
+  const riskQueueResponse = await app.handle(new Request("http://humanify.local/guilds/guild_123/risk-queue"));
+  const riskQueue = (await riskQueueResponse.json()) as {
+    data: {
+      items: Array<{
+        advisoryOnly: boolean;
+        anomalySignals: string[];
+        caseId: string;
+        subjectUserId: string;
+        trustSignals: {
+          reporterConsensusScore: number;
+          subjectAnomalyScore: number;
+          trustedReporterCount: number;
+          uniqueReporterCount: number;
+        };
+      }>;
+      readModelStatus: string;
+      source: string;
+    };
+  };
+
+  expect(riskQueueResponse.status).toBe(200);
+  expect(riskQueue.data.readModelStatus).toBe("canonical_postgres");
+  expect(riskQueue.data.source).toBe("risk_queue_canonical");
+  expect(riskQueue.data.items).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      advisoryOnly: true,
+      anomalySignals: expect.arrayContaining(["coordinated_report_burst", "trusted_reporter_consensus"]),
+      subjectUserId: "burst_user",
+      trustSignals: expect.objectContaining({
+        reporterConsensusScore: 1 / 3,
+        subjectAnomalyScore: expect.any(Number),
+        trustedReporterCount: 1,
+        uniqueReporterCount: 3,
+      }),
+    }),
+  ]));
+});
+
 test("case review keeps canonical outcomes durable when learning-rs is unavailable", async () => {
   const repository = createInMemoryReportCasesRepository();
   const app = createTestApp(repository, {

@@ -61,6 +61,7 @@ Upstream docs:
 | verification | signed-link/session binding, single-use challenge rules, verifier route helpers, callback signature/replay rejection, release-to-role flow |
 | cases/evidence | dedupe, case-event append-only behavior, evidence hashing and derivative writeback, appeal transitions |
 | learning | feedback ingestion, suppressions, decay, calibration metrics, advisory-only reuse in inference |
+| trust/anomaly | reporter-reputation refreshes, coordinated-report burst detection, canonical risk-queue enrichment, no direct enforcement from trust signals |
 | operations | startup config validation, queue recovery helpers, outbox forwarding, observability wiring smoke tests |
 
 ## 4. Fixture and data rules
@@ -81,6 +82,28 @@ Future work should add explicit regression coverage for:
 - bot permission drift and target-hierarchy failures during execution
 - Rust-service degradation that must not expand enforcement authority
 - stale or corrupted local caches that should be rebuilt instead of trusted
+
+### 5.1 Current concrete adversarial and end-to-end coverage
+
+The first high-signal suite now proves the real first-slice boundaries below without inventing callback or executor behavior that does not exist yet:
+
+| Flow | Current proof |
+| --- | --- |
+| Discord message-context intake → API canonical state | cross-boundary Bun tests drive `apps\bot-bun` into `apps\api-bun` and then read back canonical case/evidence state from the report/case repository |
+| Signed verifier link → challenge completion | Bun tests drive `apps\verifier-start` helpers against the real API routes and prove token-bound `sessionId`/`guildId`/`userId` matching plus the `provider_pending` honest boundary |
+| Verification replay / release boundary | release remains an explicit `409 conflict` until a real provider callback contract exists; the suite treats that refusal as the required honest state |
+| Moderation planning vs durable authority | moderation approval routes may return a clamped plan, but bot-side executor tests and end-to-end coverage prove `planned_not_persisted` approvals are not executable |
+| Report and evidence retry idempotency | repository integration tests replay the same report, evidence, and case-review idempotency keys and prove canonical Postgres rows are reused instead of duplicated |
+| Learning suppression after false positives | Bun tests confirm a moderator-confirmed signal can be created and then suppressed by a later `false_positive` outcome so stale learned hints do not remain active |
+
+Current anchor tests:
+
+- `apps\api-bun\src\adversarial-e2e.test.ts`
+- `apps\api-bun\src\app.test.ts`
+- `apps\api-bun\src\app.bot-intake.test.ts`
+- `apps\bot-bun\src\index.test.ts`
+- `apps\verifier-start\src\verification-flow.test.ts`
+- `packages\db\src\reports-cases.integration.test.ts`
 
 ## 6. Suggested execution bundle by change type
 

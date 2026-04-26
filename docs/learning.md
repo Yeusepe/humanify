@@ -83,6 +83,7 @@ flowchart LR
 3. Optional Qdrant remains projection-only until `pgvector` proves insufficient.
 4. Learned signals should track freshness, decay, disable/suppress flags, and the last moderator-confirmed source case.
 5. Deletion or retention changes start from the owning Postgres entity and project outward.
+6. The first real slice records `signal_examples.source_outcome_id` so every reinforcement or suppression stays attributable to the exact moderator-confirmed outcome that changed the signal.
 
 ## 6. Calibration and suppression rules
 
@@ -120,6 +121,19 @@ The first production-quality slice is:
 2. Bun sends redacted `messageText` plus `learnedSignalCandidates` into `services\inference-rs`.
 3. `services\inference-rs` uses `fastembed-rs` for `/embed`, `/similarity`, `/rerank`, and for optional similarity boosts inside `/score` / `/classify/text`.
 4. Image classification remains explicit-capability-only until a real image backend is wired.
+
+### 7.2 Concrete first moderator-confirmed learning slice
+
+The first real learning/calibration path is now:
+
+1. `POST /guilds/:guildId/cases/:caseId/review` persists canonical `case_events`, `case_outcomes`, `audit_records`, `idempotency_receipts`, and `outbox_events`, and updates the case summary status in Postgres.
+2. The API hashes the subject user ID, sends the canonical `CaseOutcome` payload to `services\learning-rs`, and treats the Rust response as advisory calibration input only.
+3. Bun persists reusable learned text candidates into `learned_signals`, `signal_examples`, and `signal_embeddings` using redacted evidence previews or report context.
+4. `signal_embeddings` rows are created with `pending_projection` metadata until a later projection worker computes durable vectors; Humanify does not claim that moderators retrained a model.
+5. `false_positive`, `dismissed`, and `overturned` outcomes lower matching signal weight/confidence and may flip `is_suppressed` / `suppressed_at` according to the documented suppression rules.
+6. The same moderator-confirmed outcome now refreshes canonical `reputation_views` for `reporter_reputation`, so later queue and anomaly reads can weight trusted reporters explicitly without crossing the Bun authority boundary.
+7. `POST /guilds/:guildId/reports` also refreshes canonical `subject_report_anomaly` summaries from report velocity and repeated-trigger counts; those summaries are advisory-only risk enrichment for `GET /guilds/:guildId/risk-queue`.
+8. If `services\learning-rs` is unavailable, the moderator-confirmed outcome still persists canonically and the `learning.feedback` outbox event remains the honest retry path.
 
 ## 8. Safety invariants
 

@@ -49,6 +49,7 @@ export type {
   PersistedCaseReviewResult,
   PersistedEvidenceResult,
   PersistedReportResult,
+  RiskQueueItem,
   ReportCasesRepository,
 } from "./reports-cases";
 

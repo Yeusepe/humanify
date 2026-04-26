@@ -185,6 +185,27 @@ export type CaseSummary = {
   caseId: string;
 };
 
+export type RiskQueueItem = {
+  advisoryOnly: true;
+  anomalySignals: string[];
+  caseId: string;
+  lastEventAt?: string;
+  openedAt: string;
+  reportCount: number;
+  severity: number;
+  status: string;
+  subjectUserId: string;
+  trustSignals: {
+    lowCredibilityReporterCount: number;
+    reporterConsensusConfidence: number;
+    reporterConsensusScore: number;
+    subjectAnomalyConfidence: number;
+    subjectAnomalyScore: number;
+    trustedReporterCount: number;
+    uniqueReporterCount: number;
+  };
+};
+
 export type CaseDetail = {
   case: {
     caseId: string;
@@ -291,6 +312,10 @@ export type ReportCasesRepository = {
     caseId: string;
     guildId: string;
   }): Promise<CaseDetail | undefined>;
+  listRiskQueue(input: {
+    guildId: string;
+    limit?: number;
+  }): Promise<RiskQueueItem[]>;
   listCases(input: {
     guildId: string;
   }): Promise<CaseSummary[]>;
@@ -391,6 +416,215 @@ function mapLearnedSignalRow(row: {
     valueHash,
     weight: row.weight,
   } satisfies LearnedSignalCandidateRecord;
+}
+
+type ReputationViewRow = {
+  score: number;
+  confidence: number;
+  summary: Record<string, unknown>;
+};
+
+async function upsertReputationView(
+  sql: QueryClient,
+  input: {
+    confidence: number;
+    guildId: string;
+    reputationKind: string;
+    score: number;
+    subjectKey: string;
+    summary: Record<string, unknown>;
+  },
+) {
+  await sql`
+    INSERT INTO reputation_views (
+      guild_id,
+      reputation_kind,
+      subject_key,
+      score,
+      confidence,
+      summary
+    )
+    VALUES (
+      ${input.guildId},
+      ${input.reputationKind},
+      ${input.subjectKey},
+      ${input.score},
+      ${input.confidence},
+      ${sql.json(input.summary)}
+    )
+    ON CONFLICT (guild_id, reputation_kind, subject_key)
+    DO UPDATE SET
+      score = excluded.score,
+      confidence = excluded.confidence,
+      summary = excluded.summary,
+      updated_at = now()
+  `;
+}
+
+async function refreshSubjectReportAnomaly(
+  sql: QueryClient,
+  input: {
+    guildId: string;
+    subjectUserId: string;
+  },
+) {
+  const [counts] = await sql<{
+    repeated_trigger_count: number;
+    reports_last_15_minutes: number;
+    reports_last_24_hours: number;
+    unique_reporters_last_15_minutes: number;
+    unique_reporters_last_24_hours: number;
+  }[]>`
+    WITH subject_reports AS (
+      SELECT
+        reporter_user_id,
+        trigger_fingerprint,
+        created_at
+      FROM reports
+      WHERE
+        guild_id = ${input.guildId}
+        AND subject_user_id = ${input.subjectUserId}
+    )
+    SELECT
+      COALESCE(MAX(trigger_count), 0)::int AS repeated_trigger_count,
+      COUNT(*) FILTER (WHERE created_at >= now() - interval '15 minutes')::int AS reports_last_15_minutes,
+      COUNT(*) FILTER (WHERE created_at >= now() - interval '24 hours')::int AS reports_last_24_hours,
+      COUNT(DISTINCT reporter_user_id) FILTER (
+        WHERE created_at >= now() - interval '15 minutes'
+          AND reporter_user_id IS NOT NULL
+      )::int AS unique_reporters_last_15_minutes,
+      COUNT(DISTINCT reporter_user_id) FILTER (
+        WHERE created_at >= now() - interval '24 hours'
+          AND reporter_user_id IS NOT NULL
+      )::int AS unique_reporters_last_24_hours
+    FROM (
+      SELECT
+        reporter_user_id,
+        trigger_fingerprint,
+        created_at,
+        COUNT(*) OVER (PARTITION BY trigger_fingerprint) AS trigger_count
+      FROM subject_reports
+    ) AS counted_reports
+  `;
+
+  const reportsLast15Minutes = counts?.reports_last_15_minutes ?? 0;
+  const reportsLast24Hours = counts?.reports_last_24_hours ?? 0;
+  const uniqueReportersLast15Minutes = counts?.unique_reporters_last_15_minutes ?? 0;
+  const uniqueReportersLast24Hours = counts?.unique_reporters_last_24_hours ?? 0;
+  const repeatedTriggerCount = counts?.repeated_trigger_count ?? 0;
+  const coordinatedReportBurst = reportsLast15Minutes >= 3 && uniqueReportersLast15Minutes >= 3;
+  const score = Math.min(
+    10,
+    reportsLast24Hours
+      + uniqueReportersLast24Hours * 0.5
+      + (coordinatedReportBurst ? 1.5 : 0)
+      + (repeatedTriggerCount > 1 ? 0.5 : 0),
+  );
+  const confidence = Math.min(
+    0.95,
+    0.2
+      + uniqueReportersLast24Hours * 0.15
+      + Math.min(reportsLast24Hours, 4) * 0.08
+      + (repeatedTriggerCount > 1 ? 0.08 : 0),
+  );
+
+  await upsertReputationView(sql, {
+    confidence,
+    guildId: input.guildId,
+    reputationKind: "subject_report_anomaly",
+    score,
+    subjectKey: input.subjectUserId,
+    summary: {
+      advisoryOnly: true,
+      coordinatedReportBurst,
+      note: "Canonical report anomalies are advisory-only and must not directly authorize moderation.",
+      privacyBoundary: "Reporter identities stay guild-scoped; only aggregated counts belong in shared trust summaries.",
+      repeatedTriggerCount,
+      reportsLast15Minutes,
+      reportsLast24Hours,
+      uniqueReportersLast15Minutes,
+      uniqueReportersLast24Hours,
+    },
+  });
+}
+
+async function refreshReporterReputation(
+  sql: QueryClient,
+  input: {
+    caseId: string;
+    guildId: string;
+  },
+) {
+  const reporterRows = await sql<{
+    reporter_user_id: string;
+  }[]>`
+    SELECT DISTINCT reporter_user_id
+    FROM reports
+    WHERE
+      guild_id = ${input.guildId}
+      AND case_id = ${input.caseId}
+      AND reporter_user_id IS NOT NULL
+  `;
+
+  for (const row of reporterRows) {
+    const [summary] = await sql<{
+      confirmed_count: number;
+      false_positive_count: number;
+      last_outcome_at: string | null;
+      reviewed_case_count: number;
+    }[]>`
+      WITH reporter_cases AS (
+        SELECT DISTINCT case_id
+        FROM reports
+        WHERE
+          guild_id = ${input.guildId}
+          AND reporter_user_id = ${row.reporter_user_id}
+          AND case_id IS NOT NULL
+      ),
+      latest_outcomes AS (
+        SELECT DISTINCT ON (co.case_id)
+          co.case_id,
+          co.created_at,
+          co.outcome::text AS outcome
+        FROM case_outcomes AS co
+        INNER JOIN reporter_cases AS rc
+          ON rc.case_id = co.case_id
+        ORDER BY co.case_id, co.created_at DESC
+      )
+      SELECT
+        COUNT(*) FILTER (
+          WHERE outcome IN ('confirmed_scam', 'confirmed_bot', 'confirmed_hacked_account')
+        )::int AS confirmed_count,
+        COUNT(*) FILTER (
+          WHERE outcome IN ('false_positive', 'dismissed', 'overturned')
+        )::int AS false_positive_count,
+        MAX(created_at)::text AS last_outcome_at,
+        COUNT(*)::int AS reviewed_case_count
+      FROM latest_outcomes
+    `;
+
+    const reviewedCaseCount = summary?.reviewed_case_count ?? 0;
+    const confirmedCount = summary?.confirmed_count ?? 0;
+    const falsePositiveCount = summary?.false_positive_count ?? 0;
+    const score = reviewedCaseCount === 0 ? 0 : (confirmedCount + 0.5) / (reviewedCaseCount + 1);
+    const confidence = Math.min(0.95, reviewedCaseCount / 5);
+
+    await upsertReputationView(sql, {
+      confidence,
+      guildId: input.guildId,
+      reputationKind: "reporter_reputation",
+      score,
+      subjectKey: row.reporter_user_id,
+      summary: {
+        advisoryOnly: true,
+        confirmedCount,
+        falsePositiveCount,
+        lastOutcomeAt: summary?.last_outcome_at ?? undefined,
+        note: "Reporter reputation is advisory weighting for review surfaces only; it never directly authorizes enforcement.",
+        reviewedCaseCount,
+      },
+    });
+  }
 }
 
 async function reserveIdempotency<TResult extends Record<string, unknown>>(
@@ -857,6 +1091,11 @@ export function createPostgresReportCasesRepository(input: {
 
         caseId = reportRow.case_id ?? caseId;
 
+        await refreshSubjectReportAnomaly(transaction, {
+          guildId: input.guildId,
+          subjectUserId: input.body.subjectUserId,
+        });
+
         let caseEventId: string | undefined;
         if (caseId) {
           caseEventId = crypto.randomUUID();
@@ -1056,6 +1295,11 @@ export function createPostgresReportCasesRepository(input: {
             END
           WHERE case_id = ${input.caseId}
         `;
+
+        await refreshReporterReputation(transaction, {
+          caseId: input.caseId,
+          guildId: input.guildId,
+        });
 
         await persistAuditRecord(transaction, {
           action: "review",
@@ -1632,6 +1876,137 @@ export function createPostgresReportCasesRepository(input: {
       `;
 
       return rows.map(mapLearnedSignalRow);
+    },
+
+    async listRiskQueue(input) {
+      const rows = await sql<{
+        anomaly_confidence: number | null;
+        anomaly_score: number | null;
+        anomaly_summary: Record<string, unknown> | null;
+        case_id: string;
+        last_event_at: string | null;
+        opened_at: string;
+        report_count: number;
+        severity: number;
+        status: string;
+        subject_user_id: string;
+        trusted_reporter_count: number;
+        low_credibility_reporter_count: number;
+        unique_reporter_count: number;
+      }[]>`
+        WITH queued_cases AS (
+          SELECT
+            c.case_id,
+            c.subject_user_id,
+            c.severity,
+            c.status::text AS status,
+            c.opened_at
+          FROM cases AS c
+          WHERE
+            c.guild_id = ${input.guildId}
+            AND c.status IN ('open', 'reviewing', 'appealed', 'reopened')
+          ORDER BY c.opened_at DESC
+          LIMIT ${input.limit ?? 50}
+        ),
+        last_case_events AS (
+          SELECT
+            ce.case_id,
+            MAX(ce.created_at)::text AS last_event_at
+          FROM case_events AS ce
+          INNER JOIN queued_cases AS qc
+            ON qc.case_id = ce.case_id
+          GROUP BY ce.case_id
+        ),
+        reporter_rollup AS (
+          SELECT
+            r.case_id,
+            COUNT(*)::int AS report_count,
+            COUNT(DISTINCT r.reporter_user_id)::int AS unique_reporter_count,
+            COUNT(DISTINCT r.reporter_user_id) FILTER (
+              WHERE
+                COALESCE(rv.score, 0) >= 0.7
+                AND COALESCE(rv.confidence, 0) >= 0.2
+            )::int AS trusted_reporter_count,
+            COUNT(DISTINCT r.reporter_user_id) FILTER (
+              WHERE
+                COALESCE(rv.score, 1) <= 0.35
+                AND COALESCE(rv.confidence, 0) >= 0.2
+            )::int AS low_credibility_reporter_count
+          FROM reports AS r
+          INNER JOIN queued_cases AS qc
+            ON qc.case_id = r.case_id
+          LEFT JOIN reputation_views AS rv
+            ON rv.guild_id = r.guild_id
+            AND rv.reputation_kind = ${"reporter_reputation"}
+            AND rv.subject_key = r.reporter_user_id
+          GROUP BY r.case_id
+        )
+        SELECT
+          qc.case_id,
+          qc.subject_user_id,
+          qc.severity,
+          qc.status,
+          qc.opened_at,
+          lce.last_event_at,
+          COALESCE(rr.report_count, 0) AS report_count,
+          COALESCE(rr.unique_reporter_count, 0) AS unique_reporter_count,
+          COALESCE(rr.trusted_reporter_count, 0) AS trusted_reporter_count,
+          COALESCE(rr.low_credibility_reporter_count, 0) AS low_credibility_reporter_count,
+          rv_subject.score::float8 AS anomaly_score,
+          rv_subject.confidence::float8 AS anomaly_confidence,
+          rv_subject.summary AS anomaly_summary
+        FROM queued_cases AS qc
+        LEFT JOIN last_case_events AS lce
+          ON lce.case_id = qc.case_id
+        LEFT JOIN reporter_rollup AS rr
+          ON rr.case_id = qc.case_id
+        LEFT JOIN reputation_views AS rv_subject
+          ON rv_subject.guild_id = ${input.guildId}
+          AND rv_subject.reputation_kind = ${"subject_report_anomaly"}
+          AND rv_subject.subject_key = qc.subject_user_id
+        ORDER BY
+          COALESCE(rv_subject.score, 0) DESC,
+          qc.severity DESC,
+          qc.opened_at DESC
+      `;
+
+      return rows.map((row) => {
+        const anomalySummary = (row.anomaly_summary ?? {}) as Record<string, unknown>;
+        const coordinatedReportBurst = anomalySummary.coordinatedReportBurst === true;
+        const anomalySignals = [
+          ...(coordinatedReportBurst ? ["coordinated_report_burst"] : []),
+          ...(row.trusted_reporter_count > 0 ? ["trusted_reporter_consensus"] : []),
+          ...(row.low_credibility_reporter_count > 0 ? ["low_credibility_reporter_present"] : []),
+        ];
+        const reporterConsensusScore = row.unique_reporter_count === 0
+          ? 0
+          : row.trusted_reporter_count / row.unique_reporter_count;
+        const reporterConsensusConfidence = Math.min(
+          0.95,
+          row.unique_reporter_count * 0.2 + row.trusted_reporter_count * 0.1,
+        );
+
+        return {
+          advisoryOnly: true,
+          anomalySignals,
+          caseId: row.case_id,
+          lastEventAt: row.last_event_at ?? undefined,
+          openedAt: row.opened_at,
+          reportCount: row.report_count,
+          severity: row.severity,
+          status: row.status,
+          subjectUserId: row.subject_user_id,
+          trustSignals: {
+            lowCredibilityReporterCount: row.low_credibility_reporter_count,
+            reporterConsensusConfidence,
+            reporterConsensusScore,
+            subjectAnomalyConfidence: row.anomaly_confidence ?? 0,
+            subjectAnomalyScore: row.anomaly_score ?? 0,
+            trustedReporterCount: row.trusted_reporter_count,
+            uniqueReporterCount: row.unique_reporter_count,
+          },
+        } satisfies RiskQueueItem;
+      });
     },
 
     async getCaseDetail(input) {

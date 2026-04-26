@@ -187,6 +187,12 @@ The first real moderator dashboard in `apps\dashboard-start` now uses four opera
 
 These routes are intentionally read-honest. They may show `pending_postgres_projection`, `dependency_unavailable`, `env_default_policy`, or other explicit boundary states, but they must not fabricate live case rows, moderation history, or verification outcomes before Postgres-backed read models and Electric sync exist.
 
+Current trust/anomaly concrete boundary:
+
+- `POST /guilds/:guildId/reports` now refreshes canonical per-subject anomaly summaries in `reputation_views`
+- `POST /guilds/:guildId/cases/:caseId/review` now refreshes canonical per-reporter reputation summaries in `reputation_views`
+- `GET /guilds/:guildId/risk-queue` may read those Postgres-backed summaries directly, but they remain advisory inputs for moderator review rather than direct enforcement authority
+
 ## 9. What follow-on work depends on this doc
 
 - `define-shared-contracts` must keep the Bun ↔ Rust boundary aligned with the ownership matrix above.
