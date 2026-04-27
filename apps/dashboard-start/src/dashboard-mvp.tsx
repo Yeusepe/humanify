@@ -486,8 +486,8 @@ function statusTone(status: CaseQueryPlan["readModelStatus"] | (typeof honestRea
 
 function statusClassName(current: boolean) {
   return current
-    ? "border-accent/40 bg-accent/8 text-foreground"
-    : "border-border/60 bg-background text-muted hover:border-accent/30 hover:text-foreground";
+    ? "border-accent/30 bg-accent/10 text-foreground shadow-[0_16px_36px_rgba(79,70,229,0.18)]"
+    : "border-white/10 bg-content2/60 text-muted hover:border-accent/25 hover:bg-white/5 hover:text-foreground";
 }
 
 function DashboardLayout({
@@ -503,31 +503,31 @@ function DashboardLayout({
 }>) {
   return (
     <ProductShell
-      description="The MVP keeps operator visibility useful without claiming live moderation truth that Postgres and Electric do not expose yet."
+      description="Track verification posture, policy boundaries, and operator workflows from one dark command center without fabricating case data that the canonical read models do not expose yet."
       eyebrow="HUMANIFY / DASHBOARD"
       panels={[
         {
-          description: "Shared contract metadata comes from @humanify/contracts, not copied API constants.",
-          title: "Contracts",
+          description: "Shared metadata comes from @humanify/contracts instead of duplicated dashboard constants.",
+          title: "Contract schema",
           value: `v${contractSummary.contractVersion}`,
         },
         {
-          description: "Cases, queue, and audit views stay explicitly projection-pending until canonical read models exist.",
-          title: "Read honesty",
+          description: "Queue, case, and audit surfaces stay explicit about missing projections instead of guessing live moderation state.",
+          title: "Read-model state",
           value: "Pending projections",
           variant: "secondary",
         },
         {
           description: "Bun still decides enforcement. Rust stays advisory and Postgres remains canonical.",
-          title: "Authority",
+          title: "Authority model",
           value: "Bun authoritative",
           variant: "tertiary",
         },
       ]}
-      title="Moderation dashboard MVP"
+      title="Moderation command center"
     >
       <div className="space-y-6">
-        <Card variant="secondary">
+        <Card className="border border-white/10 bg-content2/55 shadow-[0_18px_44px_rgba(3,7,18,0.24)]" variant="secondary">
           <Card.Header className="gap-3">
             <Card.Title>{sectionTitle}</Card.Title>
             <Card.Description>{sectionDescription}</Card.Description>
@@ -554,7 +554,7 @@ function DashboardLayout({
 
 function StatusText({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <span className="inline-flex rounded-full border border-border/60 bg-default px-2.5 py-1 text-xs font-semibold tracking-[0.14em] text-muted uppercase">
+    <span className="inline-flex rounded-full border border-white/10 bg-content2/70 px-2.5 py-1 text-xs font-semibold tracking-[0.14em] text-muted uppercase">
       {children}
     </span>
   );

@@ -35,6 +35,52 @@ import {
 
 const fixedNow = Date.UTC(2026, 0, 1, 0, 0, 0);
 
+function toComponentJson(component: unknown): Record<string, unknown> {
+  if (typeof component === "object" && component !== null && "toJSON" in component && typeof (component as { toJSON?: unknown }).toJSON === "function") {
+    return (component as { toJSON(): Record<string, unknown> }).toJSON();
+  }
+
+  return component as Record<string, unknown>;
+}
+
+function findCustomId(components: readonly unknown[] | undefined): string {
+  let match = "";
+  const walk = (entries: readonly unknown[] | undefined) => {
+    for (const component of entries ?? []) {
+      const json = toComponentJson(component);
+      if (!match && typeof json.custom_id === "string") {
+        match = json.custom_id;
+      }
+
+      if (!match && Array.isArray(json.components)) {
+        walk(json.components);
+      }
+    }
+  };
+
+  walk(components);
+  return match;
+}
+
+function extractDiscordMessageText(components: readonly unknown[] | undefined) {
+  const lines: string[] = [];
+  const walk = (entries: readonly unknown[] | undefined) => {
+    for (const component of entries ?? []) {
+      const json = toComponentJson(component);
+      if (typeof json.content === "string" && json.content.length > 0) {
+        lines.push(json.content);
+      }
+
+      if (Array.isArray(json.components)) {
+        walk(json.components);
+      }
+    }
+  };
+
+  walk(components);
+  return lines.join("\n");
+}
+
 const testEnv = {
   DISCORD_CLIENT_ID: "client_123",
   DISCORD_CLIENT_SECRET: "secret_123",
@@ -141,14 +187,13 @@ test("message-context intake, verifier signed links, and moderation planning sta
   } as any);
 
   const intakeReply = replies[0] as {
-    components: Array<{ toJSON(): { components: Array<{ custom_id?: string }> } }>;
-    content: string;
+    components: readonly unknown[];
   };
-  const verificationShortcut = intakeReply.components[0]?.toJSON().components[0]?.custom_id ?? "";
+  const verificationShortcut = findCustomId(intakeReply.components);
   const parsedShortcut = parseComponentCustomId(verificationShortcut);
   const [caseId, userId] = parsedShortcut.entityId.split("~");
 
-  expect(intakeReply.content).toContain("Canonical Postgres state was recorded");
+  expect(extractDiscordMessageText(intakeReply.components)).toContain("Canonical Postgres state was recorded");
   expect(parsedShortcut).toMatchObject({
     entityId: expect.stringContaining("~"),
     guildId: "guild_123",

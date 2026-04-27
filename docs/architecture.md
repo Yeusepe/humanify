@@ -103,6 +103,7 @@ Humanify now keeps `/scan` and `/scan-all` durable without moving the Bun produc
 2. `apps\api-bun` writes `guild_scan_requests`, audit rows, and outbox metadata to Postgres first.
 3. `apps\scan-worker-temporal` claims pending requests from canonical Postgres state and starts a Temporal workflow on the configured task queue.
 4. The worker reuses the shared `packages\discord-core` weighted member scorer, opens canonical advisory reports once a member reaches the current watch threshold on the shared 1-10 score scale, refreshes the moderator warning-card surface through the existing API boundary, and publishes a moderator-visible completion/failure summary after the durable scan run finishes.
+5. Moderator/admin Discord messages now use a shared **Components v2** presentation contract (containers, text displays, separators, and action rows) so bot replies, warning cards, verification panels, and durable scan summaries stay visually consistent and action-oriented.
 
 This preserves the repo's existing invariant: Bun remains the product authority, while Temporal provides workflow durability for long-running Discord member scans.
 

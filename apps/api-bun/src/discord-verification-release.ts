@@ -1,5 +1,5 @@
 /**
- * Purpose: Applies verification-driven Discord role grants through the official Discord REST client.
+ * Purpose: Applies verification-driven Discord role grants and containment cleanup through the official Discord REST client.
  * Governing docs:
  * - AGENTS.md
  * - Implementation Plan.txt
@@ -9,6 +9,7 @@
  * External references:
  * - https://discord.js.org/docs/packages/rest/main/REST:Class
  * - https://discord.com/developers/docs/resources/guild#add-guild-member-role
+ * - https://discord.com/developers/docs/resources/guild#remove-guild-member-role
  * Tests:
  * - apps/api-bun/src/app.test.ts
  */
@@ -20,6 +21,7 @@ export type VerificationRoleReleaseExecutor = {
   applyRoleGrants(input: {
     auditLogReason: string;
     guildId: string;
+    removeRoleIds: string[];
     roleIds: string[];
     userId: string;
   }): Promise<void>;
@@ -31,9 +33,17 @@ export function createDiscordVerificationRoleReleaseExecutor(input: {
   const rest = new REST().setToken(input.botToken);
 
   return {
-    async applyRoleGrants({ auditLogReason, guildId, roleIds, userId }) {
+    async applyRoleGrants({ auditLogReason, guildId, removeRoleIds, roleIds, userId }) {
       for (const roleId of roleIds) {
         await rest.put(Routes.guildMemberRole(guildId, userId, roleId), {
+          headers: {
+            "X-Audit-Log-Reason": auditLogReason,
+          },
+        });
+      }
+
+      for (const roleId of removeRoleIds) {
+        await rest.delete(Routes.guildMemberRole(guildId, userId, roleId), {
           headers: {
             "X-Audit-Log-Reason": auditLogReason,
           },

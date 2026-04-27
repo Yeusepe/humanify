@@ -46,7 +46,7 @@ async function renderRoute(path: "/" | "/cases" | "/policy" | "/verification") {
 test("overview renders the moderation dashboard framing", async () => {
   const markup = await renderRoute("/");
 
-  expect(markup).toContain("Moderation dashboard MVP");
+  expect(markup).toContain("Moderation command center");
   expect(markup).toContain("Pending projections");
   expect(markup).toContain("Bun authoritative");
 });

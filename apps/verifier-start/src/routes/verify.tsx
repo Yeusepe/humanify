@@ -461,7 +461,7 @@ function VerificationRoute() {
 
   return (
     <ProductShell
-      description="This verifier uses Bun-signed challenge state plus the server-returned verification config snapshot so people only see the proof paths the server currently allows."
+      description="This guided verifier uses Bun-signed session state and the live guild verification snapshot so people only see the proof paths their server currently allows."
       eyebrow="HUMANIFY / VERIFIER"
       panels={[
         {
@@ -482,7 +482,7 @@ function VerificationRoute() {
           variant: "tertiary",
         },
       ]}
-      title="Verification flow"
+      title="Verification workspace"
     >
       <div className="space-y-6">
         {!hasVerificationLink(search) ? (
@@ -987,7 +987,7 @@ function VerificationRoute() {
 
 function DetailRow({ label, value }: Readonly<{ label: string; value: string }>) {
   return (
-    <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
+    <div className="flex flex-col gap-1 rounded-2xl border border-white/8 bg-white/4 px-3 py-3 sm:flex-row sm:items-baseline sm:justify-between">
       <span className="font-medium text-foreground">{label}</span>
       <span className="break-all text-muted">{value}</span>
     </div>
@@ -1043,17 +1043,19 @@ function ProviderLaneCard({
           });
           return (
             <div
-              className={`rounded-2xl border px-4 py-4 ${current ? "border-foreground/20 bg-content2" : "border-content3"}`}
+              className={`rounded-3xl border px-4 py-4 shadow-[0_10px_30px_rgba(3,7,18,0.16)] ${
+                current ? "border-accent/30 bg-accent/10" : "border-white/10 bg-white/4"
+              }`}
               key={provider.id}
             >
               <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                 <div className="space-y-2">
                   <div className="flex flex-wrap items-center gap-2">
                     <p className="font-semibold text-foreground">{provider.title}</p>
-                    <span className="rounded-full border border-content3 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-foreground">
+                    <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-foreground">
                       {provider.privacySummary}
                     </span>
-                    <span className="rounded-full border border-content3 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-foreground">
+                    <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-foreground">
                       {availability.allowed ? "Works with this proof" : "Blocked for this server"}
                     </span>
                   </div>

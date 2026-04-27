@@ -48,7 +48,22 @@ function createChatCommandInteraction(input: {
   getChannel?: (name: string) => { id: string; isTextBased(): boolean; send?: (payload: unknown) => Promise<void> } | null;
   getString?: (name: string) => string | null;
   getSubcommand?: () => string;
-  getUser?: (name: string) => { id: string; username?: string } | null;
+  getUser?: (name: string) => { id: string; send?: (payload: unknown) => Promise<void>; username?: string } | null;
+  guild?: {
+    members: {
+      fetch(userId: string): Promise<{
+        roles: {
+          add(roleIds: readonly string[] | string[], reason?: string): Promise<void>;
+        };
+        user: {
+          id: string;
+          send?: (payload: unknown) => Promise<void>;
+          username?: string;
+        };
+      }>;
+    };
+    name?: string;
+  };
   memberPermissions?: PermissionsBitField | null;
   reply?: (payload: unknown) => Promise<void>;
   userId?: string;
@@ -56,6 +71,7 @@ function createChatCommandInteraction(input: {
   return {
     commandName: input.commandName,
     channel: input.channel,
+    guild: input.guild,
     guildId: "guild_123",
     inGuild: () => true,
     isButton: () => false,
@@ -83,6 +99,21 @@ function createChatCommandInteraction(input: {
 
 function createComponentInteraction(input: {
   customId: string;
+  guild?: {
+    members: {
+      fetch(userId: string): Promise<{
+        roles: {
+          add(roleIds: readonly string[] | string[], reason?: string): Promise<void>;
+        };
+        user: {
+          id: string;
+          send?: (payload: unknown) => Promise<void>;
+          username?: string;
+        };
+      }>;
+    };
+    name?: string;
+  };
   kind: "button" | "channel_select" | "role_select" | "string_select";
   memberPermissions?: PermissionsBitField | null;
   reply?: (payload: unknown) => Promise<void>;
@@ -92,6 +123,7 @@ function createComponentInteraction(input: {
 }) {
   return {
     customId: input.customId,
+    guild: input.guild,
     guildId: "guild_123",
     inGuild: () => true,
     isAnySelectMenu: () => input.kind !== "button",
@@ -1200,21 +1232,20 @@ test("humanify setup truncates oversized bundle labels and summaries before rend
   await runComponent({ action: "next", kind: "button" });
 
   expect(updates).not.toHaveLength(0);
-  let bundleSelect:
-    | {
-      options?: Array<{ description?: string; label?: string }>;
-    }
-    | undefined;
+  let bundleSelect: Record<string, unknown> | undefined;
   walkDiscordComponents(latest.components, (component) => {
     if (!bundleSelect && Array.isArray(component.options)) {
-      bundleSelect = component as typeof bundleSelect;
+      bundleSelect = component;
     }
   });
 
-  expect(bundleSelect.options?.[0]?.label?.length).toBeLessThanOrEqual(100);
-  expect(bundleSelect.options?.[0]?.description?.length).toBeLessThanOrEqual(100);
-  expect(bundleSelect.options?.[0]?.label?.endsWith("…")).toBe(true);
-  expect(bundleSelect.options?.[0]?.description?.endsWith("…")).toBe(true);
+  const options = Array.isArray(bundleSelect?.options)
+    ? bundleSelect.options as Array<{ description?: string; label?: string }>
+    : [];
+  expect(options[0]?.label?.length).toBeLessThanOrEqual(100);
+  expect(options[0]?.description?.length).toBeLessThanOrEqual(100);
+  expect(options[0]?.label?.endsWith("…")).toBe(true);
+  expect(options[0]?.description?.endsWith("…")).toBe(true);
 });
 
 test("case open refuses members who are not trusted moderators", async () => {
@@ -1479,6 +1510,163 @@ test("verify allows members to start verification for themselves", async () => {
   expect(verifyReplyText).toContain("token=challenge_123");
 });
 
+test("verify notifies and contains the target member for moderator-started verification", async () => {
+  const replies: unknown[] = [];
+  const dmPayloads: unknown[] = [];
+  const containmentCalls: Array<{ reason?: string; roleIds: string[] }> = [];
+  const handler = createInteractionHandler({
+    apiClient: createTestApiClient({
+      createVerificationSession: async (guildId, body) => ({
+        challengeToken: "challenge_123",
+        persistence: "persisted",
+        session: {
+          challengeId: "challenge_123",
+          guildId,
+          sessionId: "session_123",
+          state: "pending",
+          userId: body.userId,
+        },
+      }),
+      getGuildVerificationConfig: async (guildId) => ({
+        persistence: "persisted",
+        verificationConfig: {
+          ...(
+            await createTestApiClient().getGuildVerificationConfig(guildId)
+          ).verificationConfig,
+          source: "persisted",
+          suspiciousRoleIds: ["role_quarantine", "role_no_access"],
+          trustedRoleIds: ["role_mod"],
+        },
+      }),
+    }),
+    verifierBaseUrl: "http://127.0.0.1:3212",
+  });
+
+  await handler(
+    createChatCommandInteraction({
+      commandName: "verify",
+      getUser(name) {
+        if (name === "user") return { id: "subject_123", username: "subject" };
+        return null;
+      },
+      guild: {
+        members: {
+          async fetch() {
+            return {
+              roles: {
+                async add(roleIds, reason) {
+                  containmentCalls.push({ reason, roleIds: [...roleIds] });
+                },
+              },
+              user: {
+                id: "subject_123",
+                async send(payload) {
+                  dmPayloads.push(payload);
+                },
+                username: "subject",
+              },
+            };
+          },
+        },
+        name: "Humanify HQ",
+      },
+      memberPermissions: createGuildInteractionPermissions(PermissionFlagsBits.KickMembers),
+      reply: async (payload) => {
+        replies.push(payload);
+      },
+      userId: "mod_123",
+    }),
+  );
+
+  expect(dmPayloads).toHaveLength(1);
+  expect(extractDiscordMessageText(dmPayloads[0] as { components?: readonly unknown[]; content?: string })).toContain(
+    "A Humanify moderator asked you to complete verification for Humanify HQ.",
+  );
+  expect(extractDiscordMessageText(dmPayloads[0] as { components?: readonly unknown[]; content?: string })).toContain(
+    "http://127.0.0.1:3212/verify",
+  );
+  expect(containmentCalls).toEqual([
+    {
+      reason: expect.stringContaining("case:session_123"),
+      roleIds: ["role_quarantine", "role_no_access"],
+    },
+  ]);
+  const replyText = extractDiscordMessageText(replies[0] as { components?: readonly unknown[]; content?: string });
+  expect(replyText).toContain("Humanify DM'd <@subject_123> with the verifier link and instructions.");
+  expect(replyText).toContain("Applied containment roles: <@&role_quarantine>, <@&role_no_access>.");
+});
+
+test("verify surfaces DM delivery failures instead of pretending the moderator-started flow succeeded cleanly", async () => {
+  const replies: unknown[] = [];
+  const handler = createInteractionHandler({
+    apiClient: createTestApiClient({
+      createVerificationSession: async (guildId, body) => ({
+        challengeToken: "challenge_123",
+        persistence: "persisted",
+        session: {
+          challengeId: "challenge_123",
+          guildId,
+          sessionId: "session_123",
+          state: "pending",
+          userId: body.userId,
+        },
+      }),
+      getGuildVerificationConfig: async (guildId) => ({
+        persistence: "persisted",
+        verificationConfig: {
+          ...(
+            await createTestApiClient().getGuildVerificationConfig(guildId)
+          ).verificationConfig,
+          source: "persisted",
+          suspiciousRoleIds: [],
+          trustedRoleIds: ["role_mod"],
+        },
+      }),
+    }),
+    verifierBaseUrl: "http://127.0.0.1:3212",
+  });
+
+  await handler(
+    createChatCommandInteraction({
+      commandName: "verify",
+      getUser(name) {
+        if (name === "user") return { id: "subject_123", username: "subject" };
+        return null;
+      },
+      guild: {
+        members: {
+          async fetch() {
+            return {
+              roles: {
+                async add() {
+                  throw new Error("containment should not run without configured roles");
+                },
+              },
+              user: {
+                id: "subject_123",
+                async send() {
+                  throw new Error("DMs are closed");
+                },
+                username: "subject",
+              },
+            };
+          },
+        },
+        name: "Humanify HQ",
+      },
+      memberPermissions: createGuildInteractionPermissions(PermissionFlagsBits.KickMembers),
+      reply: async (payload) => {
+        replies.push(payload);
+      },
+      userId: "mod_123",
+    }),
+  );
+
+  const replyText = extractDiscordMessageText(replies[0] as { components?: readonly unknown[]; content?: string });
+  expect(replyText).toContain("Humanify could not DM <@subject_123> automatically.");
+  expect(replyText).toContain("No containment roles are configured for this server yet.");
+});
+
 test("verify refuses members who try to start verification for someone else without trusted moderator permission", async () => {
   const replies: unknown[] = [];
   const handler = createInteractionHandler({
@@ -1618,6 +1806,8 @@ test("message context intake opens a report and then attaches canonical Discord 
 
 test("verification shortcut refreshes the advisory warning card for the linked case", async () => {
   const replies: unknown[] = [];
+  const dmPayloads: unknown[] = [];
+  const containmentCalls: Array<{ reason?: string; roleIds: string[] }> = [];
   const warningCalls: unknown[] = [];
   const handler = createInteractionHandler({
     apiClient: createTestApiClient({
@@ -1631,6 +1821,17 @@ test("verification shortcut refreshes the advisory warning card for the linked c
           sessionId: "session_123",
           state: "pending",
           userId: body.userId,
+        },
+      }),
+      getGuildVerificationConfig: async (guildId) => ({
+        persistence: "persisted",
+        verificationConfig: {
+          ...(
+            await createTestApiClient().getGuildVerificationConfig(guildId)
+          ).verificationConfig,
+          source: "persisted",
+          suspiciousRoleIds: ["role_quarantine"],
+          trustedRoleIds: ["role_mod"],
         },
       }),
     }),
@@ -1651,6 +1852,27 @@ test("verification shortcut refreshes the advisory warning card for the linked c
         guildId: "guild_123",
         kind: "verification_start",
       }),
+      guild: {
+        members: {
+          async fetch() {
+            return {
+              roles: {
+                async add(roleIds, reason) {
+                  containmentCalls.push({ reason, roleIds: [...roleIds] });
+                },
+              },
+              user: {
+                id: "user_123",
+                async send(payload) {
+                  dmPayloads.push(payload);
+                },
+                username: "user",
+              },
+            };
+          },
+        },
+        name: "Humanify HQ",
+      },
       kind: "button",
       memberPermissions: createGuildInteractionPermissions(PermissionFlagsBits.KickMembers),
       reply: async (payload) => {
@@ -1672,6 +1894,15 @@ test("verification shortcut refreshes the advisory warning card for the linked c
   expect(shortcutReplyText).toContain("Moderator warning updated in <#channel_alerts>.");
   expect(shortcutReplyText).toContain("http://127.0.0.1:3212/verify");
   expect(shortcutReplyText).toContain("sessionId=session_123");
+  expect(shortcutReplyText).toContain("Humanify DM'd <@user_123> with the verifier link and instructions.");
+  expect(shortcutReplyText).toContain("Applied containment roles: <@&role_quarantine>.");
+  expect(dmPayloads).toHaveLength(1);
+  expect(containmentCalls).toEqual([
+    {
+      reason: expect.stringContaining("case:session_123"),
+      roleIds: ["role_quarantine"],
+    },
+  ]);
 });
 
 test("warning-card sync posts a new advisory message and persists the canonical alert ref", async () => {

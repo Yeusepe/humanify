@@ -1,5 +1,5 @@
 /*
- Purpose: Loads Tailwind CSS v4 and HeroUI styles for the dashboard shell and applies a light default theme.
+ Purpose: Loads Tailwind CSS v4 and HeroUI styles for the dashboard shell and applies the shared dark product theme.
  Governing docs:
  - AGENTS.md
  - Implementation Plan.txt
@@ -16,6 +16,45 @@
 @import "tailwindcss" source("../");
 @import "@heroui/styles";
 
-:root {
-  --accent: oklch(0.62 0.19 253.83);
+@layer base {
+  :root,
+  [data-theme="dark"] {
+    color-scheme: dark;
+    --accent: oklch(0.68 0.17 259.72);
+    --accent-foreground: oklch(0.17 0.03 262.4);
+    --background: oklch(0.17 0.02 262.38);
+    --foreground: oklch(0.96 0.01 255.35);
+    --surface: oklch(0.22 0.02 262.36);
+    --surface-secondary: oklch(0.26 0.02 262.85);
+    --default: oklch(0.23 0.02 262.62);
+    --default-foreground: oklch(0.95 0.01 255.35);
+    --overlay: oklch(0.17 0.02 262.38 / 0.82);
+    --muted: oklch(0.73 0.02 255.66);
+    --border: oklch(0.35 0.02 262.17);
+    --separator: oklch(0.31 0.02 262.17);
+    --content1: oklch(0.2 0.02 262.4);
+    --content2: oklch(0.24 0.02 262.4);
+    --content3: oklch(0.29 0.02 262.4);
+    --content4: oklch(0.34 0.02 262.4);
+    --field-background: oklch(0.2 0.02 262.4);
+    --field-border: oklch(0.33 0.02 262.17);
+    --field-foreground: oklch(0.95 0.01 255.35);
+    --field-placeholder: oklch(0.63 0.02 255.66);
+  }
+
+  body {
+    min-height: 100vh;
+    background:
+      radial-gradient(circle at top left, rgba(91, 103, 255, 0.18), transparent 24%),
+      radial-gradient(circle at top right, rgba(56, 189, 248, 0.12), transparent 18%),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 36%),
+      var(--background);
+    color: var(--foreground);
+    font-feature-settings: "ss01" 1, "cv01" 1;
+  }
+
+  ::selection {
+    background: color-mix(in oklch, var(--accent) 35%, transparent);
+    color: var(--foreground);
+  }
 }

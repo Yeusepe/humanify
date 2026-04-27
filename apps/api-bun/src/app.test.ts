@@ -2862,9 +2862,11 @@ test("verification release applies configured Discord role grants after a passed
       { roleId: "role_18", trigger: "age_over_18" },
       { roleId: "role_21", trigger: "age_over_21" },
     ],
+    suspiciousRoleIds: ["role_quarantine", "role_read_only"],
   });
   const appliedRoleCalls: Array<{
     auditLogReason: string;
+    removeRoleIds: string[];
     guildId: string;
     roleIds: string[];
     userId: string;
@@ -2876,6 +2878,7 @@ test("verification release applies configured Discord role grants after a passed
         appliedRoleCalls.push({
           auditLogReason: input.auditLogReason,
           guildId: input.guildId,
+          removeRoleIds: [...input.removeRoleIds],
           roleIds: [...input.roleIds],
           userId: input.userId,
         });
@@ -2953,6 +2956,7 @@ test("verification release applies configured Discord role grants after a passed
   expect(appliedRoleCalls).toEqual([
     expect.objectContaining({
       guildId: "guild_123",
+      removeRoleIds: ["role_quarantine", "role_read_only"],
       roleIds: ["role_human", "role_18", "role_21"],
       userId: "user_123",
     }),

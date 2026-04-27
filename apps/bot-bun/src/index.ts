@@ -56,6 +56,7 @@ import {
   buildMemberScanReportReason,
   buildMemberScanReporterNotes,
   buildComponentCustomId,
+  createDiscordAuditReason,
   buildSetupFlowCustomId,
   createBotGatewayIntents,
   createHumanifyApplicationCommands,
@@ -750,6 +751,84 @@ function buildVerificationSessionReply(input: {
     `Open the verifier: ${verifierLink}`,
     createPersistenceNote(input.persistence),
   ].join("\n"), input.followUpNote);
+}
+
+function joinFollowUpNotes(...notes: Array<string | undefined>) {
+  const present = notes
+    .map((note) => note?.trim())
+    .filter((note): note is string => Boolean(note));
+  return present.length > 0 ? present.join("\n") : undefined;
+}
+
+function formatRoleMentions(roleIds: readonly string[]) {
+  return roleIds.map((roleId) => `<@&${roleId}>`).join(", ");
+}
+
+async function fetchVerificationTargetMember(
+  interaction: Pick<ChatInputCommandInteraction | ButtonInteraction, "guild">,
+  userId: string,
+) {
+  if (!interaction.guild) {
+    return undefined;
+  }
+
+  return interaction.guild.members.fetch(userId);
+}
+
+async function applyModeratorVerificationStartEffects(input: {
+  interaction: Pick<ChatInputCommandInteraction | ButtonInteraction, "guild">;
+  requestTelemetry: RequestTelemetryContext;
+  sessionId: string;
+  subjectUserId: string;
+  verifierLink: string;
+  verificationConfig: BotGuildVerificationConfig;
+}) {
+  const member = await fetchVerificationTargetMember(input.interaction, input.subjectUserId);
+  const notes: string[] = [];
+  if (!member) {
+    return [
+      `Humanify could not load <@${input.subjectUserId}> from the guild, so it could not DM them or apply containment roles.`,
+    ];
+  }
+
+  try {
+    await member.user.send(buildHumanifyInteractionMessage({
+      content: [
+        `Humanify verification requested for ${input.interaction.guild?.name ?? "this server"}`,
+        `A Humanify moderator asked you to complete verification for ${input.interaction.guild?.name ?? "this server"}.`,
+        "Complete the verification so Humanify can confirm your access and release any configured containment.",
+        `Open the verifier: ${input.verifierLink}`,
+      ].join("\n"),
+      tone: "info",
+    }));
+    notes.push(`Humanify DM'd <@${input.subjectUserId}> with the verifier link and instructions.`);
+  } catch {
+    notes.push(`Humanify could not DM <@${input.subjectUserId}> automatically. Share this verifier link manually: ${input.verifierLink}`);
+  }
+
+  if (input.verificationConfig.suspiciousRoleIds.length === 0) {
+    notes.push("No containment roles are configured for this server yet.");
+    return notes;
+  }
+
+  try {
+    await member.roles.add(
+      input.verificationConfig.suspiciousRoleIds,
+      createDiscordAuditReason({
+        action: "quarantine",
+        caseId: input.sessionId,
+        reasonCodes: ["verification_requested"],
+        requestId: input.requestTelemetry.requestId,
+      }),
+    );
+    notes.push(`Applied containment roles: ${formatRoleMentions(input.verificationConfig.suspiciousRoleIds)}.`);
+  } catch {
+    notes.push(
+      `Humanify could not apply containment roles ${formatRoleMentions(input.verificationConfig.suspiciousRoleIds)}. Check the bot's Manage Roles permission and role hierarchy before relying on verification quarantine.`,
+    );
+  }
+
+  return notes;
 }
 
 function createReplySectionsFromContent(content: string): {
@@ -2371,7 +2450,8 @@ async function handleVerifyCommand(
   verifierBaseUrl?: string,
 ) {
   const subject = interaction.options.getUser("user", true);
-  if (subject.id !== interaction.user.id && !await requireTrustedModeratorAction(interaction)) {
+  const isModeratorStart = subject.id !== interaction.user.id;
+  if (isModeratorStart && !await requireTrustedModeratorAction(interaction)) {
     return;
   }
 
@@ -2383,15 +2463,36 @@ async function handleVerifyCommand(
   }
 
   const capability = interaction.options.getString("capability") ?? "captcha";
+  const verificationConfig = isModeratorStart
+    ? await apiClient.getGuildVerificationConfig(interaction.guildId!, requestTelemetry)
+    : undefined;
   const verification = await apiClient.createVerificationSession(interaction.guildId!, {
     initiatedBy: interaction.user.id,
     requiredCapabilities: [capability],
     userId: subject.id,
   }, requestTelemetry);
+  const verifierLink = createVerifierLink(verifierBaseUrl, {
+    guildId: interaction.guildId!,
+    sessionId: verification.session.sessionId,
+    token: verification.challengeToken,
+    userId: subject.id,
+    username: subject.username,
+  });
+  const followUpNote = isModeratorStart && verificationConfig
+    ? joinFollowUpNotes(...await applyModeratorVerificationStartEffects({
+      interaction,
+      requestTelemetry,
+      sessionId: verification.session.sessionId,
+      subjectUserId: subject.id,
+      verifierLink,
+      verificationConfig: verificationConfig.verificationConfig,
+    }))
+    : undefined;
 
   await replyEphemeral(interaction, {
     content: buildVerificationSessionReply({
       challengeToken: verification.challengeToken,
+      followUpNote,
       guildId: interaction.guildId!,
       persistence: verification.persistence,
       sessionId: verification.session.sessionId,
@@ -2558,10 +2659,14 @@ async function handleVerificationShortcut(
   }
 
   const { caseId, userId } = parseCaseUserEntity(parsed.entityId);
-  if (userId !== interaction.user.id && !await requireTrustedModeratorAction(interaction)) {
+  const isModeratorStart = userId !== interaction.user.id;
+  if (isModeratorStart && !await requireTrustedModeratorAction(interaction)) {
     return;
   }
 
+  const verificationConfig = isModeratorStart
+    ? await options.apiClient.getGuildVerificationConfig(interaction.guildId!, requestTelemetry)
+    : undefined;
   const verification = await options.apiClient.createVerificationSession(interaction.guildId!, {
     caseId,
     initiatedBy: interaction.user.id,
@@ -2571,16 +2676,35 @@ async function handleVerificationShortcut(
   const warningSync = await syncModeratorWarningCardForInteraction({
     apiClient: options.apiClient,
     caseId,
+      guildId: interaction.guildId!,
+      interactionClient: interaction.client as Client<true>,
+      requestTelemetry,
+      syncModeratorWarningCardOverride: options.syncModeratorWarningCard,
+    });
+  const verifierLink = createVerifierLink(verifierBaseUrl, {
     guildId: interaction.guildId!,
-    interactionClient: interaction.client as Client<true>,
-    requestTelemetry,
-    syncModeratorWarningCardOverride: options.syncModeratorWarningCard,
+    sessionId: verification.session.sessionId,
+    token: verification.challengeToken,
+    userId,
   });
+  const followUpNote = joinFollowUpNotes(
+    warningSync?.note,
+    ...(isModeratorStart && verificationConfig
+      ? await applyModeratorVerificationStartEffects({
+        interaction,
+        requestTelemetry,
+        sessionId: verification.session.sessionId,
+        subjectUserId: userId,
+        verifierLink,
+        verificationConfig: verificationConfig.verificationConfig,
+      })
+      : []),
+  );
 
   await replyEphemeral(interaction, {
     content: buildVerificationSessionReply({
       challengeToken: verification.challengeToken,
-      followUpNote: warningSync?.note,
+      followUpNote,
       guildId: interaction.guildId!,
       persistence: verification.persistence,
       sessionId: verification.session.sessionId,

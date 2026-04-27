@@ -2910,6 +2910,7 @@ export function createApiApp(options: ApiAppOptions = {}) {
           await verificationRoleReleaseExecutor.applyRoleGrants({
             auditLogReason,
             guildId: body.guildId,
+            removeRoleIds: verificationConfig.suspiciousRoleIds,
             roleIds: releasePlan.appliedRoleIds,
             userId: body.userId,
           });

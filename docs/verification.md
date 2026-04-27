@@ -64,7 +64,7 @@ Recommended session states:
 
 `pending` → `challenge_issued` → `oauth_bound` → `strategy_pending` → `passed` or `failed` or `expired` or `cancelled`
 
-`released` is a terminal post-pass state once Humanify completes the post-pass release step and applies any configured verification roles for the guild.
+`released` is a terminal post-pass state once Humanify completes the post-pass release step, applies any configured verification roles for the guild, and clears the configured containment roles used during moderator-started verification.
 
 Verification metadata also records whether face verification was part of the capture flow and whether the face check passed. Guild policy can depend on those normalized fields; Bun does not infer them later from raw provider payloads. Didit and World ID can satisfy face-verification-related requirements through their normalized provider outcomes; Privado and Self.xyz do **not** automatically imply face verification and must rely on separate policy inputs if a face check matters.
 
@@ -82,6 +82,10 @@ sequenceDiagram
   Bot->>API: Create verification session + signed challenge request
   API-->>Bot: sessionId + short-lived challenge metadata
   Bot-->>User: Ephemeral challenge code / verifier link
+  alt Moderator started verification for another member
+    Bot-->>User: DM target user with verifier link + explanation
+    Bot->>Bot: Apply configured containment roles
+  end
   User->>Verifier: Open verification page
   Verifier->>API: Start browser verifier session
   API->>API: Validate Discord OAuth2 state and bind same guild/user
@@ -93,8 +97,7 @@ sequenceDiagram
   Strategy->>API: Signed callback, proof, or status update
   API->>API: Verify receipt, replay, strategy enablement, session expiry
   API-->>Verifier: Updated status
-  API->>Bot: Release verified role / remove quarantine when policy allows
-  Bot-->>API: Execution receipt
+  API->>API: Add release roles + clear configured containment roles
 ```
 
 ## 4. Verification role and strategy model
@@ -255,6 +258,18 @@ Guild verification config can now attach Discord role releases to normalized ver
 
 The verifier client calls the Bun release endpoint only after the canonical session reaches `passed`. Humanify then applies the configured roles, records the release summary, and surfaces the final `released` state back to the verifier UI.
 
+### 4.6 Verification containment at session start
+
+When a trusted moderator starts verification for another member, Humanify uses the configured `suspiciousRoleIds` as immediate containment roles for that verification session.
+
+Rules:
+
+- Humanify DMs the target member with a signed verifier link and plain-language explanation of why verification is required.
+- containment is attempted only for moderator-started cross-user flows (`/verify user:@member` and the warning-card `Start verification` shortcut), not for self-started member verification
+- if no `suspiciousRoleIds` are configured, Humanify tells the moderator that automatic containment is not configured for the guild
+- if Discord DM delivery or role mutation fails, Humanify tells the moderator plainly instead of claiming a clean containment start
+- the successful Bun release step clears those configured containment roles together with any final verification role grants
+
 `unique_person` remains a later extension and must stay behind the same role-based strategy model rather than becoming new app-local branching logic.
 
 ### 4.5 Minimal-storage rule
@@ -402,7 +417,7 @@ This means the verifier app currently relies on a Bun-authored signed link rathe
 | Reusable-proof request start | `POST /verification/sessions/:sessionId/providers/:providerId/start` | signed provider-start token, provider-enabled config, no browser-created proof requests |
 | Reusable-proof status verification | `POST /verification/providers/:providerId/proof` | signed provider-session token, server-side status read, minimal normalized proof evidence only |
 | Strategy handoff receipt | `POST /callbacks/providers/:providerId` | verify the concrete adapter's server receipt, enforce replay safety, and require the adapter to be enabled for the guild |
-| Release decision | `POST /verification/sessions/:sessionId/release` | Bun evaluates policy, bot executes role change, audit row written |
+| Release decision | `POST /verification/sessions/:sessionId/release` | Bun evaluates policy, applies release roles, clears configured containment roles, and writes the audit row |
 
 ## 6. Security and privacy invariants
 
@@ -412,6 +427,7 @@ This means the verifier app currently relies on a Bun-authored signed link rathe
 4. Only minimum strategy artifact metadata is stored durably; raw payloads, reusable credentials, full imported sessions, and secrets are not synced to clients.
 5. Failed, expired, duplicate, or tampered callbacks create auditable reject records.
 6. Release-to-role happens only after the session reaches a Bun-validated `passed` state and current guild policy still allows release.
+7. Moderator-started verification containment uses the configured `suspiciousRoleIds`; those roles are only cleared by the successful Bun release step, not by browser completion alone.
 
 ## 6.1 Privado runtime configuration
 
@@ -435,4 +451,4 @@ When those variables are absent, Humanify may still render Privado in shared cat
 - `packages\auth` must implement Discord OAuth2 authorize URL building, signed state/CSRF handling, verifier challenge tokens, and session cookie helpers to match this document
 - bot challenge delivery and release receipts must match `docs\discord-bot.md`
 - API callback and release routes must match `docs\api.md`
-- release policy, role changes, and Discord-side execution still need to move from the current blocked placeholder to a canonical post-verification release flow
+- release now clears configured containment roles together with the final verification role grants; future work can still extend this into richer quarantine-policy variants without reintroducing fake success paths

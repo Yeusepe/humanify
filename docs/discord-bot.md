@@ -66,9 +66,15 @@ The current bot spine makes the first real moderation intake surface concrete:
 | `/scan-all` | queues one canonical `all_members` scan request | admin-only at command registration and runtime; the reply stays explicit that Humanify has only queued the durable workflow so far, and the worker later posts the final summary to the configured moderation surface |
 | `/report user reason [notes]` | opens a report via the API and plans a case when one does not already exist | replies honestly that persistence is still pending and offers a verification shortcut only as additional intake |
 | `/case open user reason [notes]` | opens a manual case via the report intake route | trusted-moderator-only at runtime; no moderation action is executed from the command response |
-| `/verify user [capability]` | creates a verification session tied to the Discord member | self-verification stays available; verifying another member requires a trusted moderator, and successful session creation now returns the signed verifier URL instead of a reply-only acknowledgement |
+| `/verify user [capability]` | creates a verification session tied to the Discord member | self-verification stays available; verifying another member requires a trusted moderator, and moderator-started sessions now DM the target user with the verifier link, explain why verification is required, and apply any configured containment roles before the final release |
 | message context `Report message to Humanify` | opens a report and then attaches canonical Discord message metadata (`messageId`, `channelId`, message URL, preview) as evidence | evidence is queued as planned canonical write work, not synthetic success |
-| button `Start verification` | creates a verification session bound to the case/user pair encoded in the shared Humanify custom ID | self-verification stays available, cross-user starts require a trusted moderator, and the button reply now includes the signed verifier URL plus the linked warning-card follow-up note |
+| button `Start verification` | creates a verification session bound to the case/user pair encoded in the shared Humanify custom ID | self-verification stays available, cross-user starts require a trusted moderator, and moderator-triggered starts now DM the target user, apply configured containment roles, and return the signed verifier URL plus the linked warning-card follow-up note |
+
+Current moderator/admin message presentation:
+
+1. Humanify now renders moderator/admin replies, setup steps, verification panels, warning cards, and durable scan summaries as **Discord Components v2** cards instead of flat `content` strings.
+2. The current card contract uses **containers, text displays, separators, and retained action rows** so moderators get the state snapshot first and the next action in the same message.
+3. Warning cards now keep a built-in `Start verification` action so moderators can move directly from advisory review into verification without hunting for a separate command.
 
 ## 3. Event intake inventory
 
@@ -177,7 +183,7 @@ The current bot runtime now wires that advisory loop into the realistic touchpoi
 - after message-context reporting attaches canonical Discord message-link evidence
 - after the case-linked `Start verification` shortcut creates or refreshes a verification session
 
-At each touchpoint the bot reads the latest warning-card model, prefers editing the persisted Discord alert message when the canonical ref still points at the configured moderator alert channel, and otherwise posts a fresh advisory message and persists its new ref through the API. If the canonical alert channel is missing or Discord delivery fails, the bot must say so plainly instead of implying moderation succeeded.
+At each touchpoint the bot reads the latest warning-card model, prefers editing the persisted Discord alert message when the canonical ref still points at the configured moderator alert channel, and otherwise posts a fresh advisory **Components v2** message and persists its new ref through the API. If the canonical alert channel is missing or Discord delivery fails, the bot must say so plainly instead of implying moderation succeeded.
 
 Authorization rules for the current command surface:
 
@@ -199,7 +205,7 @@ The current bot runtime now exposes two operator-driven scan entrypoints:
 Both commands stay honest about the workflow boundary:
 
 - the bot only creates the canonical scan request through the API
-- `apps\scan-worker-temporal` later claims the request from Postgres, runs the Discord member walk through Temporal, opens any advisory reports, refreshes moderator warning cards, and posts a completion or failure summary into the configured moderation log / review / alert channel
+- `apps\scan-worker-temporal` later claims the request from Postgres, runs the Discord member walk through Temporal, opens any advisory reports, refreshes moderator warning cards, and posts a completion or failure summary into the configured moderation log / review / alert channel as a structured Components v2 card
 - command responses never claim that the member walk has already completed when the request is only `pending` or `claimed`
 - both commands are admin-scoped at registration time so non-admin members do not get scan entrypoints by default
 
@@ -218,6 +224,13 @@ Both commands stay honest about the workflow boundary:
 The flow stays honest about unsaved progress: nothing is saved until the admin reaches the final confirm step and the API accepts the writes.
 
 After setup, `/humanify panel` lets the admin post the reusable verification button into a member-facing channel. That button always creates a fresh guild-scoped verification session for the clicking member, and any configured verification role grants are only applied after the canonical verification session reaches `released`.
+
+When a trusted moderator starts verification for another member through `/verify` or the warning-card shortcut, the bot must:
+
+1. DM the target user with a Humanify card that explains verification was requested and includes the signed verifier link.
+2. Apply the configured `suspiciousRoleIds` as containment roles immediately when the guild has them configured.
+3. Tell the moderator plainly when DM delivery or role changes fail instead of pretending the containment start succeeded.
+4. Leave self-started member verification flows non-containment by default; only the moderator-start path automatically contains the target member.
 
 ## 7. Observability and audit requirements
 

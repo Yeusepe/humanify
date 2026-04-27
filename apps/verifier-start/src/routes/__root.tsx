@@ -55,11 +55,11 @@ function RootComponent() {
 
 function RootDocument({ children }: Readonly<{ children: ReactNode }>) {
   return (
-    <html className="light" data-theme="light" lang="en">
+    <html className="dark" data-theme="dark" lang="en">
       <head>
         <HeadContent />
       </head>
-      <body className="bg-background text-foreground">
+      <body className="min-h-screen bg-background text-foreground antialiased">
         {children}
         <Scripts />
       </body>
