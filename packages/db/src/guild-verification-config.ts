@@ -63,9 +63,15 @@ export type GuildVerificationConfigRecord = {
   faceVerificationRequired: boolean;
   guildId: string;
   requiredBundleIds: string[];
+  roleGrantBindings: VerificationRoleGrantBinding[];
   suspiciousRoleIds: string[];
   trustedRoleIds: string[];
   updatedAt: string;
+};
+
+export type VerificationRoleGrantBinding = {
+  roleId: string;
+  trigger: "verified_human" | string;
 };
 
 export type PersistedGuildVerificationConfigResult = {
@@ -87,6 +93,7 @@ export type GuildVerificationConfigRepository = {
       faceVerificationRequired: boolean;
       requiredBundleIds: string[];
       requiredCapabilities: string[];
+      roleGrantBindings: VerificationRoleGrantBinding[];
       suspiciousRoleIds: string[];
       trustedRoleIds: string[];
     };
@@ -291,6 +298,30 @@ function readOptionalString(value: unknown) {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+function readRoleGrantBindings(value: unknown) {
+  if (!Array.isArray(value)) {
+    return [] as VerificationRoleGrantBinding[];
+  }
+
+  return value.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") {
+      throw new Error("Stored verification role grants must be objects.");
+    }
+
+    const roleId = readOptionalString((entry as Record<string, unknown>).roleId);
+    const trigger = readOptionalString((entry as Record<string, unknown>).trigger);
+
+    if (!roleId || !trigger) {
+      throw new Error("Stored verification role grants must include non-empty roleId and trigger values.");
+    }
+
+    return [{
+      roleId,
+      trigger,
+    }];
+  });
+}
+
 function readBoolean(value: unknown, fallback = false) {
   return typeof value === "boolean" ? value : fallback;
 }
@@ -313,6 +344,7 @@ function mapRow(row: GuildVerificationConfigRow): GuildVerificationConfigRecord 
     faceVerificationRequired: readBoolean(challengeRules.faceVerificationRequired),
     guildId: row.guild_id,
     requiredBundleIds: readStringArray(challengeRules.requiredBundleIds, "challenge_rules.requiredBundleIds"),
+    roleGrantBindings: readRoleGrantBindings(challengeRules.roleGrantBindings),
     suspiciousRoleIds: readStringArray(fallbackRules.suspiciousRoleIds, "fallback_rules.suspiciousRoleIds"),
     trustedRoleIds: readStringArray(fallbackRules.trustedRoleIds, "fallback_rules.trustedRoleIds"),
     updatedAt: new Date(row.updated_at).toISOString(),
@@ -383,6 +415,7 @@ export function createPostgresGuildVerificationConfigRepository(input: {
             ${transaction.json({
               faceVerificationRequired: input.body.faceVerificationRequired,
               requiredBundleIds: input.body.requiredBundleIds,
+              roleGrantBindings: input.body.roleGrantBindings,
             })},
             ${transaction.json({
               suspiciousRoleIds: input.body.suspiciousRoleIds,
@@ -417,6 +450,7 @@ export function createPostgresGuildVerificationConfigRepository(input: {
             enabledProviderIds: input.body.enabledProviderIds,
             faceVerificationRequired: input.body.faceVerificationRequired,
             requiredBundleIds: input.body.requiredBundleIds,
+            roleGrantBindings: input.body.roleGrantBindings,
             suspiciousRoleIds: input.body.suspiciousRoleIds,
             trustedRoleIds: input.body.trustedRoleIds,
           },

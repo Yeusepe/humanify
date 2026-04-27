@@ -13,6 +13,8 @@
 # - https://min.io/docs/minio/container/index.html
 # - https://qdrant.tech/documentation/
 # - https://grafana.com/docs/grafana/latest/setup-grafana/installation/docker/
+# - https://docs.temporal.io/self-hosted-guide/install-temporal-server
+# - https://github.com/temporalio/docker-compose
 
 services:
   postgres:
@@ -108,9 +110,54 @@ services:
     volumes:
       - humanify-grafana-data:/var/lib/grafana
 
+  temporal-postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: temporal
+      POSTGRES_PASSWORD: temporal
+      POSTGRES_DB: temporal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U temporal -d temporal"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    volumes:
+      - humanify-temporal-postgres-data:/var/lib/postgresql/data
+
+  temporal:
+    image: temporalio/auto-setup:1.28.1
+    restart: unless-stopped
+    depends_on:
+      temporal-postgres:
+        condition: service_healthy
+    environment:
+      DB: postgresql
+      DB_PORT: 5432
+      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/development-sql.yaml
+      POSTGRES_PWD: temporal
+      POSTGRES_SEEDS: temporal-postgres
+      POSTGRES_USER: temporal
+    ports:
+      - "${HUMANIFY_TEMPORAL_PORT:-7233}:7233"
+
+  temporal-ui:
+    image: temporalio/ui:2.39.0
+    restart: unless-stopped
+    depends_on:
+      temporal:
+        condition: service_started
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_UI_PORT: 8080
+    ports:
+      - "${HUMANIFY_TEMPORAL_UI_PORT:-8233}:8080"
+
 volumes:
   humanify-postgres-data:
   humanify-redis-data:
   humanify-minio-data:
   humanify-qdrant-data:
   humanify-grafana-data:
+  humanify-temporal-postgres-data:

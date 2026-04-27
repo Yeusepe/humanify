@@ -40,6 +40,9 @@ The bot does **not** own final policy decisions. It submits normalized events to
 | Command or action | Purpose | Backend dependency |
 | --- | --- | --- |
 | `/humanify setup` | initial guild setup, channel/role selection, capability checks | API guild-config routes |
+| `/humanify panel [channel]` | post a reusable member-facing verification button into the current or chosen channel | API guild-config routes + verifier base URL |
+| `/scan user:@member` | queue a durable single-member heuristic scan and warning refresh | scan routes + Temporal worker |
+| `/scan-all` | queue a durable full-guild member scan | scan routes + Temporal worker |
 | `/report user:@member ...` | open a report or append to a case | cases/reports routes |
 | `/case open user:@member` | manual case creation | cases routes |
 | `/quarantine user:@member` | moderator-requested containment | moderation approval + executor |
@@ -58,6 +61,9 @@ The current bot spine makes the first real moderation intake surface concrete:
 | Surface | Current behavior | Safety posture |
 | --- | --- | --- |
 | `/humanify setup` | server-admin guided setup flow for channel, role, verification-path, proof-bundle, and face-check choices without leaving Discord | admin-only at command registration and runtime; reads current guild config from the API, keeps the language plain, and only saves through the real guild-config routes |
+| `/humanify panel [channel]` | posts a reusable `Verify with Humanify` button for members | admin-only at runtime; button clicks create a real verification session for the clicking member and return the signed verifier link ephemerally |
+| `/scan user:@member` | queues one canonical `single_member` scan request | trusted-moderator-only at runtime; the reply acknowledges the scan request ID and that Temporal-backed execution is still pending |
+| `/scan-all` | queues one canonical `all_members` scan request | server-admin-only at runtime; the reply stays explicit that Humanify has only queued the durable workflow so far |
 | `/report user reason [notes]` | opens a report via the API and plans a case when one does not already exist | replies honestly that persistence is still pending and offers a verification shortcut only as additional intake |
 | `/case open user reason [notes]` | opens a manual case via the report intake route | trusted-moderator-only at runtime; no moderation action is executed from the command response |
 | `/verify user [capability]` | creates a verification session tied to the Discord member | self-verification stays available; verifying another member requires a trusted moderator and session creation is still reported as planned, not durably completed |
@@ -96,6 +102,8 @@ Two runtime flags now control passive Discord ingestion:
 | `HUMANIFY_BOT_ENABLE_MESSAGE_SIGNALS` | `false` | enables `messageCreate` detector-bridge reporting and requests the Discord message-content intents needed for first-message-link / mention-burst / duplicate-pattern detection |
 
 `HUMANIFY_BOT_ENABLE_MESSAGE_SIGNALS=true` must only be enabled when the Discord application is approved for the message-content intent and the server owner wants passive content-based bot catching turned on.
+
+Slash commands register globally by default, which is the multi-guild production shape. `HUMANIFY_BOT_COMMAND_GUILD_ID` exists only as an optional development override when you intentionally want faster command propagation in one Discord server; leaving it unset preserves the normal multi-guild global registration path.
 
 ## 4. Execution safety flow
 
@@ -174,22 +182,41 @@ At each touchpoint the bot reads the latest warning-card model, prefers editing 
 Authorization rules for the current command surface:
 
 1. `/humanify setup` is server-admin-only.
-2. Trusted moderator actions must fail closed when the actor lacks current guild permissions or the runtime cannot read them.
-3. The shared trusted-moderator gate covers the current moderation-oriented entry points (`/case open` and starting verification for another member).
-4. Member-facing verification entry points must remain available for the actor's own account.
+2. `/humanify panel` is server-admin-only.
+3. Trusted moderator actions must fail closed when the actor lacks current guild permissions or the runtime cannot read them.
+4. The shared trusted-moderator gate covers the current moderation-oriented entry points (`/case open` and starting verification for another member).
+5. Member-facing verification entry points must remain available for the actor's own account.
+6. `/scan` requires the trusted-moderator gate.
+7. `/scan-all` requires the server-admin gate.
 
-### 6.1 Guided setup flow
+### 6.1 Durable member scans
+
+The current bot runtime now exposes two operator-driven scan entrypoints:
+
+1. `/scan user:@member` for a one-off advisory scan of a specific account
+2. `/scan-all` for a full guild walk when the admin wants a durable backlog job
+
+Both commands stay honest about the workflow boundary:
+
+- the bot only creates the canonical scan request through the API
+- `apps\scan-worker-temporal` later claims the request from Postgres, runs the Discord member walk through Temporal, opens any advisory reports, and refreshes moderator warning cards
+- command responses never claim that the member walk has already completed when the request is only `pending` or `claimed`
+
+### 6.2 Guided setup flow
 
 `/humanify setup` now walks a server admin through these plain-language steps inside Discord:
 
 1. choose alert/review/audit/mod-log channels
 2. choose trusted moderator roles and suspicious roles
-3. choose enabled verification paths and the default path
-4. choose required proof bundles
-5. choose whether a face check is required
-6. confirm and save through `PUT /guilds/:guildId/channels` plus `PUT /guilds/:guildId/verification`
+3. choose post-verification role grants for `verified_human`, `18+`, and `21+`
+4. choose enabled verification paths and the default path
+5. choose required proof bundles
+6. choose whether a face check is required
+7. confirm and save through `PUT /guilds/:guildId/channels` plus `PUT /guilds/:guildId/verification`
 
 The flow stays honest about unsaved progress: nothing is saved until the admin reaches the final confirm step and the API accepts the writes.
+
+After setup, `/humanify panel` lets the admin post the reusable verification button into a member-facing channel. That button always creates a fresh guild-scoped verification session for the clicking member, and any configured verification role grants are only applied after the canonical verification session reaches `released`.
 
 ## 7. Observability and audit requirements
 

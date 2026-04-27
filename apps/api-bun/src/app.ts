@@ -39,6 +39,7 @@ import {
 import {
   loadAdvisoryServiceConfig,
   loadDataPlaneConfig,
+  loadBotTokenConfig,
   loadDiscordOAuthConfig,
   loadObservabilityConfig,
   loadPolicyClampConfig,
@@ -58,6 +59,7 @@ import {
 import { createDiscordAuditReason, createBotGatewayIntents, resolveDiscordExecutionPlan } from "@humanify/discord-core";
 import {
   createPostgresGuildChannelConfigRepository,
+  createPostgresGuildScanRequestRepository,
   createPostgresGuildVerificationConfigRepository,
   createPostgresModeratorWarningCardsRepository,
   createPostgresReportCasesRepository,
@@ -65,6 +67,8 @@ import {
   createIdempotencyReceipt,
   createOutboxEvent,
   type GuildChannelConfigRepository,
+  type GuildScanRequestRecord,
+  type GuildScanRequestRepository,
   type GuildVerificationConfigRecord,
   type GuildVerificationConfigRepository,
   type ModeratorWarningCardsRepository,
@@ -75,6 +79,7 @@ import {
   type CaseOutcomeKind,
   type ModeratorWarningCard,
   type ReportCasesRepository,
+  type VerificationRoleGrantBinding,
   type VerificationSessionRecord,
   type VerificationSessionsRepository,
 } from "@humanify/db";
@@ -116,6 +121,10 @@ import {
 
 import { ApiRouteError, type ApiErrorCode } from "./api-route-error";
 import {
+  createDiscordVerificationRoleReleaseExecutor,
+  type VerificationRoleReleaseExecutor,
+} from "./discord-verification-release";
+import {
   createApiVerificationOptionEnvironment,
   buildProviderBoundaryFromRecord,
   buildReusableProofProviderStartEndpoint,
@@ -124,12 +133,14 @@ import {
   type PrivadoVerifierBackendClient,
 } from "./verification-options/runtime";
 export type { ApiVerificationOptionRuntimeOverrides, PrivadoVerifierBackendClient } from "./verification-options/runtime";
+export type { VerificationRoleReleaseExecutor } from "./discord-verification-release";
 
 const routeGroups = [
   "health",
   "metadata",
   "auth",
   "guild-config",
+  "scans",
   "cases",
   "reports",
   "verification",
@@ -192,6 +203,7 @@ type GuildVerificationConfigSnapshot = {
   guildId: string;
   requiredBundleIds: string[];
   requiredBundles: VerificationClaimBundle[];
+  roleGrantBindings: VerificationRoleGrantBinding[];
   source: "catalog_default" | "persisted";
   suspiciousRoleIds: string[];
   trustedRoleIds: string[];
@@ -206,6 +218,14 @@ type GuildChannelConfigSnapshot = {
   source: "not_configured" | "persisted";
 };
 
+type GuildScanRequestSnapshot = GuildScanRequestRecord & {
+  readModelStatus: "canonical_postgres";
+  scopeRef: {
+    guildId: string;
+    scanRequestId: string;
+  };
+};
+
 export type LearningServiceClient = {
   ingestCaseOutcome(
     outcome: LearningServiceCaseOutcome,
@@ -216,12 +236,14 @@ export type LearningServiceClient = {
 export type ApiAppOptions = {
   env?: EnvSource;
   guildChannelConfigRepository?: GuildChannelConfigRepository;
+  guildScanRequestRepository?: GuildScanRequestRepository;
   guildVerificationConfigRepository?: GuildVerificationConfigRepository;
   learningServiceClient?: LearningServiceClient;
   logger?: LoggerLike;
   moderatorWarningCardsRepository?: ModeratorWarningCardsRepository;
   now?: () => number;
   reportCasesRepository?: ReportCasesRepository;
+  verificationRoleReleaseExecutor?: VerificationRoleReleaseExecutor;
   verificationOptionRuntimeOverrides?: ApiVerificationOptionRuntimeOverrides;
   verificationSessionsRepository?: VerificationSessionsRepository;
 };
@@ -332,6 +354,44 @@ function readVerificationSummaryFromRecord(record: VerificationSessionRecord) {
   return Object.keys(record.resultSummary).length > 0 ? record.resultSummary : undefined;
 }
 
+function readSatisfiedClaimsFromVerificationSummary(summary: Record<string, unknown> | undefined) {
+  const satisfiedClaims = summary?.satisfiedClaims;
+  if (!Array.isArray(satisfiedClaims)) {
+    return [] as string[];
+  }
+
+  return satisfiedClaims.flatMap((claim) => typeof claim === "string" && claim.length > 0 ? [claim] : []);
+}
+
+function readReleaseSummaryFromVerificationSummary(summary: Record<string, unknown> | undefined) {
+  const release = summary?.release;
+  if (!release || typeof release !== "object") {
+    return undefined;
+  }
+
+  const appliedRoleIds = Array.isArray((release as { appliedRoleIds?: unknown }).appliedRoleIds)
+    ? ((release as { appliedRoleIds: unknown[] }).appliedRoleIds).flatMap((roleId) =>
+      typeof roleId === "string" && roleId.length > 0 ? [roleId] : []
+    )
+    : [];
+  const triggerKeys = Array.isArray((release as { triggerKeys?: unknown }).triggerKeys)
+    ? ((release as { triggerKeys: unknown[] }).triggerKeys).flatMap((trigger) =>
+      typeof trigger === "string" && trigger.length > 0 ? [trigger] : []
+    )
+    : [];
+  const releasedAt = typeof (release as { releasedAt?: unknown }).releasedAt === "string"
+    ? (release as { releasedAt: string }).releasedAt
+    : undefined;
+
+  return releasedAt
+    ? {
+        appliedRoleIds,
+        releasedAt,
+        triggerKeys,
+      }
+    : undefined;
+}
+
 function uniqueNonEmptyStrings(values: readonly string[]) {
   const seen = new Set<string>();
   const normalized: string[] = [];
@@ -346,6 +406,40 @@ function uniqueNonEmptyStrings(values: readonly string[]) {
   }
 
   return normalized;
+}
+
+function resolveVerificationRoleGrants(input: {
+  roleGrantBindings: readonly VerificationRoleGrantBinding[];
+  satisfiedClaims: readonly string[];
+}) {
+  const satisfiedClaimSet = new Set(input.satisfiedClaims);
+  const appliedRoleIds: string[] = [];
+  const triggerKeys: string[] = [];
+  const seenRoleIds = new Set<string>();
+
+  for (const binding of input.roleGrantBindings) {
+    const triggerSatisfied = binding.trigger === "verified_human" || satisfiedClaimSet.has(binding.trigger);
+    if (!triggerSatisfied || seenRoleIds.has(binding.roleId)) {
+      continue;
+    }
+
+    seenRoleIds.add(binding.roleId);
+    appliedRoleIds.push(binding.roleId);
+    triggerKeys.push(binding.trigger);
+  }
+
+  return {
+    appliedRoleIds,
+    triggerKeys,
+  };
+}
+
+function createVerificationReleaseAuditReason(input: {
+  requestId: string;
+  sessionId: string;
+  triggerKeys: readonly string[];
+}) {
+  return `verification:${input.sessionId} request:${input.requestId} triggers:${input.triggerKeys.join(",") || "verified_human"}`;
 }
 
 function buildClaimSetKey(values: readonly string[]) {
@@ -647,7 +741,7 @@ function logApiRequest(
     responseStatus: number;
   },
 ) {
-  const path = new URL(context.request.url).pathname;
+  const path = resolveRequestPathForLogging(context.request.url);
   const logFields = details.error
     ? createStructuredErrorFields(
         {
@@ -691,6 +785,14 @@ function logApiRequest(
   logger.info(output);
 }
 
+export function resolveRequestPathForLogging(requestUrl: string): string {
+  try {
+    return new URL(requestUrl).pathname;
+  } catch {
+    return "[invalid request url]";
+  }
+}
+
 export function createApiApp(options: ApiAppOptions = {}) {
   const env = options.env ?? process.env;
   const logger = options.logger ?? console;
@@ -712,6 +814,10 @@ export function createApiApp(options: ApiAppOptions = {}) {
     options.guildChannelConfigRepository ?? createPostgresGuildChannelConfigRepository({
       connectionString: dataPlaneConfig.postgresUrl,
     });
+  const guildScanRequestRepository =
+    options.guildScanRequestRepository ?? createPostgresGuildScanRequestRepository({
+      connectionString: dataPlaneConfig.postgresUrl,
+    });
   const guildVerificationConfigRepository =
     options.guildVerificationConfigRepository ?? createPostgresGuildVerificationConfigRepository({
       connectionString: dataPlaneConfig.postgresUrl,
@@ -728,6 +834,12 @@ export function createApiApp(options: ApiAppOptions = {}) {
       connectionString: dataPlaneConfig.postgresUrl,
     });
   const sessionConfig = loadSessionConfig(env);
+  const verificationRoleReleaseExecutor = options.verificationRoleReleaseExecutor
+    ?? (env.DISCORD_BOT_TOKEN
+      ? createDiscordVerificationRoleReleaseExecutor({
+          botToken: loadBotTokenConfig(env).botToken,
+        })
+      : undefined);
   const verificationProviderCatalog = resolveVerificationProviderCatalog({
     enabledProviderIds: parseVerificationProviderSelection(env.HUMANIFY_ENABLED_VERIFICATION_PROVIDERS),
   });
@@ -762,6 +874,7 @@ export function createApiApp(options: ApiAppOptions = {}) {
         guildId: input.guildId,
         requiredBundleIds: verificationClaimBundles.map((bundle) => bundle.bundleId),
         requiredBundles: verificationClaimBundles.map((bundle) => ({ ...bundle, claims: [...bundle.claims] })),
+        roleGrantBindings: [],
         source: "catalog_default",
         suspiciousRoleIds: [],
         trustedRoleIds: [],
@@ -784,6 +897,7 @@ export function createApiApp(options: ApiAppOptions = {}) {
       guildId: input.guildId,
       requiredBundleIds: [...input.persistedConfig.requiredBundleIds],
       requiredBundles: requiredBundles.map((bundle) => ({ ...bundle, claims: [...bundle.claims] })),
+      roleGrantBindings: input.persistedConfig.roleGrantBindings.map((binding) => ({ ...binding })),
       source: "persisted",
       suspiciousRoleIds: [...input.persistedConfig.suspiciousRoleIds],
       trustedRoleIds: [...input.persistedConfig.trustedRoleIds],
@@ -817,6 +931,52 @@ export function createApiApp(options: ApiAppOptions = {}) {
       guildId,
       persistedConfig,
     });
+  }
+
+  function buildGuildScanRequestSnapshot(scanRequest: GuildScanRequestRecord): GuildScanRequestSnapshot {
+    return {
+      ...scanRequest,
+      readModelStatus: "canonical_postgres",
+      scopeRef: {
+        guildId: scanRequest.guildId,
+        scanRequestId: scanRequest.scanRequestId,
+      },
+    };
+  }
+
+  function normalizeVerificationRoleGrantBindings(bindings: readonly VerificationRoleGrantBinding[] | undefined) {
+    const normalized: VerificationRoleGrantBinding[] = [];
+    const seen = new Set<string>();
+
+    for (const binding of bindings ?? []) {
+      const trigger = binding.trigger.trim();
+      const roleId = binding.roleId.trim();
+
+      if (!trigger || !roleId) {
+        throw new ApiRouteError(400, "validation_failed", "Verification role grants require non-empty trigger and roleId values.");
+      }
+
+      if (trigger !== "verified_human" && !supportedHumanifyClaimIds.includes(trigger as HumanifyClaimKey)) {
+        throw new ApiRouteError(
+          400,
+          "validation_failed",
+          `Verification role grant trigger "${trigger}" is not a supported Humanify claim or verified_human.`,
+        );
+      }
+
+      const dedupeKey = `${trigger}:${roleId}`;
+      if (seen.has(dedupeKey)) {
+        continue;
+      }
+
+      seen.add(dedupeKey);
+      normalized.push({
+        roleId,
+        trigger,
+      });
+    }
+
+    return normalized;
   }
 
   const policyBodySchema = t.Object({
@@ -900,6 +1060,10 @@ export function createApiApp(options: ApiAppOptions = {}) {
     enabledProviderIds: t.Array(t.String({ minLength: 1 })),
     faceVerificationRequired: t.Optional(t.Boolean()),
     requiredBundleIds: t.Optional(t.Array(t.String({ minLength: 1 }))),
+    roleGrantBindings: t.Optional(t.Array(t.Object({
+      roleId: t.String({ minLength: 1 }),
+      trigger: t.String({ minLength: 1 }),
+    }))),
     suspiciousRoleIds: t.Optional(t.Array(t.String({ minLength: 1 }))),
     trustedRoleIds: t.Optional(t.Array(t.String({ minLength: 1 }))),
   });
@@ -910,6 +1074,12 @@ export function createApiApp(options: ApiAppOptions = {}) {
     moderationLogChannelId: t.Optional(t.Nullable(t.String({ minLength: 1 }))),
     moderatorAlertChannelId: t.String({ minLength: 1 }),
     reviewChannelId: t.Optional(t.Nullable(t.String({ minLength: 1 }))),
+  });
+
+  const scanRequestSchema = t.Object({
+    actorUserId: t.String({ minLength: 1 }),
+    scope: t.Union([t.Literal("all_members"), t.Literal("single_member")]),
+    targetUserId: t.Optional(t.String({ minLength: 1 })),
   });
 
   const evidenceSchema = t.Object({
@@ -1248,6 +1418,7 @@ export function createApiApp(options: ApiAppOptions = {}) {
             }
 
             const faceVerificationRequired = body.faceVerificationRequired ?? false;
+            const roleGrantBindings = normalizeVerificationRoleGrantBindings(body.roleGrantBindings);
             let providerConfig: VerificationProviderConfiguration;
             try {
               providerConfig = resolveVerificationProviderConfiguration({
@@ -1296,6 +1467,7 @@ export function createApiApp(options: ApiAppOptions = {}) {
                   faceVerificationRequired,
                   guildId: params.guildId,
                   requiredBundleIds,
+                  roleGrantBindings,
                   suspiciousRoleIds: body.suspiciousRoleIds ?? [],
                   trustedRoleIds: body.trustedRoleIds ?? [],
                 },
@@ -1318,6 +1490,7 @@ export function createApiApp(options: ApiAppOptions = {}) {
                 faceVerificationRequired,
                 requiredBundleIds,
                 requiredCapabilities,
+                roleGrantBindings,
                 suspiciousRoleIds: body.suspiciousRoleIds ?? [],
                 trustedRoleIds: body.trustedRoleIds ?? [],
               },
@@ -1411,6 +1584,111 @@ export function createApiApp(options: ApiAppOptions = {}) {
           },
           { body: channelConfigSchema },
         )
+        .post(
+          "/scans",
+          async ({ body, params, request, set }) => {
+            const requestContext = ensureResponseContext(request, set);
+            if (body.scope === "single_member" && !body.targetUserId) {
+              throw new ApiRouteError(
+                400,
+                "validation_failed",
+                "targetUserId is required when scope is single_member.",
+              );
+            }
+            if (body.scope === "all_members" && body.targetUserId) {
+              throw new ApiRouteError(
+                400,
+                "validation_failed",
+                "targetUserId must be omitted when scope is all_members.",
+              );
+            }
+
+            const scanRequestId = crypto.randomUUID();
+            const requestFingerprint =
+              body.scope === "single_member"
+                ? `${params.guildId}:${body.scope}:${body.targetUserId}`
+                : `${params.guildId}:${body.scope}`;
+            const artifacts = buildWriteArtifacts({
+              aggregateId: scanRequestId,
+              aggregateType: "guild_scan_request",
+              auditRefs: [createAuditRef(requestContext.requestId, "guild_scan_request", "create")],
+              canonicalMutations: [
+                {
+                  dataRef: `${scanRequestId}:scan-request`,
+                  operation: "insert",
+                  primaryKey: "scan_request_id",
+                  table: "guild_scan_requests",
+                },
+                {
+                  dataRef: `${scanRequestId}:audit`,
+                  operation: "insert",
+                  primaryKey: "audit_record_id",
+                  table: "audit_records",
+                },
+              ],
+              idempotencyKey:
+                request.headers.get("x-idempotency-key") ?? `guild-scan:${requestFingerprint}:${requestContext.requestId}`,
+              kind: "guild.scan.requested",
+              payload: {
+                actorUserId: body.actorUserId,
+                guildId: params.guildId,
+                scanRequestId,
+                scope: body.scope,
+                targetUserId: body.targetUserId ?? null,
+              },
+              requestContext,
+              requestFingerprint,
+              scope: `guild-scan:${params.guildId}`,
+              stream: "scan.requests",
+              transactionName: "guild_scan_request_create",
+            });
+
+            const persisted = await guildScanRequestRepository.createScanRequest({
+              artifacts: {
+                idempotency: artifacts.idempotency,
+                queueEnvelope: artifacts.queueEnvelope,
+              },
+              body: {
+                actorUserId: body.actorUserId,
+                scope: body.scope,
+                targetUserId: body.targetUserId,
+              },
+              guildId: params.guildId,
+              requestFingerprint,
+              scanRequestId,
+              traceId: requestContext.traceContext.traceId,
+            });
+
+            set.status = 201;
+            return buildEnvelope(requestContext.requestId, {
+              persistence: persisted.persistence,
+              queueDelivery: persisted.queueDelivery,
+              queueEnvelope: artifacts.queueEnvelope,
+              scanRequest: buildGuildScanRequestSnapshot(persisted.scanRequest),
+              writePlan: artifacts.writePlan,
+            });
+          },
+          { body: scanRequestSchema },
+        )
+        .get("/scans/:scanRequestId", async ({ params, request, set }) => {
+          const requestContext = ensureResponseContext(request, set);
+          const scanRequest = await guildScanRequestRepository.getScanRequest({
+            guildId: params.guildId,
+            scanRequestId: params.scanRequestId,
+          });
+
+          if (!scanRequest) {
+            throw new ApiRouteError(
+              404,
+              "not_found",
+              `Scan request ${params.scanRequestId} was not found in guild ${params.guildId}.`,
+            );
+          }
+
+          return buildEnvelope(requestContext.requestId, {
+            scanRequest: buildGuildScanRequestSnapshot(scanRequest),
+          });
+        })
         .get("/cases", async ({ params, request, set }) => {
           const requestContext = ensureResponseContext(request, set);
           const items = await reportCasesRepository.listCases({
@@ -2566,18 +2844,132 @@ export function createApiApp(options: ApiAppOptions = {}) {
     )
     .post(
       "/verification/sessions/:sessionId/release",
-      ({ body, params }) => {
+      async ({ body, params, request, requestContext, set }) => {
         const verified = verifyVerifierChallengeToken(body.token, sessionConfig.sessionSecret, now());
 
         if (verified.sessionId !== params.sessionId || verified.guildId !== body.guildId || verified.userId !== body.userId) {
           throw new ApiRouteError(400, "validation_failed", "Release request must match the signed verification challenge.");
         }
 
-        throw new ApiRouteError(
-          409,
-          "conflict",
-          "Verification release stays blocked until Humanify verifies the selected provider handoff against canonical state.",
-        );
+        const persistedSession = await verificationSessionsRepository.getSession(params.sessionId);
+        if (!persistedSession) {
+          throw new ApiRouteError(404, "not_found", `Verification session ${params.sessionId} was not found.`);
+        }
+
+        if (persistedSession.guildId !== body.guildId || persistedSession.userId !== body.userId) {
+          throw new ApiRouteError(400, "validation_failed", "Canonical verification session does not match the signed release request.");
+        }
+
+        const verificationConfig = await loadGuildVerificationConfigSnapshot(body.guildId);
+        const existingRelease = readReleaseSummaryFromVerificationSummary(persistedSession.resultSummary);
+        if (persistedSession.state === "released" && existingRelease) {
+          return buildEnvelope(requestContext.requestId, {
+            providerBoundary: {
+              ...buildProviderBoundaryFromRecord(persistedSession, verificationProviderCatalog),
+              nextStep: "released",
+              releaseEligible: false,
+              status: "released",
+            },
+            release: existingRelease,
+            session: buildVerificationSessionFromRecord(persistedSession),
+            verification: readVerificationSummaryFromRecord(persistedSession),
+            verificationConfig,
+          });
+        }
+
+        if (persistedSession.state !== "passed") {
+          throw new ApiRouteError(
+            409,
+            "conflict",
+            "Verification release stays blocked until Humanify verifies the selected provider handoff against canonical state.",
+          );
+        }
+
+        if (!verificationRoleReleaseExecutor) {
+          throw new ApiRouteError(
+            503,
+            "dependency_unavailable",
+            "Verification release needs DISCORD_BOT_TOKEN so Humanify can apply Discord roles after a passed session.",
+            true,
+          );
+        }
+
+        const satisfiedClaims = readSatisfiedClaimsFromVerificationSummary(readVerificationSummaryFromRecord(persistedSession));
+        const releasePlan = resolveVerificationRoleGrants({
+          roleGrantBindings: verificationConfig.roleGrantBindings,
+          satisfiedClaims,
+        });
+        const releasedAt = new Date(now()).toISOString();
+        const auditLogReason = createVerificationReleaseAuditReason({
+          requestId: requestContext.requestId,
+          sessionId: persistedSession.sessionId,
+          triggerKeys: releasePlan.triggerKeys,
+        });
+
+        try {
+          await verificationRoleReleaseExecutor.applyRoleGrants({
+            auditLogReason,
+            guildId: body.guildId,
+            roleIds: releasePlan.appliedRoleIds,
+            userId: body.userId,
+          });
+        } catch (error) {
+          logger.error(
+            createStructuredErrorFields(
+              {
+                environment: identity.environment,
+                release: identity.release,
+                requestId: requestContext.requestId,
+                serviceName: identity.serviceName,
+                traceContext: requestContext.traceContext,
+              },
+              error,
+              {
+                event: "verification.release.failed",
+                guildId: body.guildId,
+                roleIds: releasePlan.appliedRoleIds,
+                sessionId: persistedSession.sessionId,
+                triggerKeys: releasePlan.triggerKeys,
+                userId: body.userId,
+              },
+            ),
+          );
+
+          throw new ApiRouteError(
+            502,
+            "dependency_unavailable",
+            "Humanify could not apply the Discord verification roles for this passed session.",
+            true,
+          );
+        }
+
+        const updatedSession = await verificationSessionsRepository.markReleased({
+          release: {
+            appliedRoleIds: releasePlan.appliedRoleIds,
+            releasedAt,
+            triggerKeys: releasePlan.triggerKeys,
+          },
+          sessionId: persistedSession.sessionId,
+        });
+        const releasedSession = updatedSession ?? persistedSession;
+
+        set.status = 200;
+        return buildEnvelope(requestContext.requestId, {
+          providerBoundary: {
+            ...buildProviderBoundaryFromRecord(releasedSession, verificationProviderCatalog),
+            nextStep: "released",
+            releaseEligible: false,
+            status: "released",
+          },
+          release: {
+            appliedRoleIds: releasePlan.appliedRoleIds,
+            releasedAt,
+            triggerKeys: releasePlan.triggerKeys,
+          },
+          session: buildVerificationSessionFromRecord(releasedSession),
+          verification: readVerificationSummaryFromRecord(releasedSession),
+          verificationConfig,
+        });
       },
       {
         body: t.Object({

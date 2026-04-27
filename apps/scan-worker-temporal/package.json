@@ -1,0 +1,48 @@
+{
+  "name": "@humanify/scan-worker-temporal",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "bun run typecheck",
+    "dev": "node --watch --experimental-strip-types src/index.ts",
+    "lint": "bun run typecheck",
+    "start": "node --experimental-strip-types src/index.ts",
+    "typecheck": "tsc --project tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@discordjs/rest": "^2.6.1",
+    "@humanify/config": "workspace:*",
+    "@humanify/db": "workspace:*",
+    "@humanify/discord-core": "workspace:*",
+    "@humanify/telemetry": "workspace:*",
+    "@temporalio/client": "^1.13.1",
+    "@temporalio/worker": "^1.13.1",
+    "@temporalio/workflow": "^1.13.1",
+    "discord-api-types": "^0.38.47"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.13",
+    "@types/node": "^24.10.0",
+    "typescript": "^6.0.3"
+  },
+  "humanify": {
+    "governingDocs": [
+      "AGENTS.md",
+      "Implementation Plan.txt",
+      "docs\\architecture.md",
+      "docs\\api.md",
+      "docs\\discord-bot.md",
+      "docs\\local-development.md",
+      "docs\\workspaces.md"
+    ],
+    "upstreamDocs": [
+      "https://docs.temporal.io/develop/typescript/core-application",
+      "https://docs.temporal.io/develop/typescript/workers",
+      "https://typescript.temporal.io/api/classes/worker.Worker",
+      "https://discord.com/developers/docs/resources/guild",
+      "https://discord.com/developers/docs/resources/channel#create-message"
+    ],
+    "notes": "This supported-runtime Node worker claims canonical Bun-persisted scan requests from Postgres, runs durable Temporal workflows, reuses the shared member-scan heuristic, and syncs moderator warnings through the existing Humanify warning-card surface."
+  }
+}

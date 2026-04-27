@@ -28,6 +28,7 @@ import {
   loadPolicyClampConfig,
   loadPrivadoVerifierConfig,
   loadSessionConfig,
+  loadTemporalWorkerConfig,
   summarizeConfigForLogs,
 } from "./index";
 
@@ -69,6 +70,13 @@ test("didit config validates the minimum API, webhook, workflow, and verifier re
       HUMANIFY_VERIFIER_BASE_URL: "https://verifier.humanify.test",
     }),
   ).toThrow(ConfigError);
+
+  expect(
+    loadDiditConfig({
+      HUMANIFY_DIDIT_API_BASE_URL: "https://verification.didit.me",
+      HUMANIFY_VERIFIER_BASE_URL: "http://127.0.0.1:3212",
+    }),
+  ).toBeUndefined();
 });
 
 test("session config validates secrets and safe cookie defaults", () => {
@@ -134,6 +142,38 @@ test("advisory service config defaults learning-rs to the documented loopback en
     loadAdvisoryServiceConfig({
       HUMANIFY_LEARNING_SERVICE_URL: "not-a-url",
     }),
+  ).toThrow(ConfigError);
+});
+
+test("temporal worker config defaults to the documented local task queue and validates overrides", () => {
+  expect(loadTemporalWorkerConfig({})).toEqual({
+    address: "127.0.0.1:7233",
+    healthPort: 4210,
+    namespace: "default",
+    pollIntervalMs: 3000,
+    scanTaskQueue: "humanify-member-scan",
+  });
+
+  expect(
+    loadTemporalWorkerConfig({
+      HUMANIFY_SCAN_WORKER_POLL_INTERVAL_MS: "5000",
+      HUMANIFY_SCAN_WORKER_PORT: "4310",
+      HUMANIFY_TEMPORAL_ADDRESS: "temporal.internal:8233",
+      HUMANIFY_TEMPORAL_NAMESPACE: "humanify-dev",
+      HUMANIFY_TEMPORAL_SCAN_TASK_QUEUE: "scan-tasks-dev",
+    }),
+  ).toEqual({
+    address: "temporal.internal:8233",
+    healthPort: 4310,
+    namespace: "humanify-dev",
+    pollIntervalMs: 5000,
+    scanTaskQueue: "scan-tasks-dev",
+  });
+
+  expect(() =>
+    loadTemporalWorkerConfig({
+      HUMANIFY_TEMPORAL_ADDRESS: "temporal-without-port",
+    })
   ).toThrow(ConfigError);
 });
 

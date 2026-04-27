@@ -17,6 +17,8 @@ import type {
   AppliedLearningResult,
   CaseOutcomeKind,
   GuildChannelConfigRepository,
+  GuildScanRequestRecord,
+  GuildScanRequestRepository,
   GuildVerificationConfigRepository,
   LearnedSignalCandidateRecord,
   LearnedSignalFamily,
@@ -761,6 +763,160 @@ export function createInMemoryGuildChannelConfigRepository(): GuildChannelConfig
   };
 }
 
+export function createInMemoryGuildScanRequestRepository(): GuildScanRequestRepository {
+  const requests = new Map<string, GuildScanRequestRecord>();
+  const idempotencyReceipts = new Map<string, unknown>();
+
+  function buildIdempotencyReceiptKey(scope: string, key: string) {
+    return `${scope}::${key}`;
+  }
+
+  function readIdempotencyReceipt<TResult>(scope: string, key: string) {
+    return idempotencyReceipts.get(buildIdempotencyReceiptKey(scope, key)) as TResult | undefined;
+  }
+
+  function storeIdempotencyReceipt<TResult>(scope: string, key: string, result: TResult) {
+    idempotencyReceipts.set(buildIdempotencyReceiptKey(scope, key), result);
+  }
+
+  function buildSummary(
+    summary: GuildScanRequestRecord["summary"] | undefined,
+  ): GuildScanRequestRecord["summary"] {
+    return {
+      completedAt: summary?.completedAt,
+      lastScannedUserId: summary?.lastScannedUserId,
+      notes: [...(summary?.notes ?? [])],
+      processedMemberCount: summary?.processedMemberCount ?? 0,
+      suspiciousFindings: (summary?.suspiciousFindings ?? []).map((finding) => ({
+        caseId: finding.caseId,
+        reasonCodes: [...finding.reasonCodes],
+        userId: finding.userId,
+      })),
+      suspiciousMemberCount: summary?.suspiciousMemberCount ?? 0,
+    };
+  }
+
+  function cloneRecord(record: GuildScanRequestRecord): GuildScanRequestRecord {
+    return {
+      ...record,
+      summary: buildSummary(record.summary),
+    };
+  }
+
+  return {
+    async createScanRequest(input) {
+      const existing = readIdempotencyReceipt<Awaited<ReturnType<GuildScanRequestRepository["createScanRequest"]>>>(
+        input.artifacts.idempotency.scope,
+        input.artifacts.idempotency.key,
+      );
+      if (existing) {
+        return existing;
+      }
+
+      const now = new Date().toISOString();
+      const scanRequest: GuildScanRequestRecord = {
+        createdAt: now,
+        guildId: input.guildId,
+        requestedByUserId: input.body.actorUserId,
+        scope: input.body.scope,
+        scanRequestId: input.scanRequestId,
+        status: "pending",
+        summary: buildSummary(undefined),
+        targetUserId: input.body.targetUserId,
+        updatedAt: now,
+      };
+      requests.set(input.scanRequestId, scanRequest);
+
+      const result = {
+        persistence: "persisted",
+        queueDelivery: "pending_outbox_publish",
+        scanRequest: cloneRecord(scanRequest),
+      } satisfies Awaited<ReturnType<GuildScanRequestRepository["createScanRequest"]>>;
+
+      storeIdempotencyReceipt(input.artifacts.idempotency.scope, input.artifacts.idempotency.key, result);
+      return result;
+    },
+
+    async getScanRequest(input) {
+      const current = requests.get(input.scanRequestId);
+      if (!current || current.guildId !== input.guildId) {
+        return undefined;
+      }
+
+      return cloneRecord(current);
+    },
+
+    async claimNextQueuedRequest(input) {
+      const next = Array.from(requests.values())
+        .filter((entry) => entry.status === "pending")
+        .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+        .at(0);
+      if (!next) {
+        return undefined;
+      }
+
+      const now = new Date().toISOString();
+      next.status = "claimed";
+      next.claimedAt = now;
+      next.temporalTaskQueue = input.taskQueue;
+      next.updatedAt = now;
+      next.workflowId = `${input.workflowIdPrefix ?? "guild-scan:"}${next.scanRequestId}`;
+      return cloneRecord(next);
+    },
+
+    async markRunning(input) {
+      const current = requests.get(input.scanRequestId);
+      if (!current) {
+        return undefined;
+      }
+
+      const now = new Date().toISOString();
+      current.startedAt = current.startedAt ?? now;
+      current.status = "running";
+      current.summary = buildSummary(input.summary ?? current.summary);
+      current.updatedAt = now;
+      return cloneRecord(current);
+    },
+
+    async markCompleted(input) {
+      const current = requests.get(input.scanRequestId);
+      if (!current) {
+        return undefined;
+      }
+
+      const now = new Date().toISOString();
+      current.errorMessage = undefined;
+      current.finishedAt = now;
+      current.status = "completed";
+      current.summary = buildSummary({
+        ...input.summary,
+        completedAt: input.summary.completedAt ?? now,
+      });
+      current.updatedAt = now;
+      return cloneRecord(current);
+    },
+
+    async markFailed(input) {
+      const current = requests.get(input.scanRequestId);
+      if (!current) {
+        return undefined;
+      }
+
+      const now = new Date().toISOString();
+      current.errorMessage = input.errorMessage;
+      current.finishedAt = now;
+      current.status = "failed";
+      current.summary = buildSummary(input.summary ?? current.summary);
+      current.updatedAt = now;
+      return cloneRecord(current);
+    },
+
+    async close() {
+      return;
+    },
+  };
+}
+
 export function createInMemoryGuildVerificationConfigRepository(): GuildVerificationConfigRepository {
   const configs = new Map<string, {
     createdAt: string;
@@ -770,6 +926,10 @@ export function createInMemoryGuildVerificationConfigRepository(): GuildVerifica
     faceVerificationRequired: boolean;
     guildId: string;
     requiredBundleIds: string[];
+    roleGrantBindings: Array<{
+      roleId: string;
+      trigger: string;
+    }>;
     suspiciousRoleIds: string[];
     trustedRoleIds: string[];
     updatedAt: string;
@@ -795,13 +955,14 @@ export function createInMemoryGuildVerificationConfigRepository(): GuildVerifica
         return undefined;
       }
 
-      return {
-        ...current,
-        enabledProviderIds: [...current.enabledProviderIds],
-        requiredBundleIds: [...current.requiredBundleIds],
-        suspiciousRoleIds: [...current.suspiciousRoleIds],
-        trustedRoleIds: [...current.trustedRoleIds],
-      };
+        return {
+          ...current,
+          enabledProviderIds: [...current.enabledProviderIds],
+          requiredBundleIds: [...current.requiredBundleIds],
+          roleGrantBindings: current.roleGrantBindings.map((binding) => ({ ...binding })),
+          suspiciousRoleIds: [...current.suspiciousRoleIds],
+          trustedRoleIds: [...current.trustedRoleIds],
+        };
     },
 
     async upsertConfig(input) {
@@ -815,17 +976,18 @@ export function createInMemoryGuildVerificationConfigRepository(): GuildVerifica
 
       const now = new Date().toISOString();
       const previous = configs.get(input.guildId);
-      const verificationConfig = {
-        createdAt: previous?.createdAt ?? now,
-        defaultProviderId: input.body.defaultProviderId,
-        defaultReusableProofBackendId: input.body.defaultReusableProofBackendId,
-        enabledProviderIds: [...input.body.enabledProviderIds],
-        faceVerificationRequired: input.body.faceVerificationRequired,
-        guildId: input.guildId,
-        requiredBundleIds: [...input.body.requiredBundleIds],
-        suspiciousRoleIds: [...input.body.suspiciousRoleIds],
-        trustedRoleIds: [...input.body.trustedRoleIds],
-        updatedAt: now,
+        const verificationConfig = {
+          createdAt: previous?.createdAt ?? now,
+          defaultProviderId: input.body.defaultProviderId,
+          defaultReusableProofBackendId: input.body.defaultReusableProofBackendId,
+          enabledProviderIds: [...input.body.enabledProviderIds],
+          faceVerificationRequired: input.body.faceVerificationRequired,
+          guildId: input.guildId,
+          requiredBundleIds: [...input.body.requiredBundleIds],
+          roleGrantBindings: input.body.roleGrantBindings.map((binding) => ({ ...binding })),
+          suspiciousRoleIds: [...input.body.suspiciousRoleIds],
+          trustedRoleIds: [...input.body.trustedRoleIds],
+          updatedAt: now,
       };
 
       configs.set(input.guildId, verificationConfig);
@@ -975,6 +1137,26 @@ export function createInMemoryVerificationSessionsRepository(): VerificationSess
         ...input.resultSummary,
       };
       current.state = input.state;
+      current.updatedAt = new Date().toISOString();
+      sessions.set(input.sessionId, current);
+      return await this.getSession(input.sessionId);
+    },
+
+    async markReleased(input) {
+      const current = sessions.get(input.sessionId);
+      if (!current) {
+        return undefined;
+      }
+
+      current.resultSummary = {
+        ...current.resultSummary,
+        release: {
+          appliedRoleIds: [...input.release.appliedRoleIds],
+          releasedAt: input.release.releasedAt,
+          triggerKeys: [...input.release.triggerKeys],
+        },
+      };
+      current.state = "released";
       current.updatedAt = new Date().toISOString();
       sessions.set(input.sessionId, current);
       return await this.getSession(input.sessionId);

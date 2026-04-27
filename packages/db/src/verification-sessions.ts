@@ -83,6 +83,12 @@ export type VerificationSessionRecord = {
   userId: string;
 };
 
+export type VerificationSessionReleaseResult = {
+  appliedRoleIds: string[];
+  releasedAt: string;
+  triggerKeys: string[];
+};
+
 export type VerificationSessionsRepository = {
   createSession(input: {
     artifacts?: CanonicalArtifacts;
@@ -135,6 +141,10 @@ export type VerificationSessionsRepository = {
     resultSummary: Record<string, unknown>;
     sessionId: string;
     state: Exclude<VerificationSessionState, "challenge_issued" | "released">;
+  }): Promise<VerificationSessionRecord | undefined>;
+  markReleased(input: {
+    release: VerificationSessionReleaseResult;
+    sessionId: string;
   }): Promise<VerificationSessionRecord | undefined>;
   close(): Promise<void>;
 };
@@ -746,6 +756,34 @@ export function createPostgresVerificationSessionsRepository(input: {
           )
         `;
       });
+
+      return await readSession(sql, input.sessionId);
+    },
+
+    async markReleased(input) {
+      const current = await readSession(sql, input.sessionId);
+      if (!current) {
+        return undefined;
+      }
+
+      const releaseSummary = {
+        ...current.resultSummary,
+        release: {
+          appliedRoleIds: [...input.release.appliedRoleIds],
+          releasedAt: input.release.releasedAt,
+          triggerKeys: [...input.release.triggerKeys],
+        },
+      };
+
+      await sql`
+        UPDATE verification_sessions
+        SET
+          state = ${"released"},
+          result_summary = ${sql.json(toJsonCompatible(releaseSummary))},
+          released_at = ${input.release.releasedAt},
+          updated_at = now()
+        WHERE session_id = ${input.sessionId}::uuid
+      `;
 
       return await readSession(sql, input.sessionId);
     },

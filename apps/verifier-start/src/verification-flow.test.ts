@@ -37,6 +37,7 @@ import {
   getVerificationProviderOptions,
   hasVerificationLink,
   parseVerificationSearch,
+  releaseVerificationSession,
   startReusableProofFlow,
   startVerificationOptionLaunch,
   verifyReusableProofResult,
@@ -381,6 +382,87 @@ test("verifyReusableProofResult posts the provider session token and returns min
   expect(result.providerBoundary.releaseEligible).toBe(true);
   expect(result.verification.proofReceipt.proofReceiptRef).toBe("privado:session:backend_123");
   expect(result.verification.satisfiedClaims).toEqual(["age_over_18", "nationality"]);
+});
+
+test("releaseVerificationSession posts the signed release request and returns the applied role grants", async () => {
+  const requests: Request[] = [];
+  const fetchImpl = async (input: URL | RequestInfo, init?: RequestInit) => {
+    requests.push(new Request(input, init));
+    return new Response(
+      JSON.stringify({
+        contractVersion: "0.1.0",
+        data: {
+          providerBoundary: {
+            nextStep: "released",
+            providerFlowConfigured: true,
+            releaseEligible: false,
+            status: "released",
+          },
+          release: {
+            appliedRoleIds: ["role_human", "role_18"],
+            releasedAt: "2026-01-01T00:20:00.000Z",
+            triggerKeys: ["verified_human", "age_over_18"],
+          },
+          session: {
+            challengeExpiresAt: "2026-01-01T00:15:00.000Z",
+            challengeId: "challenge_123",
+            guildId: "guild_123",
+            releaseEligible: false,
+            requiredCapabilities: ["captcha"],
+            sessionId: "session_123",
+            source: "canonical_verification_session",
+            state: "released",
+            userId: "user_123",
+          },
+          verification: {
+            satisfiedClaims: ["age_over_18"],
+            status: "verified",
+          },
+          verificationConfig: {
+            availableProviderIds: ["didit", "privado", "self"],
+            defaultProviderId: "didit",
+            enabledProviderIds: ["didit", "privado"],
+            faceVerificationRequired: false,
+            fallbackRoles: ["role_verified"],
+            requiredBundleIds: ["humanify_id_age_and_nationality_v1"],
+            roleGrantBindings: [
+              { roleId: "role_human", trigger: "verified_human" },
+              { roleId: "role_18", trigger: "age_over_18" },
+            ],
+            source: "persisted",
+            suspiciousRoleIds: ["role_suspicious"],
+            trustedRoleIds: ["role_verified"],
+          },
+        },
+        requestId: "request_release_123",
+      }),
+      {
+        headers: {
+          "content-type": "application/json",
+        },
+        status: 200,
+      },
+    );
+  };
+
+  const result = await releaseVerificationSession(fetchImpl, {
+    apiBaseUrl: "http://127.0.0.1:3211",
+    guildId: "guild_123",
+    sessionId: "session_123",
+    token: "signed.token",
+    userId: "user_123",
+  });
+
+  expect(requests).toHaveLength(1);
+  expect(requests[0]?.url).toBe("http://127.0.0.1:3211/verification/sessions/session_123/release");
+  expect(await requests[0]?.json()).toEqual({
+    guildId: "guild_123",
+    token: "signed.token",
+    userId: "user_123",
+  });
+  expect(result.release.appliedRoleIds).toEqual(["role_human", "role_18"]);
+  expect(result.session.state).toBe("released");
+  expect(result.providerBoundary.status).toBe("released");
 });
 
 test("didit launch contracts are read from the generic provider boundary", () => {

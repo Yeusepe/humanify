@@ -24,10 +24,16 @@ import { expect, test } from "bun:test";
 import { humanifyContractVersion } from "@humanify/contracts";
 import { extractTraceContext } from "@humanify/telemetry";
 
-import { createApiApp, type LearningServiceClient, type PrivadoVerifierBackendClient } from "./app";
+import {
+  createApiApp,
+  type LearningServiceClient,
+  type PrivadoVerifierBackendClient,
+  type VerificationRoleReleaseExecutor,
+} from "./app";
 import type { DiditClient } from "./didit";
 import {
   createInMemoryGuildChannelConfigRepository,
+  createInMemoryGuildScanRequestRepository,
   createInMemoryGuildVerificationConfigRepository,
   createInMemoryModeratorWarningCardsRepository,
   createInMemoryReportCasesRepository,
@@ -213,11 +219,13 @@ function createTestApp(input: {
   diditClient?: DiditClient;
   env?: Record<string, string | undefined>;
   guildChannelConfigRepository?: ReturnType<typeof createInMemoryGuildChannelConfigRepository>;
+  guildScanRequestRepository?: ReturnType<typeof createInMemoryGuildScanRequestRepository>;
   guildVerificationConfigRepository?: ReturnType<typeof createInMemoryGuildVerificationConfigRepository>;
   learningServiceClient?: LearningServiceClient;
   moderatorWarningCardsRepository?: ReturnType<typeof createInMemoryModeratorWarningCardsRepository>;
   privadoVerifierBackendClient?: PrivadoVerifierBackendClient;
   reportCasesRepository?: ReturnType<typeof createInMemoryReportCasesRepository>;
+  verificationRoleReleaseExecutor?: VerificationRoleReleaseExecutor;
   verificationSessionsRepository?: ReturnType<typeof createInMemoryVerificationSessionsRepository>;
 } = {}) {
   const reportCasesRepository = input.reportCasesRepository ?? createInMemoryReportCasesRepository();
@@ -227,6 +235,7 @@ function createTestApp(input: {
   return createApiApp({
     env: input.env ?? testEnv,
     guildChannelConfigRepository: input.guildChannelConfigRepository ?? createInMemoryGuildChannelConfigRepository(),
+    guildScanRequestRepository: input.guildScanRequestRepository ?? createInMemoryGuildScanRequestRepository(),
     guildVerificationConfigRepository:
       input.guildVerificationConfigRepository ?? createInMemoryGuildVerificationConfigRepository(),
     learningServiceClient: input.learningServiceClient ?? createFakeLearningServiceClient(),
@@ -237,6 +246,7 @@ function createTestApp(input: {
       }),
     now: () => fixedNow,
     reportCasesRepository,
+    verificationRoleReleaseExecutor: input.verificationRoleReleaseExecutor,
     verificationOptionRuntimeOverrides: {
       diditClient: input.diditClient ?? createFakeDiditClient(),
       privadoVerifierBackendClient: input.privadoVerifierBackendClient,
@@ -254,6 +264,7 @@ async function persistVerificationConfig(
     faceVerificationRequired: boolean;
     guildId: string;
     requiredBundleIds: string[];
+    roleGrantBindings: Array<{ roleId: string; trigger: string }>;
     suspiciousRoleIds: string[];
     trustedRoleIds: string[];
   }> = {},
@@ -302,6 +313,7 @@ async function persistVerificationConfig(
         ...requiredBundleIds.flatMap((bundleId) => claimBundleClaims[bundleId] ?? []),
         ...(faceVerificationRequired ? ["face_verification"] : []),
       ])),
+      roleGrantBindings: input.roleGrantBindings ?? [],
       suspiciousRoleIds: input.suspiciousRoleIds ?? [],
       trustedRoleIds: input.trustedRoleIds ?? [],
     },
@@ -356,6 +368,7 @@ test("service-info exposes the implemented domain route groups", async () => {
     expect.arrayContaining([
       "auth",
       "guild-config",
+      "scans",
       "cases",
       "reports",
       "verification",
@@ -459,6 +472,10 @@ test("verification config persists canonical provider, bundle, and role policy",
         enabledProviderIds: ["didit", "privado", "self"],
         faceVerificationRequired: true,
         requiredBundleIds: ["humanify_id_age_and_nationality_v1"],
+        roleGrantBindings: [
+          { roleId: "role_human", trigger: "verified_human" },
+          { roleId: "role_18", trigger: "age_over_18" },
+        ],
         suspiciousRoleIds: ["role_suspicious"],
         trustedRoleIds: ["role_verified"],
       }),
@@ -484,6 +501,7 @@ test("verification config persists canonical provider, bundle, and role policy",
         faceVerificationRequired: boolean;
         fallbackRoles: string[];
         requiredBundleIds: string[];
+        roleGrantBindings: Array<{ roleId: string; trigger: string }>;
         source: string;
         suspiciousRoleIds: string[];
         trustedRoleIds: string[];
@@ -500,6 +518,10 @@ test("verification config persists canonical provider, bundle, and role policy",
   expect(json.data.verificationConfig.defaultReusableProofBackendId).toBe("privado");
   expect(json.data.verificationConfig.faceVerificationRequired).toBe(true);
   expect(json.data.verificationConfig.requiredBundleIds).toEqual(["humanify_id_age_and_nationality_v1"]);
+  expect(json.data.verificationConfig.roleGrantBindings).toEqual([
+    { roleId: "role_human", trigger: "verified_human" },
+    { roleId: "role_18", trigger: "age_over_18" },
+  ]);
   expect(json.data.verificationConfig.availableBundles.map((bundle) => bundle.bundleId)).toEqual([
     "humanify_id_age_over_18_v1",
     "humanify_id_nationality_v1",
@@ -520,6 +542,7 @@ test("verification config persists canonical provider, bundle, and role policy",
         enabledProviderIds: string[];
         faceVerificationRequired: boolean;
         requiredBundleIds: string[];
+        roleGrantBindings: Array<{ roleId: string; trigger: string }>;
         source: string;
         suspiciousRoleIds: string[];
         trustedRoleIds: string[];
@@ -535,6 +558,10 @@ test("verification config persists canonical provider, bundle, and role policy",
     enabledProviderIds: ["didit", "privado", "self"],
     faceVerificationRequired: true,
     requiredBundleIds: ["humanify_id_age_and_nationality_v1"],
+    roleGrantBindings: [
+      { roleId: "role_human", trigger: "verified_human" },
+      { roleId: "role_18", trigger: "age_over_18" },
+    ],
     source: "persisted",
     suspiciousRoleIds: ["role_suspicious"],
     trustedRoleIds: ["role_verified"],
@@ -743,6 +770,143 @@ test("channel config read stays honest when a guild has not saved setup channels
     guildId: "guild_123",
     source: "not_configured",
   });
+});
+
+test("scan request create persists a canonical queued single-member scan", async () => {
+  const app = createTestApp();
+  const response = await app.handle(
+    new Request("http://humanify.local/guilds/guild_123/scans", {
+      body: JSON.stringify({
+        actorUserId: "mod_123",
+        scope: "single_member",
+        targetUserId: "user_123",
+      }),
+      headers: {
+        "content-type": "application/json",
+        "x-idempotency-key": "scan-request-key-1",
+      },
+      method: "POST",
+    }),
+  );
+  const json = (await response.json()) as {
+    data: {
+      persistence: string;
+      queueDelivery: string;
+      queueEnvelope: {
+        stream: string;
+      };
+      scanRequest: {
+        guildId: string;
+        readModelStatus: string;
+        requestedByUserId: string;
+        scanRequestId: string;
+        scope: string;
+        status: string;
+        summary: {
+          notes: string[];
+          processedMemberCount: number;
+          suspiciousFindings: Array<unknown>;
+          suspiciousMemberCount: number;
+        };
+        targetUserId?: string;
+      };
+      writePlan: {
+        canonicalMutations: Array<{ table: string }>;
+      };
+    };
+  };
+
+  expect(response.status).toBe(201);
+  expect(json.data.persistence).toBe("persisted");
+  expect(json.data.queueDelivery).toBe("pending_outbox_publish");
+  expect(json.data.queueEnvelope.stream).toBe("scan.requests");
+  expect(json.data.scanRequest).toMatchObject({
+    guildId: "guild_123",
+    readModelStatus: "canonical_postgres",
+    requestedByUserId: "mod_123",
+    scope: "single_member",
+    status: "pending",
+    targetUserId: "user_123",
+  });
+  expect(json.data.scanRequest.summary).toEqual({
+    notes: [],
+    processedMemberCount: 0,
+    suspiciousFindings: [],
+    suspiciousMemberCount: 0,
+  });
+  expect(json.data.writePlan.canonicalMutations).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ table: "guild_scan_requests" }),
+      expect.objectContaining({ table: "audit_records" }),
+    ]),
+  );
+
+  const readResponse = await app.handle(
+    new Request(`http://humanify.local/guilds/guild_123/scans/${json.data.scanRequest.scanRequestId}`),
+  );
+  const readJson = (await readResponse.json()) as {
+    data: {
+      scanRequest: {
+        scope: string;
+        status: string;
+        targetUserId?: string;
+      };
+    };
+  };
+
+  expect(readResponse.status).toBe(200);
+  expect(readJson.data.scanRequest).toMatchObject({
+    scope: "single_member",
+    status: "pending",
+    targetUserId: "user_123",
+  });
+});
+
+test("scan request validation rejects mismatched target scope combinations", async () => {
+  const app = createTestApp();
+
+  const missingTargetResponse = await app.handle(
+    new Request("http://humanify.local/guilds/guild_123/scans", {
+      body: JSON.stringify({
+        actorUserId: "mod_123",
+        scope: "single_member",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    }),
+  );
+  const missingTargetJson = (await missingTargetResponse.json()) as {
+    errorCode: string;
+    message: string;
+  };
+
+  expect(missingTargetResponse.status).toBe(400);
+  expect(missingTargetJson.errorCode).toBe("validation_failed");
+  expect(missingTargetJson.message).toContain("targetUserId is required");
+
+  const extraTargetResponse = await app.handle(
+    new Request("http://humanify.local/guilds/guild_123/scans", {
+      body: JSON.stringify({
+        actorUserId: "mod_123",
+        scope: "all_members",
+        targetUserId: "user_123",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    }),
+  );
+  const extraTargetJson = (await extraTargetResponse.json()) as {
+    errorCode: string;
+    message: string;
+  };
+
+  expect(extraTargetResponse.status).toBe(400);
+  expect(extraTargetJson.errorCode).toBe("validation_failed");
+  expect(extraTargetJson.message).toContain("must be omitted");
 });
 
 test("report intake validates request bodies and returns the documented error envelope", async () => {
@@ -2687,8 +2851,127 @@ test("Privado proof verification reduces backend status to predicates, nullifier
   expect(statusJson.data.verification.satisfiedClaims).toEqual(["age_over_18", "nationality"]);
 });
 
+test("verification release applies configured Discord role grants after a passed session", async () => {
+  const verificationConfigRepository = createInMemoryGuildVerificationConfigRepository();
+  const verificationSessionsRepository = createInMemoryVerificationSessionsRepository();
+  await persistVerificationConfig(verificationConfigRepository, {
+    roleGrantBindings: [
+      { roleId: "role_human", trigger: "verified_human" },
+      { roleId: "role_18", trigger: "age_over_18" },
+      { roleId: "role_21", trigger: "age_over_21" },
+    ],
+  });
+  const appliedRoleCalls: Array<{
+    auditLogReason: string;
+    guildId: string;
+    roleIds: string[];
+    userId: string;
+  }> = [];
+  const app = createTestApp({
+    guildVerificationConfigRepository: verificationConfigRepository,
+    verificationRoleReleaseExecutor: {
+      async applyRoleGrants(input) {
+        appliedRoleCalls.push({
+          auditLogReason: input.auditLogReason,
+          guildId: input.guildId,
+          roleIds: [...input.roleIds],
+          userId: input.userId,
+        });
+      },
+    },
+    verificationSessionsRepository,
+  });
+  const createResponse = await app.handle(
+    new Request("http://humanify.local/guilds/guild_123/verification/sessions", {
+      body: JSON.stringify({
+        requiredCapabilities: ["captcha"],
+        userId: "user_123",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    }),
+  );
+  const created = (await createResponse.json()) as {
+    data: {
+      challengeToken: string;
+      session: {
+        sessionId: string;
+      };
+    };
+  };
+
+  await verificationSessionsRepository.recordReusableProofResult({
+    providerId: "privado",
+    providerSessionId: "privado_backend_session_123",
+    requestedClaims: ["age_over_18", "age_over_21"],
+    resultSummary: {
+      authoritativeSource: "privado_verifier_backend_status",
+      message: "Proof verified.",
+      satisfiedClaims: ["age_over_18", "age_over_21"],
+      status: "verified",
+    },
+    sessionId: created.data.session.sessionId,
+    state: "passed",
+  });
+
+  const response = await app.handle(
+    new Request(`http://humanify.local/verification/sessions/${created.data.session.sessionId}/release`, {
+      body: JSON.stringify({
+        guildId: "guild_123",
+        token: created.data.challengeToken,
+        userId: "user_123",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    }),
+  );
+  const json = (await response.json()) as {
+    data: {
+      providerBoundary: {
+        nextStep: string;
+        releaseEligible: boolean;
+        status: string;
+      };
+      release: {
+        appliedRoleIds: string[];
+        releasedAt: string;
+        triggerKeys: string[];
+      };
+      session: {
+        state: string;
+      };
+    };
+  };
+
+  expect(response.status).toBe(200);
+  expect(appliedRoleCalls).toEqual([
+    expect.objectContaining({
+      guildId: "guild_123",
+      roleIds: ["role_human", "role_18", "role_21"],
+      userId: "user_123",
+    }),
+  ]);
+  expect(json.data.providerBoundary.nextStep).toBe("released");
+  expect(json.data.providerBoundary.releaseEligible).toBe(false);
+  expect(json.data.providerBoundary.status).toBe("released");
+  expect(json.data.release.appliedRoleIds).toEqual(["role_human", "role_18", "role_21"]);
+  expect(json.data.release.triggerKeys).toEqual(["verified_human", "age_over_18", "age_over_21"]);
+  expect(json.data.release.releasedAt).toBeTruthy();
+  expect(json.data.session.state).toBe("released");
+});
+
 test("verification release stays blocked until server-side provider verification can prove a passed session", async () => {
-  const app = createTestApp();
+  const app = createTestApp({
+    verificationRoleReleaseExecutor: {
+      async applyRoleGrants() {
+        throw new Error("release should not run for an unpassed session");
+      },
+    },
+  });
   const createResponse = await app.handle(
     new Request("http://humanify.local/guilds/guild_123/verification/sessions", {
       body: JSON.stringify({

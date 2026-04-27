@@ -72,7 +72,7 @@ export type ApiVerificationOptionEnvironment = {
 export type VerificationProviderBoundary = {
   handoffKind?: VerificationProviderDefinition["integration"]["handoffKind"];
   launch?: Record<string, unknown>;
-  nextStep: VerificationProviderDefinition["integration"]["completionMode"] | "complete_challenge" | "release_available";
+  nextStep: VerificationProviderDefinition["integration"]["completionMode"] | "complete_challenge" | "release_available" | "released";
   providerFlowConfigured: boolean;
   providerServerEndpoint?: string;
   providerSessionId?: string;
@@ -662,24 +662,30 @@ export function buildProviderBoundaryFromRecord(
   if (!providerDefinition) {
     return {
       launch: status.launch,
-      nextStep: record.state === "passed" ? "release_available" : selectedProvider ? "provider_verification_required" : "complete_challenge",
+      nextStep: record.state === "released"
+        ? "released"
+        : record.state === "passed"
+          ? "release_available"
+          : selectedProvider
+            ? "provider_verification_required"
+            : "complete_challenge",
       providerFlowConfigured: Boolean(status.launch) || Boolean(selectedProvider),
       providerSessionId: status.providerSessionId,
       releaseEligible: record.state === "passed",
       requestedClaims: status.requestedClaims as HumanifyClaimKey[] | undefined,
       selectedProvider,
-      status: status.status ?? "challenge_link_verified",
+      status: record.state === "released" ? "released" : status.status ?? "challenge_link_verified",
     };
   }
 
   return buildVerificationOptionBoundary(providerDefinition, {
     launch: status.launch,
-    nextStep: record.state === "passed" ? "release_available" : "provider_verification_required",
+    nextStep: record.state === "released" ? "released" : record.state === "passed" ? "release_available" : "provider_verification_required",
     providerFlowConfigured: Boolean(status.launch) || Boolean(selectedProvider),
     providerSessionId: status.providerSessionId,
     releaseEligible: record.state === "passed",
     requestedClaims: status.requestedClaims as HumanifyClaimKey[] | undefined,
     selectedProvider,
-    status: status.status ?? "challenge_link_verified",
+    status: record.state === "released" ? "released" : status.status ?? "challenge_link_verified",
   });
 }

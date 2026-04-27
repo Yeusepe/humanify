@@ -53,6 +53,10 @@ export type GuildVerificationConfigSnapshot = {
   faceVerificationRequired: boolean;
   fallbackRoles: string[];
   requiredBundleIds: string[];
+  roleGrantBindings?: Array<{
+    roleId: string;
+    trigger: string;
+  }>;
   source: "catalog_default" | "persisted";
   suspiciousRoleIds: string[];
   trustedRoleIds: string[];
@@ -66,7 +70,7 @@ export type VerificationSessionSnapshot = {
   requiredCapabilities: string[];
   sessionId: string;
   source: string;
-  state: "challenge_issued" | "provider_pending" | "passed" | "failed" | "expired" | "cancelled";
+  state: "challenge_issued" | "provider_pending" | "passed" | "failed" | "expired" | "cancelled" | "released";
   userId: string;
 };
 
@@ -216,6 +220,18 @@ export type ReusableProofVerificationData = {
     satisfiedClaims: HumanifyClaimKey[];
     status: "failed" | "pending" | "verified";
   };
+};
+
+export type VerificationReleaseData = {
+  providerBoundary: VerificationProviderBoundary;
+  release: {
+    appliedRoleIds: string[];
+    releasedAt: string;
+    triggerKeys: string[];
+  };
+  session: VerificationSessionSnapshot;
+  verification?: VerificationSummary;
+  verificationConfig: GuildVerificationConfigSnapshot;
 };
 
 export type VerificationChecklistItem = {
@@ -531,6 +547,37 @@ export async function verifyReusableProofResult(
   );
 
   return readApiEnvelope<ReusableProofVerificationData>(response);
+}
+
+export async function releaseVerificationSession(
+  fetchImpl: FetchLike,
+  input: {
+    apiBaseUrl: string;
+    guildId: string;
+    sessionId: string;
+    token: string;
+    userId: string;
+  },
+) {
+  const requestTelemetry = createRequestTelemetryContext();
+  const response = await fetchImpl(
+    buildApiUrl(input.apiBaseUrl, `/verification/sessions/${encodeURIComponent(input.sessionId)}/release`),
+    {
+      body: JSON.stringify({
+        guildId: input.guildId,
+        token: input.token,
+        userId: input.userId,
+      }),
+      credentials: "include",
+      headers: injectRequestTelemetryHeaders({
+        accept: "application/json",
+        "content-type": "application/json",
+      }, requestTelemetry),
+      method: "POST",
+    },
+  );
+
+  return readApiEnvelope<VerificationReleaseData>(response);
 }
 
 export function buildVerificationChecklist(input: {

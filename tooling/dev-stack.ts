@@ -59,6 +59,9 @@ type DevStackPortMap = {
   qdrantGrpc: number;
   qdrantHttp: number;
   redis: number;
+  scanWorker: number;
+  temporal: number;
+  temporalUi: number;
   trust: number;
   verifier: number;
 };
@@ -104,6 +107,9 @@ const defaultMinioConsolePort = 9001;
 const defaultQdrantHttpPort = 6333;
 const defaultQdrantGrpcPort = 6334;
 const defaultGrafanaPort = 4300;
+const defaultScanWorkerPort = 4210;
+const defaultTemporalPort = 7233;
+const defaultTemporalUiPort = 8233;
 
 function resolvePort(
   rawValue: string | undefined,
@@ -211,6 +217,21 @@ export function createDevStackPlan(env: NodeJS.ProcessEnv = process.env): DevSta
     defaultGrafanaPort,
     "HUMANIFY_GRAFANA_PORT",
   );
+  const scanWorkerPort = resolvePort(
+    env.HUMANIFY_SCAN_WORKER_PORT,
+    defaultScanWorkerPort,
+    "HUMANIFY_SCAN_WORKER_PORT",
+  );
+  const temporalPort = resolvePort(
+    env.HUMANIFY_TEMPORAL_PORT,
+    defaultTemporalPort,
+    "HUMANIFY_TEMPORAL_PORT",
+  );
+  const temporalUiPort = resolvePort(
+    env.HUMANIFY_TEMPORAL_UI_PORT,
+    defaultTemporalUiPort,
+    "HUMANIFY_TEMPORAL_UI_PORT",
+  );
   const ports: DevStackPortMap = {
     api: apiPort,
     dashboard: dashboardPort,
@@ -225,6 +246,9 @@ export function createDevStackPlan(env: NodeJS.ProcessEnv = process.env): DevSta
     qdrantGrpc: qdrantGrpcPort,
     qdrantHttp: qdrantHttpPort,
     redis: redisPort,
+    scanWorker: scanWorkerPort,
+    temporal: temporalPort,
+    temporalUi: temporalUiPort,
     trust: trustPort,
     verifier: verifierPort,
   };
@@ -251,6 +275,11 @@ export function createDevStackPlan(env: NodeJS.ProcessEnv = process.env): DevSta
       readinessUrl: `http://127.0.0.1:${ports.verifier}/`,
     },
     {
+      name: "@humanify/scan-worker-temporal",
+      command: ["bun", "run", "--filter", "@humanify/scan-worker-temporal", "dev"],
+      readinessUrl: `http://127.0.0.1:${ports.scanWorker}/healthz`,
+    },
+    {
       name: "inference-rs",
       command: ["cargo", "run", "-p", "inference-rs"],
       readinessUrl: `http://127.0.0.1:${ports.inference}/healthz`,
@@ -275,6 +304,7 @@ export function createDevStackPlan(env: NodeJS.ProcessEnv = process.env): DevSta
     requiredPort("dashboard", ports.dashboard),
     requiredPort("api", ports.api),
     requiredPort("verifier", ports.verifier),
+    requiredPort("scan-worker-temporal", ports.scanWorker),
     requiredPort("inference-rs", ports.inference),
     requiredPort("learning-rs", ports.learning),
     requiredPort("evidence-rs", ports.evidence),
@@ -287,6 +317,8 @@ export function createDevStackPlan(env: NodeJS.ProcessEnv = process.env): DevSta
     requiredPort("qdrant-http", ports.qdrantHttp),
     requiredPort("qdrant-grpc", ports.qdrantGrpc),
     requiredPort("grafana", ports.grafana),
+    requiredPort("temporal", ports.temporal),
+    requiredPort("temporal-ui", ports.temporalUi),
   ];
 
   if (env.HUMANIFY_SKIP_BOT === "1") {
@@ -745,6 +777,9 @@ async function runDevStack() {
   console.log(`[dev-stack] Dashboard: http://localhost:${plan.ports.dashboard}`);
   console.log(`[dev-stack] Verifier:  http://localhost:${plan.ports.verifier}`);
   console.log(`[dev-stack] API:       http://localhost:${plan.ports.api}`);
+  console.log(
+    `[dev-stack] Worker:    scan-worker-temporal=${plan.ports.scanWorker} temporal=${plan.ports.temporal} temporal-ui=${plan.ports.temporalUi}`,
+  );
   console.log(
     `[dev-stack] Rust:      inference-rs=${plan.ports.inference} learning-rs=${plan.ports.learning} evidence-rs=${plan.ports.evidence} trust-rs=${plan.ports.trust}`,
   );

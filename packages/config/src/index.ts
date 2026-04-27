@@ -98,6 +98,14 @@ export type AdvisoryServiceConfig = {
   learningServiceUrl: string;
 };
 
+export type TemporalWorkerConfig = {
+  address: string;
+  healthPort: number;
+  namespace: string;
+  pollIntervalMs: number;
+  scanTaskQueue: string;
+};
+
 export type PrivadoVerifierConfig = {
   chainId: string;
   enabled: boolean;
@@ -323,8 +331,8 @@ export function loadDiditConfig(source: EnvSource = process.env): DiditConfig | 
   const verifierBaseUrl = readOptionalString(source, "HUMANIFY_VERIFIER_BASE_URL");
   const verificationApiBaseUrl = readOptionalString(source, "HUMANIFY_DIDIT_API_BASE_URL") ?? "https://verification.didit.me";
 
-  const anyDiditConfigPresent = Boolean(apiKey || webhookSecret || workflowId || verifierBaseUrl || source.HUMANIFY_DIDIT_API_BASE_URL);
-  if (!anyDiditConfigPresent) {
+  const anyDiditCredentialPresent = Boolean(apiKey || webhookSecret || workflowId);
+  if (!anyDiditCredentialPresent) {
     return undefined;
   }
 
@@ -460,6 +468,31 @@ export function loadAdvisoryServiceConfig(source: EnvSource = process.env): Advi
       learningServiceUrl,
     });
   }
+}
+
+export function loadTemporalWorkerConfig(source: EnvSource = process.env): TemporalWorkerConfig {
+  const issues: ConfigIssue[] = [];
+  const address = readOptionalString(source, "HUMANIFY_TEMPORAL_ADDRESS") ?? "127.0.0.1:7233";
+  const namespace = readOptionalString(source, "HUMANIFY_TEMPORAL_NAMESPACE") ?? "default";
+  const scanTaskQueue =
+    readOptionalString(source, "HUMANIFY_TEMPORAL_SCAN_TASK_QUEUE") ?? "humanify-member-scan";
+  const healthPort = readInteger(source, "HUMANIFY_SCAN_WORKER_PORT", issues, 4210, 1);
+  const pollIntervalMs = readInteger(source, "HUMANIFY_SCAN_WORKER_POLL_INTERVAL_MS", issues, 3_000, 100);
+
+  if (!address.includes(":")) {
+    issues.push({
+      key: "HUMANIFY_TEMPORAL_ADDRESS",
+      message: "HUMANIFY_TEMPORAL_ADDRESS must be a host:port pair.",
+    });
+  }
+
+  return finalizeIssues(issues, {
+    address,
+    healthPort,
+    namespace,
+    pollIntervalMs,
+    scanTaskQueue,
+  });
 }
 
 export function loadPrivadoVerifierConfig(source: EnvSource = process.env): PrivadoVerifierConfig {

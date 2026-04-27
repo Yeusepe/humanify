@@ -23,6 +23,7 @@ Upstream docs:
 - MinIO container docs: https://min.io/docs/minio/container/index.html
 - Qdrant docs: https://qdrant.tech/documentation/
 - Grafana Docker install: https://grafana.com/docs/grafana/latest/setup-grafana/installation/docker/
+- Temporal self-hosting: https://docs.temporal.io/self-hosted-guide/install-temporal-server
 - Bun subprocesses: https://bun.sh/docs/api/spawn
 - Cargo run: https://doc.rust-lang.org/cargo/commands/cargo-run.html
 
@@ -35,7 +36,7 @@ It performs the following in order:
 1. Preflights every fixed host port the stack owns and fails immediately if any of them are already occupied
 2. Starts local infrastructure with `docker compose -f docker-compose.local.yml up -d --wait --remove-orphans`
 3. Applies the canonical Postgres migration bundle with `bun run db:migrate`
-4. Starts the Bun application surfaces
+4. Starts the Bun application surfaces plus the supported-runtime Temporal scan worker
 5. Starts the Rust HTTP services
 6. Waits for the application/service HTTP endpoints to become reachable
 7. Keeps the stack attached until interrupted
@@ -57,6 +58,8 @@ The local infrastructure stack currently includes:
 | MinIO | local S3-compatible stand-in for Cloudflare R2 | `9000` API / `9001` console |
 | Qdrant | optional vector/search sidecar for local experimentation | `6333` HTTP / `6334` gRPC |
 | Grafana | local observability UI surface | `4300` |
+| Temporal | durable workflow server for `/scan` and `/scan-all` | `7233` |
+| Temporal UI | local workflow visibility for scan debugging | `8233` |
 
 ### R2 note
 
@@ -77,6 +80,7 @@ After the Docker services are up, the root command starts:
 | `apps\api-bun` | Bun + Elysia API | `http://localhost:3211/healthz` |
 | `apps\dashboard-start` | dashboard shell | `http://localhost:3210/` |
 | `apps\verifier-start` | verifier shell | `http://localhost:3212/` |
+| `apps\scan-worker-temporal` | Node-compatible Temporal worker for durable member scans | `http://localhost:4210/healthz` |
 | `services\inference-rs` | inference service | `http://localhost:4101/healthz` |
 | `services\learning-rs` | learning service | `http://localhost:4102/healthz` |
 | `services\evidence-rs` | evidence service | `http://localhost:4103/healthz` |
@@ -95,7 +99,7 @@ Before Docker or any child process starts, `bun run dev` checks that every requi
 On Windows, use this PowerShell command to find the conflicting process for one or more ports:
 
 ```powershell
-Get-NetTCPConnection -State Listen -LocalPort 3210,3211,3212,4101,4102,4103,4104,5432,6379,5133,9000,9001,6333,6334,4300 |
+Get-NetTCPConnection -State Listen -LocalPort 3210,3211,3212,4210,4101,4102,4103,4104,5432,6379,5133,9000,9001,6333,6334,4300,7233,8233 |
   Select-Object LocalAddress, LocalPort, OwningProcess, State
 ```
 
@@ -140,6 +144,13 @@ Important variables:
 | `HUMANIFY_MINIO_*` | MinIO local credentials and ports |
 | `HUMANIFY_QDRANT_*` | Qdrant local ports |
 | `HUMANIFY_GRAFANA_*` | Grafana local credentials and port |
+| `HUMANIFY_TEMPORAL_PORT` | local Temporal server port published by Docker Compose |
+| `HUMANIFY_TEMPORAL_UI_PORT` | local Temporal UI port |
+| `HUMANIFY_TEMPORAL_ADDRESS` | host:port address the scan worker uses to connect to Temporal |
+| `HUMANIFY_TEMPORAL_NAMESPACE` | Temporal namespace for durable scan workflows |
+| `HUMANIFY_TEMPORAL_SCAN_TASK_QUEUE` | task queue name used by the scan worker and `/scan` workflows |
+| `HUMANIFY_SCAN_WORKER_PORT` | local health port for `apps\scan-worker-temporal` |
+| `HUMANIFY_SCAN_WORKER_POLL_INTERVAL_MS` | Postgres claim-loop interval for pending scan requests |
 | `VITE_HUMANIFY_ENABLED_VERIFICATION_PROVIDERS` | comma-separated provider ids shown in the verifier UI; keep this aligned with the API variable above |
 
 SQLite/libSQL-based local prediction state remains file-backed and does not require a separate container yet.

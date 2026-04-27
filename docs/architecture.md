@@ -31,6 +31,7 @@ Upstream docs:
 - Redis Streams: https://redis.io/docs/latest/develop/data-types/streams/
 - Cloudflare R2: https://developers.cloudflare.com/r2/
 - Axum: https://docs.rs/axum/latest/axum/
+- Temporal TypeScript SDK: https://docs.temporal.io/develop/typescript/core-application
 - OpenTelemetry context propagation: https://opentelemetry.io/docs/concepts/context-propagation/
 
 This document converts the product-level architecture in `Implementation Plan.txt` into subsystem ownership that later code, migrations, packages, and services must follow.
@@ -55,6 +56,7 @@ flowchart TD
   Dashboard[apps\\dashboard-start] --> API[apps\\api-bun]
   Verifier[apps\\verifier-start] --> API
   Bot --> API
+  API --> ScanWorker[apps\\scan-worker-temporal]
   API --> Policy[packages\\policy-engine]
   API --> Auth[packages\\auth]
   API --> DB[packages\\db]
@@ -68,6 +70,10 @@ flowchart TD
   API --> Learning[services\\learning-rs]
   API --> Evidence[services\\evidence-rs]
   API --> Trust[services\\trust-rs]
+  ScanWorker --> PG
+  ScanWorker --> API
+  ScanWorker --> Temporal[Temporal server]
+  ScanWorker --> Discord
   Streams --> Inference
   Streams --> Learning
   Streams --> Evidence
@@ -88,6 +94,17 @@ Humanify's verification architecture stays generic by separating three roles:
 | Policy consumer | Bun verification + policy flow | decide whether guild policy is satisfied and whether release/quarantine changes are allowed |
 
 This keeps provider behavior behind role-based strategies while making it explicit that Humanify is not itself the reusable-ID store.
+
+### 2.2 Durable member-scan flow
+
+Humanify now keeps `/scan` and `/scan-all` durable without moving the Bun product runtime off Bun:
+
+1. `apps\bot-bun` submits a canonical scan request to `apps\api-bun`.
+2. `apps\api-bun` writes `guild_scan_requests`, audit rows, and outbox metadata to Postgres first.
+3. `apps\scan-worker-temporal` claims pending requests from canonical Postgres state and starts a Temporal workflow on the configured task queue.
+4. The worker reuses the shared `packages\discord-core` member-scan heuristic, opens canonical advisory reports for suspicious matches, and refreshes the moderator warning-card surface through the existing API boundary.
+
+This preserves the repo's existing invariant: Bun remains the product authority, while Temporal provides workflow durability for long-running Discord member scans.
 
 ## 3. Ownership matrix
 

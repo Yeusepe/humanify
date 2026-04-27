@@ -37,6 +37,7 @@ import {
   getVerifierApiBaseUrl,
   hasVerificationLink,
   parseVerificationSearch,
+  releaseVerificationSession,
   startVerificationOptionLaunch,
   startReusableProofFlow,
   verifyReusableProofResult,
@@ -45,6 +46,7 @@ import {
   type VerificationChallengeData,
   type ReusableProofStartData,
   type ReusableProofVerificationData,
+  type VerificationReleaseData,
   type VerificationSessionData,
 } from "../verification-flow";
 import { resolveVerificationOptionRouteRuntime } from "../verification-options/runtime";
@@ -60,6 +62,7 @@ function VerificationRoute() {
   const [challengeData, setChallengeData] = useState<VerificationChallengeData | null>(null);
   const [proofStartData, setProofStartData] = useState<ReusableProofStartData | null>(null);
   const [proofVerificationData, setProofVerificationData] = useState<ReusableProofVerificationData | null>(null);
+  const [releaseData, setReleaseData] = useState<VerificationReleaseData | null>(null);
   const providerEnv = import.meta.env as Record<string, string | undefined>;
   const [selectedProvider, setSelectedProvider] = useState<VerificationProviderId>(() =>
     getDefaultVerificationProviderId(providerEnv),
@@ -73,6 +76,7 @@ function VerificationRoute() {
   const [actionState, setActionState] = useState<"error" | "idle" | "submitting" | "success">("idle");
   const [browserLaunchState, setBrowserLaunchState] = useState<"idle" | "launching">("idle");
   const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
+  const [releaseState, setReleaseState] = useState<"error" | "idle" | "releasing" | "released">("idle");
 
   const apiBaseUrl = getVerifierApiBaseUrl(providerEnv);
 
@@ -82,7 +86,9 @@ function VerificationRoute() {
     setChallengeData(null);
     setProofStartData(null);
     setProofVerificationData(null);
+    setReleaseData(null);
     setActionState("idle");
+    setReleaseState("idle");
     setFeedbackMessage(null);
 
     if (!hasVerificationLink(search)) {
@@ -123,7 +129,8 @@ function VerificationRoute() {
     };
   }, [apiBaseUrl, search.sessionId, search.token]);
 
-  const effectiveVerificationConfig = challengeData?.verificationConfig ?? sessionData?.verificationConfig ?? null;
+  const effectiveVerificationConfig =
+    releaseData?.verificationConfig ?? challengeData?.verificationConfig ?? sessionData?.verificationConfig ?? null;
   const providerOptions = useMemo(
     () => getGuildVerificationProviderOptions(effectiveVerificationConfig ?? undefined, providerEnv),
     [effectiveVerificationConfig, providerEnv],
@@ -147,8 +154,10 @@ function VerificationRoute() {
     [selectedProviderDefinition],
   );
 
-  const effectiveSession = challengeData?.session ?? proofStartData?.session ?? proofVerificationData?.session ?? sessionData?.session ?? null;
+  const effectiveSession =
+    releaseData?.session ?? challengeData?.session ?? proofStartData?.session ?? proofVerificationData?.session ?? sessionData?.session ?? null;
   const activeProviderBoundary =
+    releaseData?.providerBoundary ??
     proofVerificationData?.providerBoundary ??
     proofStartData?.providerBoundary ??
     challengeData?.providerBoundary ??
@@ -156,6 +165,7 @@ function VerificationRoute() {
     null;
   const providerFlowConfigured = activeProviderBoundary?.providerFlowConfigured ?? false;
   const releaseEligible =
+    releaseData?.providerBoundary.releaseEligible ??
     proofVerificationData?.providerBoundary.releaseEligible ??
     challengeData?.providerBoundary.releaseEligible ??
     sessionData?.providerBoundary.releaseEligible ??
@@ -167,7 +177,7 @@ function VerificationRoute() {
     proofVerificationData?.providerBoundary.providerSessionToken ??
     proofStartData?.providerBoundary.providerSessionToken;
   const activeProviderId = activeProviderBoundary?.selectedProvider ?? selectedProviderDefinition.id;
-  const activeVerificationSummary = proofVerificationData?.verification ?? sessionData?.verification ?? null;
+  const activeVerificationSummary = releaseData?.verification ?? proofVerificationData?.verification ?? sessionData?.verification ?? null;
   const activeReusableCredentialBridge = sessionData?.reusableCredentialBridge ?? null;
   const activeProviderDefinition = useMemo(
     () => providerOptions.find((provider) => provider.id === activeProviderId) ?? getVerificationProvider(activeProviderId, providerEnv),
@@ -275,6 +285,48 @@ function VerificationRoute() {
     });
     setSessionData(refreshed);
   }
+
+  useEffect(() => {
+    if (!hasVerificationLink(search) || !effectiveSession || effectiveSession.state !== "passed" || releaseData || releaseState === "releasing") {
+      return;
+    }
+
+    let active = true;
+    setReleaseState("releasing");
+
+    void releaseVerificationSession(fetch, {
+      apiBaseUrl,
+      guildId: effectiveSession.guildId,
+      sessionId: effectiveSession.sessionId,
+      token: search.token,
+      userId: effectiveSession.userId,
+    })
+      .then((data) => {
+        if (!active) {
+          return;
+        }
+
+        setReleaseData(data);
+        setReleaseState("released");
+        setFeedbackMessage(
+          data.release.appliedRoleIds.length > 0
+            ? `Verification complete. Humanify applied ${data.release.appliedRoleIds.length} Discord role(s).`
+            : "Verification complete. Humanify did not need to apply any additional Discord roles for this server.",
+        );
+      })
+      .catch((error: unknown) => {
+        if (!active) {
+          return;
+        }
+
+        setReleaseState("error");
+        setFeedbackMessage(error instanceof Error ? error.message : "Verification release failed.");
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [apiBaseUrl, effectiveSession, releaseData, releaseState, search]);
 
   async function handleChallengeConfirmation() {
     if (!effectiveSession || !hasVerificationLink(search)) {
@@ -426,7 +478,7 @@ function VerificationRoute() {
         {
           description: "Browser completion never counts on its own. Humanify waits for the provider's server-side verification result.",
           title: "Release status",
-          value: releaseEligible ? "eligible" : "blocked",
+          value: effectiveSession?.state === "released" ? "released" : releaseEligible ? "eligible" : "blocked",
           variant: "tertiary",
         },
       ]}
@@ -441,11 +493,11 @@ function VerificationRoute() {
                 Open the verifier using the Bun-authored link that includes a signed challenge token and session ID.
               </Card.Description>
             </Card.Header>
-            <Card.Content className="space-y-3 text-sm leading-7 text-muted">
-              <p>
-                 This first real verifier path does not fake Discord OAuth, provider success, or role release. It only accepts
-                 a signed link from the API, confirms the challenge, and then waits for future server-side provider wiring.
-              </p>
+                <Card.Content className="space-y-3 text-sm leading-7 text-muted">
+                  <p>
+                  This verifier only trusts Bun-signed links and server-verified provider receipts. It never treats a browser-only
+                  completion screen as success, but it can now finish the verified release step once Bun confirms the session.
+                  </p>
               <p className="font-medium text-foreground">
                 Expected query params: <code className="rounded bg-content2 px-2 py-1 text-xs">sessionId</code> and{" "}
                 <code className="rounded bg-content2 px-2 py-1 text-xs">token</code>.
@@ -472,6 +524,12 @@ function VerificationRoute() {
                       <DetailRow label="Guild" value={effectiveSession.guildId} />
                       <DetailRow label="User" value={effectiveSession.userId} />
                       <DetailRow label="Expires" value={effectiveSession.challengeExpiresAt} />
+                      {releaseData ? (
+                        <DetailRow
+                          label="Released roles"
+                          value={releaseData.release.appliedRoleIds.join(", ") || "None"}
+                        />
+                      ) : null}
                       {search.serverName ? <DetailRow label="Server label" value={search.serverName} /> : null}
                       {search.username ? <DetailRow label="User label" value={search.username} /> : null}
                     </>
@@ -812,6 +870,13 @@ function VerificationRoute() {
                             Receipt ref:{" "}
                             {proofVerificationData.verification.proofReceipt.proofReceiptRef ?? "not issued yet"}
                           </p>
+                        </div>
+                      ) : null}
+                      {releaseData ? (
+                        <div className="rounded-2xl border border-content3 px-4 py-4 text-xs leading-6">
+                          <p className="font-semibold text-foreground">Discord role release</p>
+                          <p>Released at: {releaseData.release.releasedAt}</p>
+                          <p>Applied roles: {releaseData.release.appliedRoleIds.join(", ") || "none"}</p>
                         </div>
                       ) : null}
                     </>

@@ -53,10 +53,12 @@ import { humanifyActionLadder, humanifyContractVersion } from "@humanify/contrac
 import {
   authorizeAdminOnlyBotAction,
   authorizeTrustedModeratorOnlyBotAction,
+  buildMemberScanReportReason,
   buildComponentCustomId,
   buildSetupFlowCustomId,
   createBotGatewayIntents,
   createHumanifyApplicationCommands,
+  extractMemberScanReasonCodes,
   humanifyBotCommandNames,
   parseComponentCustomId,
   parseSetupFlowCustomId,
@@ -137,6 +139,50 @@ export type BotVerificationSessionResponse = {
   };
 };
 
+export type BotScanRequestBody = {
+  actorUserId: string;
+  scope: "all_members" | "single_member";
+  targetUserId?: string;
+};
+
+export type BotScanRequestResponse = {
+  persistence: string;
+  queueDelivery: string;
+  scanRequest: {
+    claimedAt?: string;
+    createdAt: string;
+    errorMessage?: string;
+    finishedAt?: string;
+    guildId: string;
+    readModelStatus: string;
+    requestedByUserId: string;
+    scanRequestId: string;
+    scope: "all_members" | "single_member";
+    scopeRef: {
+      guildId: string;
+      scanRequestId: string;
+    };
+    startedAt?: string;
+    status: "claimed" | "completed" | "failed" | "pending" | "running";
+    summary: {
+      completedAt?: string;
+      lastScannedUserId?: string;
+      notes: string[];
+      processedMemberCount: number;
+      suspiciousFindings: Array<{
+        caseId?: string;
+        reasonCodes: string[];
+        userId: string;
+      }>;
+      suspiciousMemberCount: number;
+    };
+    targetUserId?: string;
+    temporalTaskQueue?: string;
+    updatedAt: string;
+    workflowId?: string;
+  };
+};
+
 export type BotSetupBundle = {
   bestFor: string;
   bundleId: string;
@@ -190,11 +236,17 @@ export type BotGuildVerificationConfig = {
   faceVerificationRequired: boolean;
   fallbackRoles: string[];
   guildId: string;
+  roleGrantBindings: BotVerificationRoleGrantBinding[];
   requiredBundleIds: string[];
   requiredBundles: BotSetupBundle[];
   source: "catalog_default" | "persisted";
   suspiciousRoleIds: string[];
   trustedRoleIds: string[];
+};
+
+export type BotVerificationRoleGrantBinding = {
+  roleId: string;
+  trigger: "age_over_18" | "age_over_21" | "verified_human";
 };
 
 export type BotGuildVerificationConfigReadResponse = {
@@ -208,6 +260,7 @@ export type BotGuildVerificationConfigWriteBody = {
   defaultReusableProofBackendId?: string;
   enabledProviderIds: string[];
   faceVerificationRequired: boolean;
+  roleGrantBindings: BotVerificationRoleGrantBinding[];
   requiredBundleIds: string[];
   suspiciousRoleIds: string[];
   trustedRoleIds: string[];
@@ -326,6 +379,11 @@ export type BotApiClient = {
     requestTelemetry?: RequestTelemetryContext,
   ): Promise<BotEvidenceResponse>;
   createReport(guildId: string, body: BotReportBody, requestTelemetry?: RequestTelemetryContext): Promise<BotReportResponse>;
+  createScanRequest(
+    guildId: string,
+    body: BotScanRequestBody,
+    requestTelemetry?: RequestTelemetryContext,
+  ): Promise<BotScanRequestResponse>;
   createVerificationSession(
     guildId: string,
     body: BotVerificationSessionBody,
@@ -367,6 +425,7 @@ export type CreateInteractionHandlerOptions = {
     guildId: string;
     requestTelemetry?: RequestTelemetryContext;
   }) => Promise<ModeratorWarningSyncResult>;
+  verifierBaseUrl?: string;
 };
 
 export type CreatePassiveEventHandlerOptions = {
@@ -435,8 +494,6 @@ function buildDiscordMessageUrl(guildId: string, channelId: string, messageId: s
 const passiveDuplicateWindowMs = 2 * 60 * 1_000;
 const passiveDuplicateThreshold = 3;
 const passiveMentionBurstThreshold = 5;
-const twentyFourHoursMs = 24 * 60 * 60 * 1_000;
-const sevenDaysMs = 7 * 24 * 60 * 60 * 1_000;
 
 type PassiveMessageState = {
   duplicateMessageCounters: Map<string, { count: number; lastSeenAt: number }>;
@@ -518,24 +575,19 @@ function extractMessageReasonCodes(message: Message, state: PassiveMessageState,
 }
 
 function extractJoinReasonCodes(member: GuildMember, now: number) {
-  const accountAgeMs = Math.max(now - member.user.createdTimestamp, 0);
-  if (accountAgeMs < twentyFourHoursMs) {
-    return ["account_age_lt_24h"];
-  }
-
-  if (accountAgeMs < sevenDaysMs && !member.user.avatar) {
-    return ["account_age_lt_7d", "profile_missing_avatar"];
-  }
-
-  return [];
+  return extractMemberScanReasonCodes({
+    now,
+    snapshot: {
+      avatar: member.user.avatar,
+      createdTimestamp: member.user.createdTimestamp,
+      guildId: member.guild.id,
+      userId: member.user.id,
+    },
+  });
 }
 
 function buildPassiveJoinReportReason(reasonCodes: string[]) {
-  if (reasonCodes.includes("account_age_lt_24h")) {
-    return "Automatic detector bridge flagged a very new Discord account joining the server.";
-  }
-
-  return "Automatic detector bridge flagged a newly created Discord account with an incomplete profile joining the server.";
+  return buildMemberScanReportReason(reasonCodes as never);
 }
 
 function buildPassiveMessageReportReason(reasonCodes: string[]) {
@@ -574,6 +626,14 @@ function buildVerificationShortcutId(guildId: string, caseId: string, userId: st
   });
 }
 
+function buildVerificationPanelId(guildId: string) {
+  return buildComponentCustomId({
+    entityId: "self_serve",
+    guildId,
+    kind: "verification_panel",
+  });
+}
+
 function parseCaseUserEntity(entityId: string) {
   const [caseId, userId] = entityId.split("~");
   if (!caseId || !userId) {
@@ -598,6 +658,15 @@ function appendFollowUpNote(content: string, note?: string) {
   return note ? `${content}\n${note}` : content;
 }
 
+function truncateDiscordComponentText(value: string, maxLength = 100) {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, Math.max(maxLength - 1, 1)).trimEnd()}…`;
+}
+
 function createVerificationShortcutRow(guildId: string, caseId: string, userId: string) {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
@@ -605,6 +674,37 @@ function createVerificationShortcutRow(guildId: string, caseId: string, userId: 
       .setLabel("Start verification")
       .setStyle(ButtonStyle.Primary),
   );
+}
+
+function createVerificationPanelRow(guildId: string) {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(buildVerificationPanelId(guildId))
+      .setLabel("Verify with Humanify")
+      .setStyle(ButtonStyle.Primary),
+  );
+}
+
+function createVerifierLink(
+  verifierBaseUrl: string,
+  input: {
+    guildId: string;
+    sessionId: string;
+    token: string;
+    userId: string;
+    username?: string;
+  },
+) {
+  const url = new URL("/verify", verifierBaseUrl);
+  url.searchParams.set("guildId", input.guildId);
+  url.searchParams.set("sessionId", input.sessionId);
+  url.searchParams.set("token", input.token);
+  url.searchParams.set("userId", input.userId);
+  if (input.username) {
+    url.searchParams.set("username", input.username);
+  }
+
+  return url.toString();
 }
 
 async function replyEphemeral(
@@ -618,7 +718,7 @@ async function replyEphemeral(
 ) {
   const options: InteractionReplyOptions = {
     components: payload.components,
-    content: payload.content,
+    content: truncateMessageContent(payload.content),
     flags: MessageFlags.Ephemeral,
   };
 
@@ -636,11 +736,11 @@ async function updateMessageComponent(
 ) {
   await interaction.update({
     components: payload.components ?? [],
-    content: payload.content,
+    content: truncateMessageContent(payload.content),
   });
 }
 
-type SetupStep = "bundles" | "channels" | "confirm" | "face" | "providers" | "roles";
+type SetupStep = "bundles" | "channels" | "confirm" | "face" | "grants" | "providers" | "roles";
 
 type SetupFlowDraft = {
   actorUserId: string;
@@ -662,6 +762,7 @@ type SetupFlowDraft = {
     defaultReusableProofBackendId?: string;
     enabledProviderIds: string[];
     faceVerificationRequired: boolean;
+    roleGrantBindings: BotVerificationRoleGrantBinding[];
     requiredBundleIds: string[];
     suspiciousRoleIds: string[];
     trustedRoleIds: string[];
@@ -674,7 +775,7 @@ type SetupFlowStore = {
   readDraft(draftId: string): SetupFlowDraft | undefined;
 };
 
-const setupStepOrder: readonly SetupStep[] = ["channels", "roles", "providers", "bundles", "face", "confirm"];
+const setupStepOrder: readonly SetupStep[] = ["channels", "roles", "grants", "providers", "bundles", "face", "confirm"];
 
 const setupProviderLabels: Record<string, { description: string; title: string }> = {
   didit: {
@@ -694,6 +795,25 @@ const setupProviderLabels: Record<string, { description: string; title: string }
     title: "Prove uniqueness only (World ID)",
   },
 };
+
+const verificationRoleGrantTriggers = ["verified_human", "age_over_18", "age_over_21"] as const;
+
+function normalizeRoleGrantBindings(bindings: readonly BotVerificationRoleGrantBinding[]) {
+  const byTrigger = new Map<BotVerificationRoleGrantBinding["trigger"], string>();
+
+  for (const binding of bindings) {
+    if (!verificationRoleGrantTriggers.includes(binding.trigger) || !binding.roleId.trim()) {
+      continue;
+    }
+
+    byTrigger.set(binding.trigger, binding.roleId.trim());
+  }
+
+  return verificationRoleGrantTriggers.flatMap((trigger) => {
+    const roleId = byTrigger.get(trigger);
+    return roleId ? [{ roleId, trigger }] : [];
+  });
+}
 
 function createSetupFlowStore(): SetupFlowStore {
   const drafts = new Map<string, SetupFlowDraft>();
@@ -761,6 +881,26 @@ function formatRoleList(roleIds: readonly string[]) {
   return roleIds.length > 0 ? roleIds.map((roleId) => `<@&${roleId}>`).join(", ") : "None selected";
 }
 
+function formatOptionalRole(roleId?: string) {
+  return roleId ? formatRoleList([roleId]) : "None selected";
+}
+
+function getRoleGrantRoleId(
+  bindings: readonly BotVerificationRoleGrantBinding[],
+  trigger: BotVerificationRoleGrantBinding["trigger"],
+) {
+  return bindings.find((binding) => binding.trigger === trigger)?.roleId;
+}
+
+function setRoleGrantRoleId(
+  bindings: readonly BotVerificationRoleGrantBinding[],
+  trigger: BotVerificationRoleGrantBinding["trigger"],
+  roleId?: string,
+) {
+  const nextBindings = bindings.filter((binding) => binding.trigger !== trigger);
+  return normalizeRoleGrantBindings(roleId ? [...nextBindings, { roleId, trigger }] : nextBindings);
+}
+
 function formatProviderTitle(providerId: string) {
   return setupProviderLabels[providerId]?.title ?? providerId;
 }
@@ -825,6 +965,7 @@ function ensureSetupDraftConsistency(draft: SetupFlowDraft) {
 
   draft.verificationConfig.suspiciousRoleIds = uniqueStrings(draft.verificationConfig.suspiciousRoleIds);
   draft.verificationConfig.trustedRoleIds = uniqueStrings(draft.verificationConfig.trustedRoleIds);
+  draft.verificationConfig.roleGrantBindings = normalizeRoleGrantBindings(draft.verificationConfig.roleGrantBindings);
 }
 
 function getSetupStepIndex(step: SetupStep) {
@@ -869,6 +1010,9 @@ function buildSetupSummaryLines(draft: SetupFlowDraft) {
     `- Moderation log channel: ${formatChannel(draft.channelConfig.moderationLogChannelId)}`,
     `- Trusted moderator roles: ${formatRoleList(draft.verificationConfig.trustedRoleIds)}`,
     `- Suspicious roles: ${formatRoleList(draft.verificationConfig.suspiciousRoleIds)}`,
+    `- Verified human role: ${formatOptionalRole(getRoleGrantRoleId(draft.verificationConfig.roleGrantBindings, "verified_human"))}`,
+    `- 18+ role: ${formatOptionalRole(getRoleGrantRoleId(draft.verificationConfig.roleGrantBindings, "age_over_18"))}`,
+    `- 21+ role: ${formatOptionalRole(getRoleGrantRoleId(draft.verificationConfig.roleGrantBindings, "age_over_21"))}`,
     `- Enabled verification paths: ${formatProviderList(draft.verificationConfig.enabledProviderIds)}`,
     `- Default verification path: ${formatProviderTitle(draft.verificationConfig.defaultProviderId)}`,
     `- Proof bundles: ${formatBundleList(draft, draft.verificationConfig.requiredBundleIds)}`,
@@ -877,7 +1021,7 @@ function buildSetupSummaryLines(draft: SetupFlowDraft) {
 }
 
 function buildSetupPageContent(draft: SetupFlowDraft, headline: string, details: string[]) {
-  return [
+  return truncateMessageContent([
     `Step ${getSetupStepIndex(draft.step) + 1} of ${setupStepOrder.length} — ${headline}`,
     "",
     ...details,
@@ -885,7 +1029,7 @@ function buildSetupPageContent(draft: SetupFlowDraft, headline: string, details:
     "Current choices:",
     ...buildSetupSummaryLines(draft),
     ...(draft.notice ? ["", `Note: ${draft.notice}`] : []),
-  ].join("\n");
+  ].join("\n"));
 }
 
 function createSetupNavigationRow(draft: SetupFlowDraft) {
@@ -955,7 +1099,7 @@ function renderSetupFlow(draft: SetupFlowDraft) {
         .setCustomId(buildSetupFlowCustomId({ action: entry.action, draftId: draft.draftId, guildId: draft.guildId }))
         .setMaxValues(1)
         .setMinValues(entry.required ? 0 : 0)
-        .setPlaceholder(entry.label);
+        .setPlaceholder(truncateDiscordComponentText(entry.label, 150));
 
       if (entry.current) {
         select.setDefaultChannels(entry.current);
@@ -979,12 +1123,12 @@ function renderSetupFlow(draft: SetupFlowDraft) {
       .setCustomId(buildSetupFlowCustomId({ action: "role_trusted", draftId: draft.draftId, guildId: draft.guildId }))
       .setMaxValues(25)
       .setMinValues(0)
-      .setPlaceholder("Choose trusted moderator roles");
+      .setPlaceholder(truncateDiscordComponentText("Choose trusted moderator roles", 150));
     const suspiciousRoles = new RoleSelectMenuBuilder()
       .setCustomId(buildSetupFlowCustomId({ action: "role_suspicious", draftId: draft.draftId, guildId: draft.guildId }))
       .setMaxValues(25)
       .setMinValues(0)
-      .setPlaceholder("Choose suspicious roles");
+      .setPlaceholder(truncateDiscordComponentText("Choose suspicious roles", 150));
 
     if (draft.verificationConfig.trustedRoleIds.length > 0) {
       trustedRoles.setDefaultRoles(draft.verificationConfig.trustedRoleIds);
@@ -1006,17 +1150,64 @@ function renderSetupFlow(draft: SetupFlowDraft) {
     };
   }
 
+  if (draft.step === "grants") {
+    const verifiedHumanRole = new RoleSelectMenuBuilder()
+      .setCustomId(buildSetupFlowCustomId({ action: "role_verified_human", draftId: draft.draftId, guildId: draft.guildId }))
+      .setMaxValues(1)
+      .setMinValues(0)
+      .setPlaceholder(truncateDiscordComponentText("Choose the verified human role", 150));
+    const age18Role = new RoleSelectMenuBuilder()
+      .setCustomId(buildSetupFlowCustomId({ action: "role_age_18", draftId: draft.draftId, guildId: draft.guildId }))
+      .setMaxValues(1)
+      .setMinValues(0)
+      .setPlaceholder(truncateDiscordComponentText("Choose the 18+ role", 150));
+    const age21Role = new RoleSelectMenuBuilder()
+      .setCustomId(buildSetupFlowCustomId({ action: "role_age_21", draftId: draft.draftId, guildId: draft.guildId }))
+      .setMaxValues(1)
+      .setMinValues(0)
+      .setPlaceholder(truncateDiscordComponentText("Choose the 21+ role", 150));
+
+    const verifiedHumanRoleId = getRoleGrantRoleId(draft.verificationConfig.roleGrantBindings, "verified_human");
+    const age18RoleId = getRoleGrantRoleId(draft.verificationConfig.roleGrantBindings, "age_over_18");
+    const age21RoleId = getRoleGrantRoleId(draft.verificationConfig.roleGrantBindings, "age_over_21");
+
+    if (verifiedHumanRoleId) {
+      verifiedHumanRole.setDefaultRoles(verifiedHumanRoleId);
+    }
+
+    if (age18RoleId) {
+      age18Role.setDefaultRoles(age18RoleId);
+    }
+
+    if (age21RoleId) {
+      age21Role.setDefaultRoles(age21RoleId);
+    }
+
+    components.push(new ActionRowBuilder<RoleSelectMenuBuilder>().addComponents(verifiedHumanRole));
+    components.push(new ActionRowBuilder<RoleSelectMenuBuilder>().addComponents(age18Role));
+    components.push(new ActionRowBuilder<RoleSelectMenuBuilder>().addComponents(age21Role));
+    components.push(createSetupNavigationRow(draft));
+
+    return {
+      components,
+      content: buildSetupPageContent(draft, "Choose verification roles", [
+        "Pick the roles Humanify should grant after a member finishes verification.",
+        "Verified human applies to any successful release. 18+ and 21+ only apply when the server asks for those proofs and the provider satisfies them.",
+      ]),
+    };
+  }
+
   if (draft.step === "providers") {
     const enabledProviders = new StringSelectMenuBuilder()
       .setCustomId(buildSetupFlowCustomId({ action: "provider_enabled", draftId: draft.draftId, guildId: draft.guildId }))
       .setMaxValues(draft.verificationConfig.availableProviderIds.length)
       .setMinValues(1)
-      .setPlaceholder("Choose the verification paths you want to offer")
+      .setPlaceholder(truncateDiscordComponentText("Choose the verification paths you want to offer", 150))
       .setOptions(
         draft.verificationConfig.availableProviderIds.map((providerId) => ({
           default: draft.verificationConfig.enabledProviderIds.includes(providerId),
-          description: setupProviderLabels[providerId]?.description ?? "Verification path",
-          label: formatProviderTitle(providerId),
+          description: truncateDiscordComponentText(setupProviderLabels[providerId]?.description ?? "Verification path"),
+          label: truncateDiscordComponentText(formatProviderTitle(providerId)),
           value: providerId,
         })),
       );
@@ -1024,12 +1215,12 @@ function renderSetupFlow(draft: SetupFlowDraft) {
       .setCustomId(buildSetupFlowCustomId({ action: "provider_default", draftId: draft.draftId, guildId: draft.guildId }))
       .setMaxValues(1)
       .setMinValues(1)
-      .setPlaceholder("Choose the default path Humanify should suggest first")
+      .setPlaceholder(truncateDiscordComponentText("Choose the default path Humanify should suggest first", 150))
       .setOptions(
         draft.verificationConfig.enabledProviderIds.map((providerId) => ({
           default: draft.verificationConfig.defaultProviderId === providerId,
-          description: setupProviderLabels[providerId]?.description ?? "Verification path",
-          label: formatProviderTitle(providerId),
+          description: truncateDiscordComponentText(setupProviderLabels[providerId]?.description ?? "Verification path"),
+          label: truncateDiscordComponentText(formatProviderTitle(providerId)),
           value: providerId,
         })),
       );
@@ -1051,12 +1242,12 @@ function renderSetupFlow(draft: SetupFlowDraft) {
       .setCustomId(buildSetupFlowCustomId({ action: "bundle_required", draftId: draft.draftId, guildId: draft.guildId }))
       .setMaxValues(draft.verificationConfig.availableBundles.length)
       .setMinValues(1)
-      .setPlaceholder("Choose the proof bundles Humanify should require")
+      .setPlaceholder(truncateDiscordComponentText("Choose the proof bundles Humanify should require", 150))
       .setOptions(
         draft.verificationConfig.availableBundles.map((bundle) => ({
           default: draft.verificationConfig.requiredBundleIds.includes(bundle.bundleId),
-          description: bundle.summary,
-          label: bundle.title,
+          description: truncateDiscordComponentText(bundle.summary),
+          label: truncateDiscordComponentText(bundle.title),
           value: bundle.bundleId,
         })),
       );
@@ -1077,18 +1268,18 @@ function renderSetupFlow(draft: SetupFlowDraft) {
       .setCustomId(buildSetupFlowCustomId({ action: "face_requirement", draftId: draft.draftId, guildId: draft.guildId }))
       .setMaxValues(1)
       .setMinValues(1)
-      .setPlaceholder("Choose whether a face check is required")
+      .setPlaceholder(truncateDiscordComponentText("Choose whether a face check is required", 150))
       .setOptions(
         {
           default: draft.verificationConfig.faceVerificationRequired,
-          description: "People must pass a face check when the chosen path supports it.",
-          label: "Require a face check",
+          description: truncateDiscordComponentText("People must pass a face check when the chosen path supports it."),
+          label: truncateDiscordComponentText("Require a face check"),
           value: "required",
         },
         {
           default: !draft.verificationConfig.faceVerificationRequired,
-          description: "A face check stays optional and Humanify can use other proof paths.",
-          label: "Do not require a face check",
+          description: truncateDiscordComponentText("A face check stays optional and Humanify can use other proof paths."),
+          label: truncateDiscordComponentText("Do not require a face check"),
           value: "not_required",
         },
       );
@@ -1178,6 +1369,14 @@ export function createBotApiClient(input: {
         body,
         method: "POST",
         path: `/guilds/${guildId}/reports`,
+        requestTelemetry,
+      });
+    },
+    createScanRequest(guildId, body, requestTelemetry) {
+      return request<BotScanRequestResponse>({
+        body,
+        method: "POST",
+        path: `/guilds/${guildId}/scans`,
         requestTelemetry,
       });
     },
@@ -1751,6 +1950,7 @@ async function startSetupFlow(
       defaultReusableProofBackendId: verification.verificationConfig.defaultReusableProofBackendId,
       enabledProviderIds: [...verification.verificationConfig.enabledProviderIds],
       faceVerificationRequired: verification.verificationConfig.faceVerificationRequired,
+      roleGrantBindings: verification.verificationConfig.roleGrantBindings.map((binding) => ({ ...binding })),
       requiredBundleIds: [...verification.verificationConfig.requiredBundleIds],
       suspiciousRoleIds: [...verification.verificationConfig.suspiciousRoleIds],
       trustedRoleIds: [...verification.verificationConfig.trustedRoleIds],
@@ -1784,6 +1984,7 @@ async function saveSetupFlow(
       defaultReusableProofBackendId: draft.verificationConfig.defaultReusableProofBackendId,
       enabledProviderIds: [...draft.verificationConfig.enabledProviderIds],
       faceVerificationRequired: draft.verificationConfig.faceVerificationRequired,
+      roleGrantBindings: [...draft.verificationConfig.roleGrantBindings],
       requiredBundleIds: [...draft.verificationConfig.requiredBundleIds],
       suspiciousRoleIds: [...draft.verificationConfig.suspiciousRoleIds],
       trustedRoleIds: [...draft.verificationConfig.trustedRoleIds],
@@ -1881,6 +2082,21 @@ async function handleSetupFlowComponent(
         ? uniqueStrings(interaction.values)
         : draft.verificationConfig.suspiciousRoleIds;
       break;
+    case "role_verified_human":
+      draft.verificationConfig.roleGrantBindings = interaction.isRoleSelectMenu()
+        ? setRoleGrantRoleId(draft.verificationConfig.roleGrantBindings, "verified_human", interaction.values[0])
+        : draft.verificationConfig.roleGrantBindings;
+      break;
+    case "role_age_18":
+      draft.verificationConfig.roleGrantBindings = interaction.isRoleSelectMenu()
+        ? setRoleGrantRoleId(draft.verificationConfig.roleGrantBindings, "age_over_18", interaction.values[0])
+        : draft.verificationConfig.roleGrantBindings;
+      break;
+    case "role_age_21":
+      draft.verificationConfig.roleGrantBindings = interaction.isRoleSelectMenu()
+        ? setRoleGrantRoleId(draft.verificationConfig.roleGrantBindings, "age_over_21", interaction.values[0])
+        : draft.verificationConfig.roleGrantBindings;
+      break;
     case "provider_enabled":
       draft.verificationConfig.enabledProviderIds = interaction.isStringSelectMenu()
         ? uniqueStrings(interaction.values)
@@ -1930,6 +2146,62 @@ async function handleSetupFlowComponent(
   return true;
 }
 
+function deriveVerificationCapabilitiesFromConfig(config: BotGuildVerificationConfig) {
+  const capabilities = new Set<string>();
+
+  for (const bundle of config.requiredBundles) {
+    for (const claim of bundle.claims) {
+      capabilities.add(claim);
+    }
+  }
+
+  if (config.faceVerificationRequired) {
+    capabilities.add("face_verification");
+  }
+
+  if (capabilities.size === 0) {
+    capabilities.add("captcha");
+  }
+
+  return [...capabilities];
+}
+
+function summarizeRoleGrantBindings(bindings: readonly BotVerificationRoleGrantBinding[]) {
+  return [
+    `Verified human: ${formatOptionalRole(getRoleGrantRoleId(bindings, "verified_human"))}`,
+    `18+: ${formatOptionalRole(getRoleGrantRoleId(bindings, "age_over_18"))}`,
+    `21+: ${formatOptionalRole(getRoleGrantRoleId(bindings, "age_over_21"))}`,
+  ].join(" | ");
+}
+
+async function handleVerificationPanelCommand(
+  interaction: ChatInputCommandInteraction,
+  apiClient: BotApiClient,
+  requestTelemetry: RequestTelemetryContext,
+) {
+  const targetChannel = interaction.options.getChannel("channel") ?? interaction.channel;
+  if (!targetChannel || !("send" in targetChannel) || typeof targetChannel.send !== "function") {
+    await replyEphemeral(interaction, {
+      content: "Humanify can only post the verification panel into a text-capable guild channel.",
+    });
+    return;
+  }
+
+  const verification = await apiClient.getGuildVerificationConfig(interaction.guildId!, requestTelemetry);
+  await targetChannel.send({
+    components: [createVerificationPanelRow(interaction.guildId!)],
+    content: truncateMessageContent([
+      "Humanify verification",
+      "Click the button below to start the server's current verification flow.",
+      summarizeRoleGrantBindings(verification.verificationConfig.roleGrantBindings),
+    ].join("\n")),
+  });
+
+  await replyEphemeral(interaction, {
+    content: `Humanify posted the verification button in <#${targetChannel.id}>.`,
+  });
+}
+
 async function handleHumanifyCommand(
   interaction: ChatInputCommandInteraction,
   apiClient: BotApiClient,
@@ -1937,18 +2209,23 @@ async function handleHumanifyCommand(
   setupFlowStore: SetupFlowStore,
 ) {
   const subcommand = interaction.options.getSubcommand(true);
-  if (subcommand !== "setup") {
-    await replyEphemeral(interaction, {
-      content: `Humanify does not support /humanify ${subcommand} yet.`,
-    });
-    return;
-  }
-
   if (!await requireAdminOnlyAction(interaction)) {
     return;
   }
 
-  await startSetupFlow(interaction, apiClient, requestTelemetry, setupFlowStore);
+  if (subcommand === "setup") {
+    await startSetupFlow(interaction, apiClient, requestTelemetry, setupFlowStore);
+    return;
+  }
+
+  if (subcommand === "panel") {
+    await handleVerificationPanelCommand(interaction, apiClient, requestTelemetry);
+    return;
+  }
+
+  await replyEphemeral(interaction, {
+    content: `Humanify does not support /humanify ${subcommand} yet.`,
+  });
 }
 
 async function handleVerifyCommand(
@@ -1970,6 +2247,56 @@ async function handleVerifyCommand(
 
   await replyEphemeral(interaction, {
     content: `Humanify planned verification session ${verification.session.sessionId} for <@${subject.id}> with ${capability}. ${createPersistenceNote(verification.persistence)}`,
+  });
+}
+
+async function handleScanCommand(
+  interaction: ChatInputCommandInteraction,
+  apiClient: BotApiClient,
+  requestTelemetry: RequestTelemetryContext,
+) {
+  if (!await requireTrustedModeratorAction(interaction)) {
+    return;
+  }
+
+  const subject = interaction.options.getUser("user", true);
+  const scanRequest = await apiClient.createScanRequest(interaction.guildId!, {
+    actorUserId: interaction.user.id,
+    scope: "single_member",
+    targetUserId: subject.id,
+  }, requestTelemetry);
+
+  await replyEphemeral(interaction, {
+    content: [
+      `Humanify queued durable scan ${scanRequest.scanRequest.scanRequestId} for <@${subject.id}>.`,
+      `Current status: ${scanRequest.scanRequest.status}.`,
+      "Temporal-backed worker execution will publish moderator warnings if the scan opens a suspicious case.",
+      createPersistenceNote(scanRequest.persistence),
+    ].join("\n"),
+  });
+}
+
+async function handleScanAllCommand(
+  interaction: ChatInputCommandInteraction,
+  apiClient: BotApiClient,
+  requestTelemetry: RequestTelemetryContext,
+) {
+  if (!await requireAdminOnlyAction(interaction)) {
+    return;
+  }
+
+  const scanRequest = await apiClient.createScanRequest(interaction.guildId!, {
+    actorUserId: interaction.user.id,
+    scope: "all_members",
+  }, requestTelemetry);
+
+  await replyEphemeral(interaction, {
+    content: [
+      `Humanify queued full-server scan ${scanRequest.scanRequest.scanRequestId}.`,
+      `Current status: ${scanRequest.scanRequest.status}.`,
+      "Temporal-backed worker execution will walk the guild membership durably and open moderator warnings only for suspicious matches.",
+      createPersistenceNote(scanRequest.persistence),
+    ].join("\n"),
   });
 }
 
@@ -2030,7 +2357,7 @@ async function handleVerificationShortcut(
   }
 
   const parsed = parseComponentCustomId(interaction.customId);
-  if (parsed.kind !== "verification_start") {
+  if (parsed.kind !== "verification_start" && parsed.kind !== "verification_panel") {
     await replyEphemeral(interaction, {
       content: "Humanify does not recognize this shortcut.",
     });
@@ -2040,6 +2367,39 @@ async function handleVerificationShortcut(
   if (parsed.guildId !== interaction.guildId) {
     await replyEphemeral(interaction, {
       content: "Humanify refused this shortcut because the guild context no longer matches.",
+    });
+    return;
+  }
+
+  const verifierBaseUrl = options.verifierBaseUrl ?? process.env.HUMANIFY_VERIFIER_BASE_URL;
+  if (!verifierBaseUrl) {
+    await replyEphemeral(interaction, {
+      content: "Humanify cannot open the verifier yet because HUMANIFY_VERIFIER_BASE_URL is not configured.",
+    });
+    return;
+  }
+
+  if (parsed.kind === "verification_panel") {
+    const verificationConfig = await options.apiClient.getGuildVerificationConfig(interaction.guildId!, requestTelemetry);
+    const verification = await options.apiClient.createVerificationSession(interaction.guildId!, {
+      initiatedBy: interaction.user.id,
+      requiredCapabilities: deriveVerificationCapabilitiesFromConfig(verificationConfig.verificationConfig),
+      userId: interaction.user.id,
+    }, requestTelemetry);
+    const verifierLink = createVerifierLink(verifierBaseUrl, {
+      guildId: interaction.guildId!,
+      sessionId: verification.session.sessionId,
+      token: verification.challengeToken,
+      userId: interaction.user.id,
+      username: interaction.user.username,
+    });
+
+    await replyEphemeral(interaction, {
+      content: [
+        `Humanify started verification session ${verification.session.sessionId}.`,
+        `Open the verifier: ${verifierLink}`,
+        createPersistenceNote(verification.persistence),
+      ].join("\n"),
     });
     return;
   }
@@ -2123,11 +2483,20 @@ export function createInteractionHandler(options: CreateInteractionHandlerOption
         return;
       }
 
-      if (interaction.commandName === humanifyBotCommandNames.verify) {
-        await handleVerifyCommand(interaction, options.apiClient, requestTelemetry);
+      if (interaction.commandName === humanifyBotCommandNames.scan) {
+        await handleScanCommand(interaction, options.apiClient, requestTelemetry);
+        return;
       }
 
-      return;
+      if (interaction.commandName === humanifyBotCommandNames.scanAll) {
+        await handleScanAllCommand(interaction, options.apiClient, requestTelemetry);
+        return;
+      }
+
+      if (interaction.commandName === humanifyBotCommandNames.verify) {
+        await handleVerifyCommand(interaction, options.apiClient, requestTelemetry);
+        return;
+      }
     }
 
     if (interaction.isMessageContextMenuCommand() && interaction.commandName === humanifyBotCommandNames.reportMessage) {
@@ -2199,7 +2568,7 @@ export async function startBot(
   });
   const apiConfig = loadBotApiConfig(env);
   const apiClient = createBotApiClient({ apiBaseUrl: apiConfig.apiBaseUrl });
-  const interactionHandler = createInteractionHandler({ apiClient });
+  const interactionHandler = createInteractionHandler({ apiClient, verifierBaseUrl: env.HUMANIFY_VERIFIER_BASE_URL });
   const client = createBotClient({ includeMessageSignals: apiConfig.enableMessageSignals });
   const passiveEventHandler = createPassiveEventHandler({
     apiClient,

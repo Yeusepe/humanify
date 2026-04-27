@@ -64,7 +64,7 @@ Recommended session states:
 
 `pending` → `challenge_issued` → `oauth_bound` → `strategy_pending` → `passed` or `failed` or `expired` or `cancelled`
 
-`released` is a terminal post-pass state once the bot actually applies the verification role release or quarantine removal.
+`released` is a terminal post-pass state once Humanify completes the post-pass release step and applies any configured verification roles for the guild.
 
 Verification metadata also records whether face verification was part of the capture flow and whether the face check passed. Guild policy can depend on those normalized fields; Bun does not infer them later from raw provider payloads. Didit and World ID can satisfy face-verification-related requirements through their normalized provider outcomes; Privado and Self.xyz do **not** automatically imply face verification and must rely on separate policy inputs if a face check matters.
 
@@ -146,7 +146,7 @@ Runtime and guild enablement stay Bun-owned:
 - `HUMANIFY_ENABLED_VERIFICATION_PROVIDERS` controls which concrete adapters the Bun API can expose at all.
 - `VITE_HUMANIFY_ENABLED_VERIFICATION_PROVIDERS` controls which concrete adapters the verifier UI can render at all.
 - `GET /guilds/:guildId/verification` returns the current effective guild verification config snapshot, and `PUT /guilds/:guildId/verification` persists the canonical guild row in `verification_requirements`.
-- that canonical row keeps the setup surface bundle-driven: `requiredBundleIds`, `faceVerificationRequired`, `enabledProviderIds`, `defaultProviderId`, optional `defaultReusableProofBackendId`, and the trusted/suspicious role arrays are Bun-owned policy data.
+- that canonical row keeps the setup surface bundle-driven: `requiredBundleIds`, `faceVerificationRequired`, `enabledProviderIds`, `defaultProviderId`, optional `defaultReusableProofBackendId`, trusted/suspicious role arrays, and `roleGrantBindings` for release triggers such as `verified_human`, `age_over_18`, and `age_over_21`.
 - Keep the environment allowlists aligned so the browser never offers an adapter the API has disabled globally.
 
 ### 4.2 First-time capture default: Didit
@@ -244,6 +244,16 @@ For the first implementation, the default proof bundle remains:
 - `nationality`
 
 The shared claim catalog also reserves plain-language copy for stricter proof-only age predicates such as `age_over_21`, but the first persisted proof-bundle surface still exposes the v1 age-18 / nationality bundles until setup persistence grows that option explicitly.
+
+## 4.5 Release-to-role mapping
+
+Guild verification config can now attach Discord role releases to normalized verification triggers:
+
+- `verified_human`: grant this role after any successful verification release
+- `age_over_18`: grant this role only when the satisfied claims include the 18+ predicate
+- `age_over_21`: grant this role only when the satisfied claims include the 21+ predicate
+
+The verifier client calls the Bun release endpoint only after the canonical session reaches `passed`. Humanify then applies the configured roles, records the release summary, and surfaces the final `released` state back to the verifier UI.
 
 `unique_person` remains a later extension and must stay behind the same role-based strategy model rather than becoming new app-local branching logic.
 

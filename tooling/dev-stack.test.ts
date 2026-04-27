@@ -45,6 +45,7 @@ test("dev stack includes all local services and UI surfaces", () => {
     "@humanify/api-bun",
     "@humanify/dashboard-start",
     "@humanify/verifier-start",
+    "@humanify/scan-worker-temporal",
     "inference-rs",
     "learning-rs",
     "evidence-rs",
@@ -80,6 +81,7 @@ test("dev stack keeps documented readiness URLs", () => {
     "http://127.0.0.1:3211/healthz",
     "http://127.0.0.1:3210/",
     "http://127.0.0.1:3212/",
+    "http://127.0.0.1:4210/healthz",
     "http://127.0.0.1:4101/healthz",
     "http://127.0.0.1:4102/healthz",
     "http://127.0.0.1:4103/healthz",
@@ -94,6 +96,7 @@ test("dev stack preflights the documented fixed host ports", () => {
     { host: "127.0.0.1", name: "dashboard", port: 3210 },
     { host: "127.0.0.1", name: "api", port: 3211 },
     { host: "127.0.0.1", name: "verifier", port: 3212 },
+    { host: "127.0.0.1", name: "scan-worker-temporal", port: 4210 },
     { host: "127.0.0.1", name: "inference-rs", port: 4101 },
     { host: "127.0.0.1", name: "learning-rs", port: 4102 },
     { host: "127.0.0.1", name: "evidence-rs", port: 4103 },
@@ -106,6 +109,8 @@ test("dev stack preflights the documented fixed host ports", () => {
     { host: "127.0.0.1", name: "qdrant-http", port: 6333 },
     { host: "127.0.0.1", name: "qdrant-grpc", port: 6334 },
     { host: "127.0.0.1", name: "grafana", port: 4300 },
+    { host: "127.0.0.1", name: "temporal", port: 7233 },
+    { host: "127.0.0.1", name: "temporal-ui", port: 8233 },
   ]);
 });
 
@@ -125,6 +130,9 @@ test("dev stack derives readiness and preflight ports from env-configured servic
       HUMANIFY_QDRANT_HTTP_PORT: "6433",
       HUMANIFY_QDRANT_GRPC_PORT: "6434",
       HUMANIFY_GRAFANA_PORT: "4400",
+      HUMANIFY_SCAN_WORKER_PORT: "4310",
+      HUMANIFY_TEMPORAL_PORT: "7333",
+      HUMANIFY_TEMPORAL_UI_PORT: "8333",
   });
 
   expect(plan.ports).toEqual({
@@ -141,6 +149,9 @@ test("dev stack derives readiness and preflight ports from env-configured servic
       qdrantGrpc: 6434,
       qdrantHttp: 6433,
       redis: 6380,
+      scanWorker: 4310,
+      temporal: 7333,
+      temporalUi: 8333,
     trust: 5104,
     verifier: 3212,
   });
@@ -151,6 +162,7 @@ test("dev stack derives readiness and preflight ports from env-configured servic
     "http://127.0.0.1:4211/healthz",
     "http://127.0.0.1:3210/",
     "http://127.0.0.1:3212/",
+    "http://127.0.0.1:4310/healthz",
     "http://127.0.0.1:5101/healthz",
     "http://127.0.0.1:5102/healthz",
     "http://127.0.0.1:5103/healthz",

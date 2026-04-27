@@ -49,6 +49,18 @@ export type BotActionAuthorization = {
   scope: BotAuthorizationScope;
 };
 
+export type MemberScanReasonCode =
+  | "account_age_lt_24h"
+  | "account_age_lt_7d"
+  | "profile_missing_avatar";
+
+export type MemberScanSnapshot = {
+  avatar?: string | null;
+  createdTimestamp: number;
+  guildId: string;
+  userId: string;
+};
+
 export type SetupFlowAction =
   | "back"
   | "bundle_required"
@@ -61,8 +73,11 @@ export type SetupFlowAction =
   | "next"
   | "provider_default"
   | "provider_enabled"
+  | "role_age_18"
+  | "role_age_21"
   | "role_suspicious"
   | "role_trusted"
+  | "role_verified_human"
   | "save";
 
 export type ParsedSetupFlowCustomId = {
@@ -79,8 +94,13 @@ export const humanifyBotCommandNames = {
   humanify: "humanify",
   report: "report",
   reportMessage: "Report message to Humanify",
+  scan: "scan",
+  scanAll: "scan-all",
   verify: "verify",
 } as const;
+
+const twentyFourHoursMs = 24 * 60 * 60 * 1_000;
+const sevenDaysMs = 7 * 24 * 60 * 60 * 1_000;
 
 export const humanifyTrustedModeratorPermissionFlags = [
   PermissionFlagsBits.Administrator,
@@ -111,6 +131,19 @@ export function createHumanifyApplicationCommands(): readonly ApplicationCommand
       description: "Server setup and capability checks for Humanify.",
       name: humanifyBotCommandNames.humanify,
       options: [
+        {
+          description: "Post a reusable verification button for members.",
+          name: "panel",
+          options: [
+            {
+              description: "Optional channel to post the verification button in.",
+              name: "channel",
+              required: false,
+              type: ApplicationCommandOptionType.Channel,
+            },
+          ],
+          type: ApplicationCommandOptionType.Subcommand,
+        },
         {
           description: "Start server setup for Humanify.",
           name: "setup",
@@ -174,6 +207,25 @@ export function createHumanifyApplicationCommands(): readonly ApplicationCommand
           type: ApplicationCommandOptionType.Subcommand,
         },
       ],
+      type: ApplicationCommandType.ChatInput,
+    },
+    {
+      description: "Queue a durable Humanify scan for one member.",
+      name: humanifyBotCommandNames.scan,
+      options: [
+        {
+          description: "Member to scan.",
+          name: "user",
+          required: true,
+          type: ApplicationCommandOptionType.User,
+        },
+      ],
+      type: ApplicationCommandType.ChatInput,
+    },
+    {
+      defaultMemberPermissions: PermissionFlagsBits.Administrator,
+      description: "Queue a durable Humanify scan across the full server membership.",
+      name: humanifyBotCommandNames.scanAll,
       type: ApplicationCommandType.ChatInput,
     },
     {
@@ -249,6 +301,30 @@ export function authorizeTrustedModeratorOnlyBotAction(memberPermissions: Member
       };
 }
 
+export function extractMemberScanReasonCodes(input: {
+  now: number;
+  snapshot: MemberScanSnapshot;
+}): MemberScanReasonCode[] {
+  const accountAgeMs = Math.max(input.now - input.snapshot.createdTimestamp, 0);
+  if (accountAgeMs < twentyFourHoursMs) {
+    return ["account_age_lt_24h"];
+  }
+
+  if (accountAgeMs < sevenDaysMs && !input.snapshot.avatar) {
+    return ["account_age_lt_7d", "profile_missing_avatar"];
+  }
+
+  return [];
+}
+
+export function buildMemberScanReportReason(reasonCodes: readonly MemberScanReasonCode[]) {
+  if (reasonCodes.includes("account_age_lt_24h")) {
+    return "Automatic detector bridge flagged a very new Discord account joining the server.";
+  }
+
+  return "Automatic detector bridge flagged a newly created Discord account with an incomplete profile joining the server.";
+}
+
 export function createBotGatewayIntents(options: {
   includeInviteTracking?: boolean;
   includeMessageSignals?: boolean;
@@ -310,8 +386,11 @@ const setupFlowActions = new Set<SetupFlowAction>([
   "next",
   "provider_default",
   "provider_enabled",
+  "role_age_18",
+  "role_age_21",
   "role_suspicious",
   "role_trusted",
+  "role_verified_human",
   "save",
 ]);
 

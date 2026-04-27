@@ -35,7 +35,19 @@ export type {
   GuildVerificationConfigRecord,
   GuildVerificationConfigRepository,
   PersistedGuildVerificationConfigResult,
+  VerificationRoleGrantBinding,
 } from "./guild-verification-config";
+export {
+  createPostgresGuildScanRequestRepository,
+} from "./guild-scan-requests";
+export type {
+  GuildScanRequestRecord,
+  GuildScanRequestRepository,
+  GuildScanRequestScope,
+  GuildScanRequestStatus,
+  GuildScanRequestSummary,
+  PersistedGuildScanRequestResult,
+} from "./guild-scan-requests";
 export {
   createDatabaseConfigFromEnv,
   getConnectionTarget,
@@ -80,6 +92,7 @@ export type {
 export { createPostgresVerificationSessionsRepository } from "./verification-sessions";
 export type {
   VerificationSessionRecord,
+  VerificationSessionReleaseResult,
   VerificationSessionState,
   VerificationSessionsRepository,
 } from "./verification-sessions";

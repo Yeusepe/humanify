@@ -37,6 +37,7 @@ This document governs the repo-level monorepo bootstrap created for `bootstrap-w
 - Cargo workspaces: https://doc.rust-lang.org/cargo/reference/workspaces.html
 - Cargo manifests: https://doc.rust-lang.org/cargo/reference/manifest.html
 - Postgres.js: https://github.com/porsager/postgres
+- Temporal TypeScript SDK: https://docs.temporal.io/develop/typescript/core-application
 - TypeScript `tsconfig`: https://www.typescriptlang.org/tsconfig
 - `rustfmt` configuration: https://github.com/rust-lang/rustfmt/blob/master/Configurations.md
 
@@ -83,6 +84,7 @@ Current boundaries:
 | `apps\bot-bun` | Bun + `discord.js` bot runtime shell | Starts a real Discord client only when `DISCORD_BOT_TOKEN` is provided |
 | `apps\api-bun` | Bun + Elysia HTTP surface | Exposes health and contract-summary endpoints |
 | `apps\dashboard-start` | TanStack Start + React 19 moderation dashboard MVP | Imports Tailwind v4 and HeroUI v3 styles and currently exposes `/`, `/cases`, `/verification`, and `/policy` operator routes with explicit read-boundary states |
+| `apps\scan-worker-temporal` | supported-runtime Temporal worker | Claims canonical scan requests from Postgres, executes durable `/scan` workflows, and syncs moderator warnings through the existing API boundary |
 | `apps\verifier-start` | TanStack Start + React 19 verifier shell | Mirrors dashboard stack with verifier-specific content |
 | `packages\auth` | Shared auth/session package | Owns Discord OAuth state, verifier challenge tokens, and session cookie helpers |
 | `packages\config` | Shared Bun runtime config package | Validates service/env settings, Discord OAuth inputs, session secrets, and policy clamp defaults |
@@ -106,6 +108,7 @@ Verification workspace rule:
 
 - Run `bun run dev` from the repo root to start the local infra stack plus the Bun and Rust processes.
 - `bun run dev` now applies `bun run db:migrate` after Docker infra readiness and before application processes start.
+- `bun run dev` now also starts `apps\scan-worker-temporal` plus local Temporal/Temporal UI services so `/scan` and `/scan-all` can execute durably.
 - The local infrastructure is defined in `docker-compose.local.yml`.
 - `apps\dashboard-start` and `apps\verifier-start` now use Vite `--strictPort` so the documented ports remain stable instead of silently moving.
 - The app-facing defaults are now `3210` (dashboard), `3211` (API), and `3212` (verifier) to reduce collisions with other common local tooling.
@@ -126,6 +129,7 @@ apps/
   api-bun/
   bot-bun/
   dashboard-start/
+  scan-worker-temporal/
   verifier-start/
 
 packages/

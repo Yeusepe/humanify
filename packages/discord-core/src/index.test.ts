@@ -20,11 +20,13 @@ import { GatewayIntentBits, PermissionFlagsBits, PermissionsBitField } from "dis
 import {
   authorizeAdminOnlyBotAction,
   authorizeTrustedModeratorOnlyBotAction,
+  buildMemberScanReportReason,
   buildComponentCustomId,
   buildSetupFlowCustomId,
   createHumanifyApplicationCommands,
   createBotGatewayIntents,
   createDiscordAuditReason,
+  extractMemberScanReasonCodes,
   parseComponentCustomId,
   parseSetupFlowCustomId,
   resolveDiscordExecutionPlan,
@@ -79,6 +81,8 @@ test("humanify application commands expose the first real intake surface", () =>
       "humanify",
       "report",
       "case",
+      "scan",
+      "scan-all",
       "verify",
       "Report message to Humanify",
     ]),
@@ -92,7 +96,34 @@ test("humanify application commands expose the first real intake surface", () =>
     | undefined;
 
   expect(setupCommand?.defaultMemberPermissions).toBe(PermissionFlagsBits.Administrator);
-  expect(setupCommand?.options?.map((option) => option.name)).toEqual(["setup"]);
+  expect(setupCommand?.options?.map((option) => option.name)).toEqual(["panel", "setup"]);
+});
+
+test("member scan heuristics stay aligned with the passive new-account detector", () => {
+  expect(
+    extractMemberScanReasonCodes({
+      now: Date.UTC(2026, 0, 8, 0, 0, 0),
+      snapshot: {
+        avatar: null,
+        createdTimestamp: Date.UTC(2026, 0, 7, 12, 0, 0),
+        guildId: "guild_123",
+        userId: "user_new",
+      },
+    }),
+  ).toEqual(["account_age_lt_24h"]);
+
+  const olderReasons = extractMemberScanReasonCodes({
+    now: Date.UTC(2026, 0, 8, 0, 0, 0),
+    snapshot: {
+      avatar: null,
+      createdTimestamp: Date.UTC(2026, 0, 2, 12, 0, 0),
+      guildId: "guild_123",
+      userId: "user_sparse",
+    },
+  });
+
+  expect(olderReasons).toEqual(["account_age_lt_7d", "profile_missing_avatar"]);
+  expect(buildMemberScanReportReason(olderReasons)).toContain("newly created Discord account");
 });
 
 test("execution plans refuse exact moderation actions when the current Discord capability is missing", () => {
