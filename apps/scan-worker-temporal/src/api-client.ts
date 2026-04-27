@@ -35,8 +35,11 @@ export type ScanWorkerReportResponse = {
 
 export type ScanWorkerChannelConfigReadResponse = {
   channelConfig: {
+    auditLogChannelId?: string;
     guildId: string;
+    moderationLogChannelId?: string;
     moderatorAlertChannelId?: string;
+    reviewChannelId?: string;
     source: "not_configured" | "persisted";
   };
   persistence: "not_configured" | "persisted";

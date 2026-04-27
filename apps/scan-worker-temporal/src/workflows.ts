@@ -17,8 +17,8 @@ import { proxyActivities } from "@temporalio/workflow";
 
 import type { GuildScanRequestSummary } from "@humanify/db";
 
-import type { ScanActivities } from "./activities";
-import { createEmptyScanSummary, mergeScanSummary } from "./scan-runtime";
+import type { ScanActivities } from "./activities.ts";
+import { createEmptyScanSummary, mergeScanSummary } from "./scan-runtime.ts";
 
 export type RunGuildScanWorkflowInput = {
   guildId: string;

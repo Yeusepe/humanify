@@ -12,14 +12,20 @@
  * - apps/scan-worker-temporal/src/index.test.ts
  */
 
-import { buildMemberScanReportReason, extractMemberScanReasonCodes, type MemberScanSnapshot } from "@humanify/discord-core";
+import {
+  buildMemberScanReportReason,
+  buildMemberScanReporterNotes,
+  evaluateMemberScanSnapshot,
+  type MemberScanSnapshot,
+} from "@humanify/discord-core/member-scan";
 import type { GuildScanRequestSummary } from "@humanify/db";
 import { createRequestTelemetryContext, type RequestTelemetryContext } from "@humanify/telemetry";
 
-import type { ScanWorkerApiClient } from "./api-client";
-import type { ModeratorWarningSyncResult } from "./moderator-warning";
+import type { ScanWorkerApiClient } from "./api-client.ts";
+import type { ModeratorWarningSyncResult } from "./moderator-warning.ts";
 
 export type ScanSummaryDelta = {
+  highestObservedScore: number;
   lastScannedUserId: string;
   notes: string[];
   processedMemberCount: number;
@@ -29,6 +35,7 @@ export type ScanSummaryDelta = {
 
 export function createEmptyScanSummary(): GuildScanRequestSummary {
   return {
+    highestObservedScore: 0,
     notes: [],
     processedMemberCount: 0,
     suspiciousFindings: [],
@@ -38,10 +45,11 @@ export function createEmptyScanSummary(): GuildScanRequestSummary {
 
 export function mergeScanSummary(
   current: GuildScanRequestSummary,
-  delta: Pick<GuildScanRequestSummary, "lastScannedUserId" | "notes" | "processedMemberCount" | "suspiciousFindings" | "suspiciousMemberCount">,
+  delta: Pick<GuildScanRequestSummary, "highestObservedScore" | "lastScannedUserId" | "notes" | "processedMemberCount" | "suspiciousFindings" | "suspiciousMemberCount">,
 ): GuildScanRequestSummary {
   return {
     completedAt: current.completedAt,
+    highestObservedScore: Math.max(current.highestObservedScore, delta.highestObservedScore),
     lastScannedUserId: delta.lastScannedUserId,
     notes: [...current.notes, ...delta.notes],
     processedMemberCount: current.processedMemberCount + delta.processedMemberCount,
@@ -72,31 +80,31 @@ export async function processMemberScanCandidate(input: {
   }) => Promise<ModeratorWarningSyncResult>;
 }): Promise<ScanSummaryDelta> {
   const requestTelemetry = input.requestTelemetry ?? createRequestTelemetryContext();
-  const reasonCodes = extractMemberScanReasonCodes({
+  const evaluation = evaluateMemberScanSnapshot({
     now: input.now,
     snapshot: input.snapshot,
   });
 
   const base: ScanSummaryDelta = {
+    highestObservedScore: evaluation.score,
     lastScannedUserId: input.snapshot.userId,
     notes: [],
     processedMemberCount: 1,
     suspiciousFindings: [],
     suspiciousMemberCount: 0,
   };
-  if (reasonCodes.length === 0) {
+  if (!evaluation.shouldOpenCase) {
     return base;
   }
 
   const report = await input.apiClient.createReport(input.guildId, {
     intakeSource: "detector_bridge",
     openCase: true,
-    reportReason: buildMemberScanReportReason(reasonCodes),
-    reporterNotes:
-      "A durable Temporal-backed member scan opened this advisory report using the shared Humanify scan heuristic.",
+    reportReason: buildMemberScanReportReason(evaluation),
+    reporterNotes: `${buildMemberScanReporterNotes(evaluation)} Durable Temporal-backed member scan source: shared member scorer.`,
     reporterUserId: input.requestedByUserId,
     subjectUserId: input.snapshot.userId,
-    triggerFingerprint: buildScanTriggerFingerprint(input.guildId, input.snapshot.userId, reasonCodes),
+    triggerFingerprint: buildScanTriggerFingerprint(input.guildId, input.snapshot.userId, evaluation.reasonCodes),
   }, requestTelemetry);
 
   const notes = [...base.notes];
@@ -114,7 +122,8 @@ export async function processMemberScanCandidate(input: {
     notes,
     suspiciousFindings: [{
       caseId: report.report.caseId,
-      reasonCodes,
+      reasonCodes: evaluation.reasonCodes,
+      score: evaluation.score,
       userId: input.snapshot.userId,
     }],
     suspiciousMemberCount: 1,

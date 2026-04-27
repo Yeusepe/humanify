@@ -113,7 +113,7 @@ First canonical slice now implemented:
 
 Current detector-bridge slice now implemented in `apps\bot-bun`:
 
-1. suspicious `guildMemberAdd` events open canonical reports for very new accounts (`account_age_lt_24h`) and for young incomplete-profile accounts (`account_age_lt_7d`, `profile_missing_avatar`)
+1. suspicious `guildMemberAdd` events now use the shared weighted member scorer and open canonical reports once the joined member reaches the advisory `watch` threshold (`4/10`), including combinations like very new accounts (`account_age_lt_24h`), young incomplete-profile accounts (`account_age_lt_7d`, `profile_missing_avatar`), and sparse missing-avatar profiles that also match the synthetic test-handle pattern (`profile_missing_avatar`, `profile_test_handle_pattern`)
 2. suspicious `messageCreate` events open canonical reports for `first_message_link`, `mention_burst`, and `duplicate_message_pattern`
 3. passive message detections attach the same canonical Discord `message_link` evidence shape used by moderator-triggered message-context reporting
 4. these detector-bridge reports remain advisory-only and still depend on moderator review or later Bun policy approval before any enforcement path can run

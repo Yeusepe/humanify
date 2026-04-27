@@ -38,10 +38,10 @@ import {
   createTelemetryBootstrap,
 } from "@humanify/telemetry";
 
-import { createScanActivities } from "./activities";
-import { createScanWorkerApiClient } from "./api-client";
-import { createDiscordRestWarningRuntime } from "./moderator-warning";
-import type { RunGuildScanWorkflowInput } from "./workflows";
+import { createScanActivities } from "./activities.ts";
+import { createScanWorkerApiClient } from "./api-client.ts";
+import { createDiscordRestWarningRuntime } from "./moderator-warning.ts";
+import type { RunGuildScanWorkflowInput } from "./workflows.ts";
 
 type LoggerLike = Pick<Console, "error" | "info">;
 

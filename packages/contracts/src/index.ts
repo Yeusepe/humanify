@@ -14,7 +14,7 @@
  * - packages/contracts/src/index.test.ts
  */
 
-import schema from "../../../docs/contracts/humanify-contracts.schema.json";
+import schema from "../../../docs/contracts/humanify-contracts.schema.json" with { type: "json" };
 
 export const humanifyContractVersion = "0.1.0" as const;
 export const humanifyContractsSchema = schema;

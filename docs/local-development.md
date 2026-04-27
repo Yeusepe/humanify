@@ -23,7 +23,8 @@ Upstream docs:
 - MinIO container docs: https://min.io/docs/minio/container/index.html
 - Qdrant docs: https://qdrant.tech/documentation/
 - Grafana Docker install: https://grafana.com/docs/grafana/latest/setup-grafana/installation/docker/
-- Temporal self-hosting: https://docs.temporal.io/self-hosted-guide/install-temporal-server
+- Temporal self-hosting: https://docs.temporal.io/self-hosted-guide/deployment
+- Temporal sample Docker Compose: https://github.com/temporalio/samples-server/tree/main/compose
 - Bun subprocesses: https://bun.sh/docs/api/spawn
 - Cargo run: https://doc.rust-lang.org/cargo/commands/cargo-run.html
 
@@ -60,6 +61,8 @@ The local infrastructure stack currently includes:
 | Grafana | local observability UI surface | `4300` |
 | Temporal | durable workflow server for `/scan` and `/scan-all` | `7233` |
 | Temporal UI | local workflow visibility for scan debugging | `8233` |
+
+The local Temporal service now uses the auto-setup image's shipped `/etc/temporal/config/dynamicconfig/docker.yaml` file directly, so `bun run dev` does not depend on a missing repo-local dynamic-config mount.
 
 ### R2 note
 

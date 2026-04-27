@@ -56,6 +56,7 @@ Rust may recommend `ban`; Bun must still clamp that recommendation through serve
 - **IDs:** opaque strings unless the field name says `Hash`.
 - **Confidence values:** decimal numbers in the inclusive range `0.0` to `1.0`.
 - **Risk score:** integer in the inclusive range `1` to `10`.
+- The Discord member-scan scorer also uses this shared `1..10` advisory scale; multiple weak profile/account signals may accumulate to the current `watch` threshold instead of acting like a single hard gate.
 - **Evidence refs:** stable opaque IDs that resolve to canonical evidence metadata elsewhere.
 
 ## 4. Versioning rules
@@ -110,6 +111,7 @@ Examples:
 - `account_age_lt_24h`
 - `first_message_link`
 - `mention_burst`
+- `profile_test_handle_pattern`
 - `similar_to_confirmed_scam_template`
 - `malicious_domain_pattern`
 - `verification_passed_world_id`
@@ -120,7 +122,7 @@ Examples:
 | Category | Meaning | Example codes |
 | --- | --- | --- |
 | `account` | account age and identity maturity signals | `account_age_lt_24h`, `account_age_lt_7d` |
-| `profile` | avatar, banner, username, profile hygiene | `profile_missing_avatar`, `profile_missing_banner` |
+| `profile` | avatar, banner, username, profile hygiene | `profile_missing_avatar`, `profile_missing_banner`, `profile_test_handle_pattern` |
 | `message` | message content and first-contact behavior | `first_message_link`, `duplicate_message_pattern` |
 | `behavior` | spam rate, mention burst, join spike, timing anomalies | `mention_burst`, `joins_during_raid_spike` |
 | `invite` | invite source and invite reputation | `invite_used_by_suspicious_accounts` |

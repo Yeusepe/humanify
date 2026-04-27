@@ -784,12 +784,14 @@ export function createInMemoryGuildScanRequestRepository(): GuildScanRequestRepo
   ): GuildScanRequestRecord["summary"] {
     return {
       completedAt: summary?.completedAt,
+      highestObservedScore: summary?.highestObservedScore ?? 0,
       lastScannedUserId: summary?.lastScannedUserId,
       notes: [...(summary?.notes ?? [])],
       processedMemberCount: summary?.processedMemberCount ?? 0,
       suspiciousFindings: (summary?.suspiciousFindings ?? []).map((finding) => ({
         caseId: finding.caseId,
         reasonCodes: [...finding.reasonCodes],
+        score: finding.score,
         userId: finding.userId,
       })),
       suspiciousMemberCount: summary?.suspiciousMemberCount ?? 0,

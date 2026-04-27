@@ -54,11 +54,12 @@ import {
   authorizeAdminOnlyBotAction,
   authorizeTrustedModeratorOnlyBotAction,
   buildMemberScanReportReason,
+  buildMemberScanReporterNotes,
   buildComponentCustomId,
   buildSetupFlowCustomId,
   createBotGatewayIntents,
   createHumanifyApplicationCommands,
-  extractMemberScanReasonCodes,
+  evaluateMemberScanSnapshot,
   humanifyBotCommandNames,
   parseComponentCustomId,
   parseSetupFlowCustomId,
@@ -67,6 +68,12 @@ import {
   type DiscordExecutionPlan,
   type SetupFlowAction,
 } from "@humanify/discord-core";
+import {
+  createHumanifyMessageContainer,
+  createHumanifyMessagePayload,
+  type HumanifyMessageSection,
+  type HumanifyMessageTone,
+} from "@humanify/discord-core/message-ui";
 import {
   createRequestTelemetryContext,
   createStructuredErrorFields,
@@ -166,12 +173,14 @@ export type BotScanRequestResponse = {
     status: "claimed" | "completed" | "failed" | "pending" | "running";
     summary: {
       completedAt?: string;
+      highestObservedScore: number;
       lastScannedUserId?: string;
       notes: string[];
       processedMemberCount: number;
       suspiciousFindings: Array<{
         caseId?: string;
         reasonCodes: string[];
+        score: number;
         userId: string;
       }>;
       suspiciousMemberCount: number;
@@ -358,10 +367,15 @@ export type ApprovedActionEnvelope = {
   executionPlan: DiscordExecutionPlan;
 };
 
+type HumanifyDiscordMessagePayload = {
+  components: Array<ReturnType<typeof createHumanifyMessageContainer>>;
+  flags?: number;
+};
+
 export type ModeratorWarningMessageRuntime = {
   deleteMessage(channelId: string, messageId: string): Promise<void>;
-  editMessage(channelId: string, messageId: string, content: string): Promise<void>;
-  sendMessage(channelId: string, content: string): Promise<{
+  editMessage(channelId: string, messageId: string, payload: HumanifyDiscordMessagePayload): Promise<void>;
+  sendMessage(channelId: string, payload: HumanifyDiscordMessagePayload): Promise<{
     messageId: string;
   }>;
 };
@@ -574,20 +588,25 @@ function extractMessageReasonCodes(message: Message, state: PassiveMessageState,
   };
 }
 
-function extractJoinReasonCodes(member: GuildMember, now: number) {
-  return extractMemberScanReasonCodes({
+function evaluateJoinSignals(member: GuildMember, now: number) {
+  return evaluateMemberScanSnapshot({
     now,
     snapshot: {
       avatar: member.user.avatar,
       createdTimestamp: member.user.createdTimestamp,
+      globalName: member.user.globalName,
       guildId: member.guild.id,
       userId: member.user.id,
+      username: member.user.username,
     },
   });
 }
 
-function buildPassiveJoinReportReason(reasonCodes: string[]) {
-  return buildMemberScanReportReason(reasonCodes as never);
+function buildPassiveJoinReportReason(input: {
+  reasonCodes: string[];
+  score: number;
+}) {
+  return buildMemberScanReportReason(input as never);
 }
 
 function buildPassiveMessageReportReason(reasonCodes: string[]) {
@@ -707,6 +726,97 @@ function createVerifierLink(
   return url.toString();
 }
 
+function buildVerificationSessionReply(input: {
+  challengeToken: string;
+  followUpNote?: string;
+  guildId: string;
+  persistence: string;
+  sessionId: string;
+  summaryLine: string;
+  userId: string;
+  username?: string;
+  verifierBaseUrl: string;
+}) {
+  const verifierLink = createVerifierLink(input.verifierBaseUrl, {
+    guildId: input.guildId,
+    sessionId: input.sessionId,
+    token: input.challengeToken,
+    userId: input.userId,
+    username: input.username,
+  });
+
+  return appendFollowUpNote([
+    input.summaryLine,
+    `Open the verifier: ${verifierLink}`,
+    createPersistenceNote(input.persistence),
+  ].join("\n"), input.followUpNote);
+}
+
+function createReplySectionsFromContent(content: string): {
+  sections: HumanifyMessageSection[];
+  summary?: string;
+  title: string;
+} {
+  const paragraphs = content
+    .replace(/\r/g, "")
+    .split(/\n\s*\n/)
+    .map((paragraph) => paragraph.trim())
+    .filter((paragraph) => paragraph.length > 0);
+
+  if (paragraphs.length === 0) {
+    return {
+      sections: [],
+      title: "Humanify",
+    };
+  }
+
+  const [firstParagraph, ...remainingParagraphs] = paragraphs;
+  if (!firstParagraph.includes("\n")) {
+    return {
+      sections: remainingParagraphs.map((markdown) => ({ markdown })),
+      title: firstParagraph,
+    };
+  }
+
+  if (remainingParagraphs.length === 0) {
+    const lines = firstParagraph
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+
+    return {
+      sections: lines.length > 1 ? [{ lines: lines.slice(1) }] : [],
+      title: lines[0] ?? "Humanify",
+    };
+  }
+
+  return {
+    sections: remainingParagraphs.map((markdown) => ({ markdown })),
+    summary: firstParagraph,
+    title: "Humanify",
+  };
+}
+
+function buildHumanifyInteractionMessage(input: {
+  components?: ActionRowBuilder<any>[];
+  content: string;
+  flags?: number;
+  sections?: HumanifyMessageSection[];
+  summary?: string;
+  title?: string;
+  tone?: HumanifyMessageTone;
+}): HumanifyDiscordMessagePayload {
+  const normalized = createReplySectionsFromContent(truncateMessageContent(input.content));
+  return createHumanifyMessagePayload({
+    actionRows: input.components,
+    flags: input.flags,
+    sections: input.sections ?? normalized.sections,
+    summary: input.summary ?? normalized.summary,
+    title: input.title ?? normalized.title,
+    tone: input.tone,
+  });
+}
+
 async function replyEphemeral(
   interaction: {
     reply(options: InteractionReplyOptions): Promise<unknown>;
@@ -714,13 +824,16 @@ async function replyEphemeral(
   payload: {
     components?: ActionRowBuilder<any>[];
     content: string;
+    sections?: HumanifyMessageSection[];
+    summary?: string;
+    title?: string;
+    tone?: HumanifyMessageTone;
   },
 ) {
-  const options: InteractionReplyOptions = {
-    components: payload.components,
-    content: truncateMessageContent(payload.content),
+  const options: InteractionReplyOptions = buildHumanifyInteractionMessage({
+    ...payload,
     flags: MessageFlags.Ephemeral,
-  };
+  });
 
   await interaction.reply(options);
 }
@@ -732,11 +845,14 @@ async function updateMessageComponent(
   payload: {
     components?: ActionRowBuilder<any>[];
     content: string;
+    sections?: HumanifyMessageSection[];
+    summary?: string;
+    title?: string;
+    tone?: HumanifyMessageTone;
   },
 ) {
   await interaction.update({
-    components: payload.components ?? [],
-    content: truncateMessageContent(payload.content),
+    components: buildHumanifyInteractionMessage(payload).components,
   });
 }
 
@@ -1478,45 +1594,49 @@ function formatCountLabel(count: number, singular: string, plural: string) {
   return `${count} ${count === 1 ? singular : plural}`;
 }
 
-function buildModeratorWarningCardContent(card: BotCaseWarningCardReadResponse) {
-  const lines = [
-    "⚠️ Humanify advisory warning",
-    `Case: \`${card.case.caseId}\``,
-    `Suspected user: <@${card.case.subjectUserId}> (\`${card.case.subjectUserId}\`)`,
-    `Case status: ${card.case.status}. Severity: ${card.case.severity}/10. Reason: ${truncatePlainText(card.case.reason, 120) ?? "No case reason recorded."}`,
-  ];
-
-  const reportSummary = [
-    `Reports: ${formatCountLabel(card.reportsSummary.reportCount, "report", "reports")} from ${formatCountLabel(card.reportsSummary.reporterCount, "reporter", "reporters")}.`,
-  ];
-  if (card.reportsSummary.latestReportReason) {
-    reportSummary.push(`Latest report note: ${truncatePlainText(card.reportsSummary.latestReportReason, 140)}.`);
-  }
-  lines.push(reportSummary.join(" "));
-
-  const evidenceSummary = [
-    `Evidence: ${formatCountLabel(card.evidenceSummary.evidenceCount, "linked item", "linked items")}.`,
-  ];
-  if (card.evidenceSummary.latestEvidence?.messagePreview) {
-    evidenceSummary.push(`Latest preview: "${truncatePlainText(card.evidenceSummary.latestEvidence.messagePreview, 140)}".`);
-  }
-  lines.push(evidenceSummary.join(" "));
+function buildModeratorWarningCardMessage(card: BotCaseWarningCardReadResponse): HumanifyDiscordMessagePayload {
+  const sections: HumanifyMessageSection[] = [{
+    title: "Case snapshot",
+    lines: [
+      `**Suspected user:** <@${card.case.subjectUserId}> (\`${card.case.subjectUserId}\`)`,
+      `**Status:** ${card.case.status}`,
+      `**Severity:** ${card.case.severity}/10`,
+      `**Reason:** ${truncatePlainText(card.case.reason, 120) ?? "No case reason recorded."}`,
+    ],
+  }, {
+    title: "Reporter activity",
+    lines: [
+      `${formatCountLabel(card.reportsSummary.reportCount, "report", "reports")} from ${formatCountLabel(card.reportsSummary.reporterCount, "reporter", "reporters")}.`,
+      ...(card.reportsSummary.latestReportReason
+        ? [`Latest report note: ${truncatePlainText(card.reportsSummary.latestReportReason, 140)}.`]
+        : []),
+    ],
+  }, {
+    title: "Evidence",
+    lines: [
+      `${formatCountLabel(card.evidenceSummary.evidenceCount, "linked item", "linked items")}.`,
+      ...(card.evidenceSummary.latestEvidence?.messagePreview
+        ? [`Latest preview: "${truncatePlainText(card.evidenceSummary.latestEvidence.messagePreview, 140)}".`]
+        : []),
+    ],
+  }];
 
   if (card.verification) {
-    const verificationParts = [
-      `Verification: ${card.verification.state}${card.verification.providerId ? ` via ${card.verification.providerId}` : ""}.`,
-      `Linkage: ${card.verification.caseLinkage === "case_linked" ? "case-linked" : "latest subject session fallback"}.`,
-    ];
-    if (card.verification.providerStatus) {
-      verificationParts.push(`Provider status: ${card.verification.providerStatus}.`);
-    }
     const satisfiedClaims = readStringArray(asRecord(card.verification.summary)?.satisfiedClaims);
-    if (satisfiedClaims.length > 0) {
-      verificationParts.push(`Satisfied claims: ${satisfiedClaims.join(", ")}.`);
-    }
-    lines.push(verificationParts.join(" "));
+    sections.push({
+      title: "Verification",
+      lines: [
+        `State: ${card.verification.state}${card.verification.providerId ? ` via ${card.verification.providerId}` : ""}.`,
+        `Linkage: ${card.verification.caseLinkage === "case_linked" ? "case-linked" : "latest subject session fallback"}.`,
+        ...(card.verification.providerStatus ? [`Provider status: ${card.verification.providerStatus}.`] : []),
+        ...(satisfiedClaims.length > 0 ? [`Satisfied claims: ${satisfiedClaims.join(", ")}.`] : []),
+      ],
+    });
   } else {
-    lines.push("Verification: none linked to this case yet.");
+    sections.push({
+      title: "Verification",
+      lines: ["No linked verification session yet."],
+    });
   }
 
   if (card.reusableCredentialBridge) {
@@ -1524,31 +1644,40 @@ function buildModeratorWarningCardContent(card: BotCaseWarningCardReadResponse) 
     const bridgeStatus = readString(bridge?.status);
     const targetProvider = readString(bridge?.targetProvider);
     const approvedClaims = readStringArray(bridge?.approvedClaims);
-    const bridgeParts = [
-      `Reusable proof handoff: ${bridgeStatus ?? "present"}${targetProvider ? ` via ${targetProvider}` : ""}.`,
-    ];
-    if (approvedClaims.length > 0) {
-      bridgeParts.push(`Approved claims: ${approvedClaims.join(", ")}.`);
-    }
-    lines.push(bridgeParts.join(" "));
+    sections.push({
+      title: "Reusable proof handoff",
+      lines: [
+        `${bridgeStatus ?? "present"}${targetProvider ? ` via ${targetProvider}` : ""}.`,
+        ...(approvedClaims.length > 0 ? [`Approved claims: ${approvedClaims.join(", ")}.`] : []),
+      ],
+    });
   }
 
   if (card.faceCheck) {
-    const faceParts = [
-      `Face check: ${card.faceCheck.passed ? "passed" : card.faceCheck.performed ? "performed but not passed" : "not completed"}.`,
-      `Source: ${card.faceCheck.source.replaceAll("_", " ")}.`,
-    ];
-    if (card.faceCheck.satisfiesFaceVerificationRequirement !== undefined) {
-      faceParts.push(
-        `Satisfies face-check requirement: ${card.faceCheck.satisfiesFaceVerificationRequirement ? "yes" : "no"}.`,
-      );
-    }
-    lines.push(faceParts.join(" "));
+    sections.push({
+      title: "Face check",
+      lines: [
+        `${card.faceCheck.passed ? "Passed" : card.faceCheck.performed ? "Performed but not passed" : "Not completed"}.`,
+        `Source: ${card.faceCheck.source.replaceAll("_", " ")}.`,
+        ...(card.faceCheck.satisfiesFaceVerificationRequirement !== undefined
+          ? [`Satisfies requirement: ${card.faceCheck.satisfiesFaceVerificationRequirement ? "yes" : "no"}.`]
+          : []),
+      ],
+    });
   }
 
-  lines.push("Advisory only: Humanify has not taken automatic enforcement from this warning.");
+  sections.push({
+    title: "Operator note",
+    lines: ["Advisory only. Humanify has not taken automatic enforcement from this warning."],
+  });
 
-  return truncateMessageContent(lines.join("\n"));
+  return createHumanifyMessagePayload({
+    actionRows: [createVerificationShortcutRow(card.scope.guildId, card.case.caseId, card.case.subjectUserId)],
+    sections,
+    summary: `Case \`${card.case.caseId}\` is open for review and can be advanced directly from this card.`,
+    title: "Humanify advisory warning",
+    tone: "warning",
+  });
 }
 
 function isDiscordMissingMessageError(error: unknown) {
@@ -1570,18 +1699,19 @@ function createDiscordWarningRuntime(client: Pick<Client, "channels">): Moderato
       const channel = await resolveChannel(channelId);
       await channel.messages.delete(messageId);
     },
-    async editMessage(channelId, messageId, content) {
+    async editMessage(channelId, messageId, payload) {
       const channel = await resolveChannel(channelId);
       await channel.messages.edit(messageId, {
         allowedMentions: { parse: [] },
-        content,
+        components: payload.components,
       });
     },
-    async sendMessage(channelId, content) {
+    async sendMessage(channelId, payload) {
       const channel = await resolveChannel(channelId);
       const message = await channel.send({
         allowedMentions: { parse: [] },
-        content,
+        components: payload.components,
+        flags: payload.flags,
       });
       return {
         messageId: message.id,
@@ -1624,13 +1754,13 @@ export async function syncModeratorWarningCard(input: {
     };
   }
 
-  const content = buildModeratorWarningCardContent(warningCard);
+  const payload = buildModeratorWarningCardMessage(warningCard);
   const activeAlertRef =
     warningCard.alertMessageRef?.messageState === "active" ? warningCard.alertMessageRef : undefined;
 
   if (activeAlertRef && activeAlertRef.channelId === moderatorAlertChannelId) {
     try {
-      await input.messageRuntime.editMessage(moderatorAlertChannelId, activeAlertRef.messageId, content);
+      await input.messageRuntime.editMessage(moderatorAlertChannelId, activeAlertRef.messageId, payload);
       await input.apiClient.updateWarningCardAlertMessage(input.guildId, input.caseId, {
         actorService: "bot-bun",
         channelId: moderatorAlertChannelId,
@@ -1653,7 +1783,7 @@ export async function syncModeratorWarningCard(input: {
   }
 
   try {
-    const sentMessage = await input.messageRuntime.sendMessage(moderatorAlertChannelId, content);
+    const sentMessage = await input.messageRuntime.sendMessage(moderatorAlertChannelId, payload);
 
     try {
       await input.apiClient.updateWarningCardAlertMessage(input.guildId, input.caseId, {
@@ -1728,8 +1858,8 @@ export function createPassiveEventHandler(options: CreatePassiveEventHandlerOpti
         return;
       }
 
-      const reasonCodes = extractJoinReasonCodes(member, now());
-      if (reasonCodes.length === 0) {
+      const evaluation = evaluateJoinSignals(member, now());
+      if (!evaluation.shouldOpenCase) {
         return;
       }
 
@@ -1737,11 +1867,11 @@ export function createPassiveEventHandler(options: CreatePassiveEventHandlerOpti
       const response = await options.apiClient.createReport(member.guild.id, {
         intakeSource: "detector_bridge",
         openCase: true,
-        reportReason: buildPassiveJoinReportReason(reasonCodes),
-        reporterNotes: `Reason codes: ${reasonCodes.join(", ")}`,
+        reportReason: buildPassiveJoinReportReason(evaluation),
+        reporterNotes: buildMemberScanReporterNotes(evaluation),
         reporterUserId: botActorUserId,
         subjectUserId: member.user.id,
-        triggerFingerprint: buildPassiveJoinTriggerFingerprint(member.guild.id, member.user.id, reasonCodes),
+        triggerFingerprint: buildPassiveJoinTriggerFingerprint(member.guild.id, member.user.id, evaluation.reasonCodes),
       }, requestTelemetry);
 
       if (!response.report.caseId) {
@@ -2188,13 +2318,19 @@ async function handleVerificationPanelCommand(
   }
 
   const verification = await apiClient.getGuildVerificationConfig(interaction.guildId!, requestTelemetry);
+  const panelMessage = createHumanifyMessagePayload({
+    actionRows: [createVerificationPanelRow(interaction.guildId!)],
+    sections: [{
+      title: "Release roles after verification",
+      lines: [summarizeRoleGrantBindings(verification.verificationConfig.roleGrantBindings)],
+    }],
+    summary: "Click the button below to start this server's current verification flow.",
+    title: "Humanify verification",
+    tone: "info",
+  });
   await targetChannel.send({
-    components: [createVerificationPanelRow(interaction.guildId!)],
-    content: truncateMessageContent([
-      "Humanify verification",
-      "Click the button below to start the server's current verification flow.",
-      summarizeRoleGrantBindings(verification.verificationConfig.roleGrantBindings),
-    ].join("\n")),
+    components: panelMessage.components,
+    flags: MessageFlags.IsComponentsV2,
   });
 
   await replyEphemeral(interaction, {
@@ -2232,9 +2368,17 @@ async function handleVerifyCommand(
   interaction: ChatInputCommandInteraction,
   apiClient: BotApiClient,
   requestTelemetry: RequestTelemetryContext,
+  verifierBaseUrl?: string,
 ) {
   const subject = interaction.options.getUser("user", true);
   if (subject.id !== interaction.user.id && !await requireTrustedModeratorAction(interaction)) {
+    return;
+  }
+
+  if (!verifierBaseUrl) {
+    await replyEphemeral(interaction, {
+      content: "Humanify cannot open the verifier yet because HUMANIFY_VERIFIER_BASE_URL is not configured.",
+    });
     return;
   }
 
@@ -2246,7 +2390,16 @@ async function handleVerifyCommand(
   }, requestTelemetry);
 
   await replyEphemeral(interaction, {
-    content: `Humanify planned verification session ${verification.session.sessionId} for <@${subject.id}> with ${capability}. ${createPersistenceNote(verification.persistence)}`,
+    content: buildVerificationSessionReply({
+      challengeToken: verification.challengeToken,
+      guildId: interaction.guildId!,
+      persistence: verification.persistence,
+      sessionId: verification.session.sessionId,
+      summaryLine: `Humanify started verification session ${verification.session.sessionId} for <@${subject.id}> with ${capability}.`,
+      userId: subject.id,
+      username: subject.username,
+      verifierBaseUrl,
+    }),
   });
 }
 
@@ -2425,10 +2578,16 @@ async function handleVerificationShortcut(
   });
 
   await replyEphemeral(interaction, {
-    content: appendFollowUpNote(
-      `Humanify planned verification session ${verification.session.sessionId} for case ${caseId}. ${createPersistenceNote(verification.persistence)}`,
-      warningSync?.note,
-    ),
+    content: buildVerificationSessionReply({
+      challengeToken: verification.challengeToken,
+      followUpNote: warningSync?.note,
+      guildId: interaction.guildId!,
+      persistence: verification.persistence,
+      sessionId: verification.session.sessionId,
+      summaryLine: `Humanify started verification session ${verification.session.sessionId} for case ${caseId}.`,
+      userId,
+      verifierBaseUrl,
+    }),
   });
 }
 
@@ -2494,7 +2653,7 @@ export function createInteractionHandler(options: CreateInteractionHandlerOption
       }
 
       if (interaction.commandName === humanifyBotCommandNames.verify) {
-        await handleVerifyCommand(interaction, options.apiClient, requestTelemetry);
+        await handleVerifyCommand(interaction, options.apiClient, requestTelemetry, options.verifierBaseUrl);
         return;
       }
     }

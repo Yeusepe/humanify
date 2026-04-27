@@ -21,12 +21,15 @@ import {
   authorizeAdminOnlyBotAction,
   authorizeTrustedModeratorOnlyBotAction,
   buildMemberScanReportReason,
+  buildMemberScanReporterNotes,
   buildComponentCustomId,
   buildSetupFlowCustomId,
   createHumanifyApplicationCommands,
   createBotGatewayIntents,
   createDiscordAuditReason,
+  evaluateMemberScanSnapshot,
   extractMemberScanReasonCodes,
+  memberScanWatchThresholdScore,
   parseComponentCustomId,
   parseSetupFlowCustomId,
   resolveDiscordExecutionPlan,
@@ -99,20 +102,40 @@ test("humanify application commands expose the first real intake surface", () =>
   expect(setupCommand?.options?.map((option) => option.name)).toEqual(["panel", "setup"]);
 });
 
-test("member scan heuristics stay aligned with the passive new-account detector", () => {
-  expect(
-    extractMemberScanReasonCodes({
-      now: Date.UTC(2026, 0, 8, 0, 0, 0),
-      snapshot: {
-        avatar: null,
-        createdTimestamp: Date.UTC(2026, 0, 7, 12, 0, 0),
-        guildId: "guild_123",
-        userId: "user_new",
-      },
-    }),
-  ).toEqual(["account_age_lt_24h"]);
+test("scan commands stay admin-scoped at registration so non-admins do not see them by default", () => {
+  const commands = createHumanifyApplicationCommands();
+  const scanCommand = commands.find((command) => ("toJSON" in command ? command.toJSON().name : command.name) === "scan") as
+    | {
+        defaultMemberPermissions?: bigint | string | null;
+      }
+    | undefined;
+  const scanAllCommand = commands.find((command) => ("toJSON" in command ? command.toJSON().name : command.name) === "scan-all") as
+    | {
+        defaultMemberPermissions?: bigint | string | null;
+      }
+    | undefined;
 
-  const olderReasons = extractMemberScanReasonCodes({
+  expect(scanCommand?.defaultMemberPermissions).toBe(PermissionFlagsBits.Administrator);
+  expect(scanAllCommand?.defaultMemberPermissions).toBe(PermissionFlagsBits.Administrator);
+});
+
+test("member scan heuristics stay aligned with the passive new-account detector", () => {
+  const newAccountEvaluation = evaluateMemberScanSnapshot({
+    now: Date.UTC(2026, 0, 8, 0, 0, 0),
+    snapshot: {
+      avatar: null,
+      createdTimestamp: Date.UTC(2026, 0, 7, 12, 0, 0),
+      guildId: "guild_123",
+      userId: "user_new",
+    },
+  });
+  expect(newAccountEvaluation).toEqual({
+    reasonCodes: ["account_age_lt_24h", "profile_missing_avatar"],
+    score: 8,
+    shouldOpenCase: true,
+  });
+
+  const olderEvaluation = evaluateMemberScanSnapshot({
     now: Date.UTC(2026, 0, 8, 0, 0, 0),
     snapshot: {
       avatar: null,
@@ -122,8 +145,40 @@ test("member scan heuristics stay aligned with the passive new-account detector"
     },
   });
 
-  expect(olderReasons).toEqual(["account_age_lt_7d", "profile_missing_avatar"]);
-  expect(buildMemberScanReportReason(olderReasons)).toContain("newly created Discord account");
+  expect(extractMemberScanReasonCodes({
+    now: Date.UTC(2026, 0, 8, 0, 0, 0),
+    snapshot: {
+      avatar: null,
+      createdTimestamp: Date.UTC(2026, 0, 2, 12, 0, 0),
+      guildId: "guild_123",
+      userId: "user_sparse",
+    },
+  })).toEqual(["account_age_lt_7d", "profile_missing_avatar"]);
+  expect(olderEvaluation).toEqual({
+    reasonCodes: ["account_age_lt_7d", "profile_missing_avatar"],
+    score: 5,
+    shouldOpenCase: true,
+  });
+  expect(buildMemberScanReportReason(olderEvaluation)).toContain("score 5/10");
+
+  const matureSparseEvaluation = evaluateMemberScanSnapshot({
+    now: Date.UTC(2026, 3, 27, 15, 17, 10),
+    snapshot: {
+      avatar: null,
+      createdTimestamp: Date.UTC(2025, 9, 3, 0, 30, 23),
+      guildId: "guild_123",
+      userId: "1423467182293258252",
+      username: "yeusepetest_69399",
+    },
+  });
+
+  expect(matureSparseEvaluation).toEqual({
+    reasonCodes: ["profile_missing_avatar", "profile_test_handle_pattern"],
+    score: memberScanWatchThresholdScore,
+    shouldOpenCase: true,
+  });
+  expect(buildMemberScanReportReason(matureSparseEvaluation)).toContain("synthetic-looking");
+  expect(buildMemberScanReporterNotes(matureSparseEvaluation)).toContain(`Advisory member-scan score: ${memberScanWatchThresholdScore}/10`);
 });
 
 test("execution plans refuse exact moderation actions when the current Discord capability is missing", () => {

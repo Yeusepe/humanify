@@ -49,17 +49,16 @@ export type BotActionAuthorization = {
   scope: BotAuthorizationScope;
 };
 
-export type MemberScanReasonCode =
-  | "account_age_lt_24h"
-  | "account_age_lt_7d"
-  | "profile_missing_avatar";
-
-export type MemberScanSnapshot = {
-  avatar?: string | null;
-  createdTimestamp: number;
-  guildId: string;
-  userId: string;
-};
+export {
+  buildMemberScanReportReason,
+  buildMemberScanReporterNotes,
+  evaluateMemberScanSnapshot,
+  extractMemberScanReasonCodes,
+  memberScanWatchThresholdScore,
+  type MemberScanEvaluation,
+  type MemberScanReasonCode,
+  type MemberScanSnapshot,
+} from "./member-scan.ts";
 
 export type SetupFlowAction =
   | "back"
@@ -98,9 +97,6 @@ export const humanifyBotCommandNames = {
   scanAll: "scan-all",
   verify: "verify",
 } as const;
-
-const twentyFourHoursMs = 24 * 60 * 60 * 1_000;
-const sevenDaysMs = 7 * 24 * 60 * 60 * 1_000;
 
 export const humanifyTrustedModeratorPermissionFlags = [
   PermissionFlagsBits.Administrator,
@@ -210,6 +206,7 @@ export function createHumanifyApplicationCommands(): readonly ApplicationCommand
       type: ApplicationCommandType.ChatInput,
     },
     {
+      defaultMemberPermissions: PermissionFlagsBits.Administrator,
       description: "Queue a durable Humanify scan for one member.",
       name: humanifyBotCommandNames.scan,
       options: [
@@ -299,30 +296,6 @@ export function authorizeTrustedModeratorOnlyBotAction(memberPermissions: Member
         reason: "trusted_moderator_only",
         scope: "trusted_moderator_only",
       };
-}
-
-export function extractMemberScanReasonCodes(input: {
-  now: number;
-  snapshot: MemberScanSnapshot;
-}): MemberScanReasonCode[] {
-  const accountAgeMs = Math.max(input.now - input.snapshot.createdTimestamp, 0);
-  if (accountAgeMs < twentyFourHoursMs) {
-    return ["account_age_lt_24h"];
-  }
-
-  if (accountAgeMs < sevenDaysMs && !input.snapshot.avatar) {
-    return ["account_age_lt_7d", "profile_missing_avatar"];
-  }
-
-  return [];
-}
-
-export function buildMemberScanReportReason(reasonCodes: readonly MemberScanReasonCode[]) {
-  if (reasonCodes.includes("account_age_lt_24h")) {
-    return "Automatic detector bridge flagged a very new Discord account joining the server.";
-  }
-
-  return "Automatic detector bridge flagged a newly created Discord account with an incomplete profile joining the server.";
 }
 
 export function createBotGatewayIntents(options: {

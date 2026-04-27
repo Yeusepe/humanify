@@ -41,7 +41,7 @@ The bot does **not** own final policy decisions. It submits normalized events to
 | --- | --- | --- |
 | `/humanify setup` | initial guild setup, channel/role selection, capability checks | API guild-config routes |
 | `/humanify panel [channel]` | post a reusable member-facing verification button into the current or chosen channel | API guild-config routes + verifier base URL |
-| `/scan user:@member` | queue a durable single-member heuristic scan and warning refresh | scan routes + Temporal worker |
+| `/scan user:@member` | queue a durable single-member advisory score scan and warning refresh | scan routes + Temporal worker |
 | `/scan-all` | queue a durable full-guild member scan | scan routes + Temporal worker |
 | `/report user:@member ...` | open a report or append to a case | cases/reports routes |
 | `/case open user:@member` | manual case creation | cases routes |
@@ -62,13 +62,13 @@ The current bot spine makes the first real moderation intake surface concrete:
 | --- | --- | --- |
 | `/humanify setup` | server-admin guided setup flow for channel, role, verification-path, proof-bundle, and face-check choices without leaving Discord | admin-only at command registration and runtime; reads current guild config from the API, keeps the language plain, and only saves through the real guild-config routes |
 | `/humanify panel [channel]` | posts a reusable `Verify with Humanify` button for members | admin-only at runtime; button clicks create a real verification session for the clicking member and return the signed verifier link ephemerally |
-| `/scan user:@member` | queues one canonical `single_member` scan request | trusted-moderator-only at runtime; the reply acknowledges the scan request ID and that Temporal-backed execution is still pending |
-| `/scan-all` | queues one canonical `all_members` scan request | server-admin-only at runtime; the reply stays explicit that Humanify has only queued the durable workflow so far |
+| `/scan user:@member` | queues one canonical `single_member` scan request | admin-only at command registration so ordinary members do not see it by default; runtime still enforces the trusted-moderator rule if an admin later widens command access in Discord, and the Temporal worker later posts a moderator-visible completion summary even when no suspicious case is opened |
+| `/scan-all` | queues one canonical `all_members` scan request | admin-only at command registration and runtime; the reply stays explicit that Humanify has only queued the durable workflow so far, and the worker later posts the final summary to the configured moderation surface |
 | `/report user reason [notes]` | opens a report via the API and plans a case when one does not already exist | replies honestly that persistence is still pending and offers a verification shortcut only as additional intake |
 | `/case open user reason [notes]` | opens a manual case via the report intake route | trusted-moderator-only at runtime; no moderation action is executed from the command response |
-| `/verify user [capability]` | creates a verification session tied to the Discord member | self-verification stays available; verifying another member requires a trusted moderator and session creation is still reported as planned, not durably completed |
+| `/verify user [capability]` | creates a verification session tied to the Discord member | self-verification stays available; verifying another member requires a trusted moderator, and successful session creation now returns the signed verifier URL instead of a reply-only acknowledgement |
 | message context `Report message to Humanify` | opens a report and then attaches canonical Discord message metadata (`messageId`, `channelId`, message URL, preview) as evidence | evidence is queued as planned canonical write work, not synthetic success |
-| button `Start verification` | creates a verification session bound to the case/user pair encoded in the shared Humanify custom ID | self-verification stays available, cross-user starts require a trusted moderator, and button handlers reject mismatched guild context without implying release or enforcement |
+| button `Start verification` | creates a verification session bound to the case/user pair encoded in the shared Humanify custom ID | self-verification stays available, cross-user starts require a trusted moderator, and the button reply now includes the signed verifier URL plus the linked warning-card follow-up note |
 
 ## 3. Event intake inventory
 
@@ -84,7 +84,7 @@ The bot should avoid keeping hidden business state. Local caches may exist for i
 
 Current passive detector bridge implementation:
 
-1. `guildMemberAdd` now opens an advisory detector-bridge report when the joining account is less than 24 hours old, or when it is less than 7 days old and still missing a profile avatar.
+1. `guildMemberAdd` now runs the shared weighted member scorer and opens an advisory detector-bridge report once the account reaches the current `watch` threshold (`4/10`), including combinations like a very new account, a young incomplete-profile account, or a sparse missing-avatar profile with the synthetic test-handle pattern.
 2. `messageCreate` now opens an advisory detector-bridge report when message-signal collection is enabled and the message matches one of the current stable reason codes:
    - `first_message_link`
    - `mention_burst`
@@ -186,8 +186,8 @@ Authorization rules for the current command surface:
 3. Trusted moderator actions must fail closed when the actor lacks current guild permissions or the runtime cannot read them.
 4. The shared trusted-moderator gate covers the current moderation-oriented entry points (`/case open` and starting verification for another member).
 5. Member-facing verification entry points must remain available for the actor's own account.
-6. `/scan` requires the trusted-moderator gate.
-7. `/scan-all` requires the server-admin gate.
+6. `/scan` is admin-scoped at command registration because Discord global command defaults can only express one required permission bitset; if a guild admin later widens the command in Discord, Humanify still enforces the trusted-moderator runtime gate.
+7. `/scan-all` requires the server-admin gate at both command registration and runtime.
 
 ### 6.1 Durable member scans
 
@@ -199,8 +199,9 @@ The current bot runtime now exposes two operator-driven scan entrypoints:
 Both commands stay honest about the workflow boundary:
 
 - the bot only creates the canonical scan request through the API
-- `apps\scan-worker-temporal` later claims the request from Postgres, runs the Discord member walk through Temporal, opens any advisory reports, and refreshes moderator warning cards
+- `apps\scan-worker-temporal` later claims the request from Postgres, runs the Discord member walk through Temporal, opens any advisory reports, refreshes moderator warning cards, and posts a completion or failure summary into the configured moderation log / review / alert channel
 - command responses never claim that the member walk has already completed when the request is only `pending` or `claimed`
+- both commands are admin-scoped at registration time so non-admin members do not get scan entrypoints by default
 
 ### 6.2 Guided setup flow
 

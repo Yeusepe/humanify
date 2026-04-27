@@ -13,8 +13,8 @@
 # - https://min.io/docs/minio/container/index.html
 # - https://qdrant.tech/documentation/
 # - https://grafana.com/docs/grafana/latest/setup-grafana/installation/docker/
-# - https://docs.temporal.io/self-hosted-guide/install-temporal-server
-# - https://github.com/temporalio/docker-compose
+# - https://docs.temporal.io/self-hosted-guide/deployment
+# - https://github.com/temporalio/samples-server/tree/main/compose
 
 services:
   postgres:
@@ -133,9 +133,9 @@ services:
       temporal-postgres:
         condition: service_healthy
     environment:
-      DB: postgresql
+      DB: postgres12
       DB_PORT: 5432
-      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/development-sql.yaml
+      DYNAMIC_CONFIG_FILE_PATH: /etc/temporal/config/dynamicconfig/docker.yaml
       POSTGRES_PWD: temporal
       POSTGRES_SEEDS: temporal-postgres
       POSTGRES_USER: temporal

@@ -15,7 +15,7 @@
  */
 
 import { expect, test } from "bun:test";
-import schema from "../../../docs/contracts/humanify-contracts.schema.json";
+import schema from "../../../docs/contracts/humanify-contracts.schema.json" with { type: "json" };
 
 import {
   getHumanifyContractSummary,
@@ -43,4 +43,21 @@ test("typed contract constants stay aligned with the canonical JSON schema", () 
   expect([...humanifyInferenceEventKinds] as string[]).toEqual(documentedEventKinds);
   expect(isHumanifyAction("quarantine")).toBe(true);
   expect(isHumanifyAction("delete")).toBe(false);
+});
+
+test("the contracts package can be imported by the Node-based scan worker runtime", () => {
+  const result = Bun.spawnSync([
+    "node",
+    "--input-type=module",
+    "--experimental-strip-types",
+    "-e",
+    "const mod = await import('./packages/contracts/src/index.ts'); console.log(mod.humanifyContractSchemaPath);",
+  ], {
+    cwd: process.cwd(),
+    stderr: "pipe",
+    stdout: "pipe",
+  });
+
+  expect(result.exitCode).toBe(0);
+  expect(Buffer.from(result.stdout).toString("utf8").trim()).toBe("docs\\contracts\\humanify-contracts.schema.json");
 });

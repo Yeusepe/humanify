@@ -803,6 +803,7 @@ test("scan request create persists a canonical queued single-member scan", async
         scope: string;
         status: string;
         summary: {
+          highestObservedScore: number;
           notes: string[];
           processedMemberCount: number;
           suspiciousFindings: Array<unknown>;
@@ -829,6 +830,7 @@ test("scan request create persists a canonical queued single-member scan", async
     targetUserId: "user_123",
   });
   expect(json.data.scanRequest.summary).toEqual({
+    highestObservedScore: 0,
     notes: [],
     processedMemberCount: 0,
     suspiciousFindings: [],

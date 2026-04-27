@@ -16,18 +16,20 @@
 import { REST } from "@discordjs/rest";
 import { Routes } from "discord-api-types/v10";
 
+import { buildComponentCustomId } from "@humanify/discord-core";
+import { createHumanifyMessagePayload, type HumanifyMessageSection } from "@humanify/discord-core/message-ui";
 import { createRequestTelemetryContext, type RequestTelemetryContext } from "@humanify/telemetry";
 
 import {
   type ScanWorkerApiClient,
   type ScanWorkerCaseWarningCardReadResponse,
   ScanWorkerApiRequestError,
-} from "./api-client";
+} from "./api-client.ts";
 
 export type ModeratorWarningMessageRuntime = {
   deleteMessage(channelId: string, messageId: string): Promise<void>;
-  editMessage(channelId: string, messageId: string, content: string): Promise<void>;
-  sendMessage(channelId: string, content: string): Promise<{
+  editMessage(channelId: string, messageId: string, payload: ReturnType<typeof createHumanifyMessagePayload>): Promise<void>;
+  sendMessage(channelId: string, payload: ReturnType<typeof createHumanifyMessagePayload>): Promise<{
     messageId: string;
   }>;
 };
@@ -62,58 +64,71 @@ function truncatePlainText(value: string | undefined, maxLength = 160) {
   return `${normalized.slice(0, Math.max(maxLength - 1, 1)).trimEnd()}…`;
 }
 
-function truncateMessageContent(value: string, maxLength = 1_990) {
-  const normalized = value.replace(/\r/g, "").trim();
-  if (normalized.length <= maxLength) {
-    return normalized;
-  }
-
-  return `${normalized.slice(0, Math.max(maxLength - 1, 1)).trimEnd()}…`;
-}
-
 function formatCountLabel(count: number, singular: string, plural: string) {
   return `${count} ${count === 1 ? singular : plural}`;
 }
 
-export function buildModeratorWarningCardContent(card: ScanWorkerCaseWarningCardReadResponse) {
-  const lines = [
-    "⚠️ Humanify advisory warning",
-    `Case: \`${card.case.caseId}\``,
-    `Suspected user: <@${card.case.subjectUserId}> (\`${card.case.subjectUserId}\`)`,
-    `Case status: ${card.case.status}. Severity: ${card.case.severity}/10. Reason: ${truncatePlainText(card.case.reason, 120) ?? "No case reason recorded."}`,
-  ];
+function createVerificationShortcutActionRow(guildId: string, caseId: string, userId: string) {
+  return {
+    components: [
+      {
+        custom_id: buildComponentCustomId({
+          entityId: `${caseId}~${userId}`,
+          guildId,
+          kind: "verification_start",
+        }),
+        label: "Start verification",
+        style: 1,
+        type: 2,
+      },
+    ],
+    type: 1,
+  } as const;
+}
 
-  const reportSummary = [
-    `Reports: ${formatCountLabel(card.reportsSummary.reportCount, "report", "reports")} from ${formatCountLabel(card.reportsSummary.reporterCount, "reporter", "reporters")}.`,
-  ];
-  if (card.reportsSummary.latestReportReason) {
-    reportSummary.push(`Latest report note: ${truncatePlainText(card.reportsSummary.latestReportReason, 140)}.`);
-  }
-  lines.push(reportSummary.join(" "));
-
-  const evidenceSummary = [
-    `Evidence: ${formatCountLabel(card.evidenceSummary.evidenceCount, "linked item", "linked items")}.`,
-  ];
-  if (card.evidenceSummary.latestEvidence?.messagePreview) {
-    evidenceSummary.push(`Latest preview: "${truncatePlainText(card.evidenceSummary.latestEvidence.messagePreview, 140)}".`);
-  }
-  lines.push(evidenceSummary.join(" "));
+export function buildModeratorWarningCardContent(guildId: string, card: ScanWorkerCaseWarningCardReadResponse) {
+  const sections: HumanifyMessageSection[] = [{
+    title: "Case snapshot",
+    lines: [
+      `**Suspected user:** <@${card.case.subjectUserId}> (\`${card.case.subjectUserId}\`)`,
+      `**Status:** ${card.case.status}`,
+      `**Severity:** ${card.case.severity}/10`,
+      `**Reason:** ${truncatePlainText(card.case.reason, 120) ?? "No case reason recorded."}`,
+    ],
+  }, {
+    title: "Reporter activity",
+    lines: [
+      `${formatCountLabel(card.reportsSummary.reportCount, "report", "reports")} from ${formatCountLabel(card.reportsSummary.reporterCount, "reporter", "reporters")}.`,
+      ...(card.reportsSummary.latestReportReason
+        ? [`Latest report note: ${truncatePlainText(card.reportsSummary.latestReportReason, 140)}.`]
+        : []),
+    ],
+  }, {
+    title: "Evidence",
+    lines: [
+      `${formatCountLabel(card.evidenceSummary.evidenceCount, "linked item", "linked items")}.`,
+      ...(card.evidenceSummary.latestEvidence?.messagePreview
+        ? [`Latest preview: "${truncatePlainText(card.evidenceSummary.latestEvidence.messagePreview, 140)}".`]
+        : []),
+    ],
+  }];
 
   if (card.verification) {
-    const verificationParts = [
-      `Verification: ${card.verification.state}${card.verification.providerId ? ` via ${card.verification.providerId}` : ""}.`,
-      `Linkage: ${card.verification.caseLinkage === "case_linked" ? "case-linked" : "latest subject session fallback"}.`,
-    ];
-    if (card.verification.providerStatus) {
-      verificationParts.push(`Provider status: ${card.verification.providerStatus}.`);
-    }
     const satisfiedClaims = readStringArray(asRecord(card.verification.summary)?.satisfiedClaims);
-    if (satisfiedClaims.length > 0) {
-      verificationParts.push(`Satisfied claims: ${satisfiedClaims.join(", ")}.`);
-    }
-    lines.push(verificationParts.join(" "));
+    sections.push({
+      title: "Verification",
+      lines: [
+        `State: ${card.verification.state}${card.verification.providerId ? ` via ${card.verification.providerId}` : ""}.`,
+        `Linkage: ${card.verification.caseLinkage === "case_linked" ? "case-linked" : "latest subject session fallback"}.`,
+        ...(card.verification.providerStatus ? [`Provider status: ${card.verification.providerStatus}.`] : []),
+        ...(satisfiedClaims.length > 0 ? [`Satisfied claims: ${satisfiedClaims.join(", ")}.`] : []),
+      ],
+    });
   } else {
-    lines.push("Verification: none linked to this case yet.");
+    sections.push({
+      title: "Verification",
+      lines: ["No linked verification session yet."],
+    });
   }
 
   if (card.reusableCredentialBridge) {
@@ -121,31 +136,40 @@ export function buildModeratorWarningCardContent(card: ScanWorkerCaseWarningCard
     const bridgeStatus = readString(bridge?.status);
     const targetProvider = readString(bridge?.targetProvider);
     const approvedClaims = readStringArray(bridge?.approvedClaims);
-    const bridgeParts = [
-      `Reusable proof handoff: ${bridgeStatus ?? "present"}${targetProvider ? ` via ${targetProvider}` : ""}.`,
-    ];
-    if (approvedClaims.length > 0) {
-      bridgeParts.push(`Approved claims: ${approvedClaims.join(", ")}.`);
-    }
-    lines.push(bridgeParts.join(" "));
+    sections.push({
+      title: "Reusable proof handoff",
+      lines: [
+        `${bridgeStatus ?? "present"}${targetProvider ? ` via ${targetProvider}` : ""}.`,
+        ...(approvedClaims.length > 0 ? [`Approved claims: ${approvedClaims.join(", ")}.`] : []),
+      ],
+    });
   }
 
   if (card.faceCheck) {
-    const faceParts = [
-      `Face check: ${card.faceCheck.passed ? "passed" : card.faceCheck.performed ? "performed but not passed" : "not completed"}.`,
-      `Source: ${card.faceCheck.source.replaceAll("_", " ")}.`,
-    ];
-    if (card.faceCheck.satisfiesFaceVerificationRequirement !== undefined) {
-      faceParts.push(
-        `Satisfies face-check requirement: ${card.faceCheck.satisfiesFaceVerificationRequirement ? "yes" : "no"}.`,
-      );
-    }
-    lines.push(faceParts.join(" "));
+    sections.push({
+      title: "Face check",
+      lines: [
+        `${card.faceCheck.passed ? "Passed" : card.faceCheck.performed ? "Performed but not passed" : "Not completed"}.`,
+        `Source: ${card.faceCheck.source.replaceAll("_", " ")}.`,
+        ...(card.faceCheck.satisfiesFaceVerificationRequirement !== undefined
+          ? [`Satisfies requirement: ${card.faceCheck.satisfiesFaceVerificationRequirement ? "yes" : "no"}.`]
+          : []),
+      ],
+    });
   }
 
-  lines.push("Advisory only: Humanify has not taken automatic enforcement from this warning.");
+  sections.push({
+    title: "Operator note",
+    lines: ["Advisory only. Humanify has not taken automatic enforcement from this warning."],
+  });
 
-  return truncateMessageContent(lines.join("\n"));
+  return createHumanifyMessagePayload({
+    actionRows: [createVerificationShortcutActionRow(guildId, card.case.caseId, card.case.subjectUserId)],
+    sections,
+    summary: `Case \`${card.case.caseId}\` is open for review and can be advanced directly from this card.`,
+    title: "Humanify advisory warning",
+    tone: "warning",
+  });
 }
 
 function isDiscordMissingMessageError(error: unknown) {
@@ -153,24 +177,24 @@ function isDiscordMissingMessageError(error: unknown) {
 }
 
 export function createDiscordRestWarningRuntime(rest: REST): ModeratorWarningMessageRuntime {
+  const serializePayload = (payload: ReturnType<typeof createHumanifyMessagePayload>, includeFlags: boolean) => ({
+    allowed_mentions: { parse: [] },
+    components: payload.components.map((component) => component.toJSON()),
+    ...(!includeFlags || payload.flags === undefined ? {} : { flags: payload.flags }),
+  });
+
   return {
     async deleteMessage(channelId, messageId) {
       await rest.delete(Routes.channelMessage(channelId, messageId));
     },
-    async editMessage(channelId, messageId, content) {
+    async editMessage(channelId, messageId, payload) {
       await rest.patch(Routes.channelMessage(channelId, messageId), {
-        body: {
-          allowed_mentions: { parse: [] },
-          content,
-        },
+        body: serializePayload(payload, false),
       });
     },
-    async sendMessage(channelId, content) {
+    async sendMessage(channelId, payload) {
       const message = await rest.post(Routes.channelMessages(channelId), {
-        body: {
-          allowed_mentions: { parse: [] },
-          content,
-        },
+        body: serializePayload(payload, true),
       }) as { id: string };
       return {
         messageId: message.id,
@@ -214,13 +238,13 @@ export async function syncModeratorWarningCard(input: {
     };
   }
 
-  const content = buildModeratorWarningCardContent(warningCard);
+  const payload = buildModeratorWarningCardContent(input.guildId, warningCard);
   const activeAlertRef =
     warningCard.alertMessageRef?.messageState === "active" ? warningCard.alertMessageRef : undefined;
 
   if (activeAlertRef && activeAlertRef.channelId === moderatorAlertChannelId) {
     try {
-      await input.messageRuntime.editMessage(moderatorAlertChannelId, activeAlertRef.messageId, content);
+      await input.messageRuntime.editMessage(moderatorAlertChannelId, activeAlertRef.messageId, payload);
       await input.apiClient.updateWarningCardAlertMessage(input.guildId, input.caseId, {
         actorService: input.actorService,
         channelId: moderatorAlertChannelId,
@@ -243,7 +267,7 @@ export async function syncModeratorWarningCard(input: {
   }
 
   try {
-    const sentMessage = await input.messageRuntime.sendMessage(moderatorAlertChannelId, content);
+    const sentMessage = await input.messageRuntime.sendMessage(moderatorAlertChannelId, payload);
 
     try {
       await input.apiClient.updateWarningCardAlertMessage(input.guildId, input.caseId, {

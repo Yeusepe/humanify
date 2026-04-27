@@ -283,7 +283,9 @@ function createGuildMemberAddEvent(input: {
   accountCreatedAt?: number;
   avatar?: string | null;
   guildId?: string;
+  globalName?: string | null;
   userId?: string;
+  username?: string | null;
 }) {
   return {
     guild: {
@@ -293,7 +295,9 @@ function createGuildMemberAddEvent(input: {
       avatar: input.avatar ?? null,
       bot: false,
       createdTimestamp: input.accountCreatedAt ?? Date.UTC(2026, 0, 1, 11, 0, 0),
+      globalName: input.globalName ?? null,
       id: input.userId ?? "user_123",
+      username: input.username ?? "user_123",
     },
   } as any;
 }
@@ -374,11 +378,11 @@ function createWarningRuntime(overrides: Partial<ModeratorWarningMessageRuntime>
       async deleteMessage(channelId, messageId) {
         calls.push({ channelId, kind: "delete", messageId });
       },
-      async editMessage(channelId, messageId, content) {
-        calls.push({ channelId, content, kind: "edit", messageId });
+      async editMessage(channelId, messageId, payload) {
+        calls.push({ channelId, kind: "edit", messageId, payload });
       },
-      async sendMessage(channelId, content) {
-        calls.push({ channelId, content, kind: "send" });
+      async sendMessage(channelId, payload) {
+        calls.push({ channelId, kind: "send", payload });
         return {
           messageId: "message_alert_123",
         };
@@ -388,50 +392,92 @@ function createWarningRuntime(overrides: Partial<ModeratorWarningMessageRuntime>
   };
 }
 
-function findCustomId(payload: {
-  components?: Array<{ toJSON(): { components?: Array<{ custom_id?: string }> } }>;
-}, matcher: (customId: string) => boolean) {
-  for (const row of payload.components ?? []) {
-    for (const component of row.toJSON().components ?? []) {
-      if (component.custom_id && matcher(component.custom_id)) {
-        return component.custom_id;
-      }
+function toComponentJson(component: unknown): Record<string, unknown> {
+  if (typeof component === "object" && component !== null && "toJSON" in component && typeof (component as { toJSON?: unknown }).toJSON === "function") {
+    return ((component as { toJSON(): Record<string, unknown> }).toJSON());
+  }
+
+  return component as Record<string, unknown>;
+}
+
+function walkDiscordComponents(
+  components: readonly unknown[] | undefined,
+  visitor: (component: Record<string, unknown>) => void,
+) {
+  for (const component of components ?? []) {
+    const json = toComponentJson(component);
+    visitor(json);
+
+    if (Array.isArray(json.components)) {
+      walkDiscordComponents(json.components, visitor);
     }
+  }
+}
+
+function findCustomId(payload: {
+  components?: readonly unknown[];
+}, matcher: (customId: string) => boolean) {
+  let match: string | undefined;
+  walkDiscordComponents(payload.components, (component) => {
+    const customId = typeof component.custom_id === "string" ? component.custom_id : undefined;
+    if (!match && customId && matcher(customId)) {
+      match = customId;
+    }
+  });
+
+  if (match) {
+    return match;
   }
 
   throw new Error("Expected setup component custom ID was not found.");
 }
 
 function assertDiscordPayloadWithinLimits(payload: {
-  components?: Array<{ toJSON(): { components?: Array<Record<string, unknown>> } }>;
+  components?: readonly unknown[];
   content?: string;
 }) {
   if (typeof payload.content === "string" && payload.content.length > 2_000) {
     throw new Error("Invalid string length");
   }
 
-  for (const row of payload.components ?? []) {
-    for (const component of row.toJSON().components ?? []) {
-      if (typeof component.custom_id === "string" && component.custom_id.length > 100) {
+  walkDiscordComponents(payload.components, (component) => {
+    if (typeof component.custom_id === "string" && component.custom_id.length > 100) {
+      throw new Error("Received one or more errors");
+    }
+
+    if (typeof component.placeholder === "string" && component.placeholder.length > 150) {
+      throw new Error("Received one or more errors");
+    }
+
+    const options = Array.isArray(component.options) ? component.options : [];
+    for (const option of options) {
+      if (typeof option.label === "string" && option.label.length > 100) {
         throw new Error("Received one or more errors");
       }
 
-      if (typeof component.placeholder === "string" && component.placeholder.length > 150) {
+      if (typeof option.description === "string" && option.description.length > 100) {
         throw new Error("Received one or more errors");
-      }
-
-      const options = Array.isArray(component.options) ? component.options : [];
-      for (const option of options) {
-        if (typeof option.label === "string" && option.label.length > 100) {
-          throw new Error("Received one or more errors");
-        }
-
-        if (typeof option.description === "string" && option.description.length > 100) {
-          throw new Error("Received one or more errors");
-        }
       }
     }
+  });
+}
+
+function extractDiscordMessageText(payload: {
+  components?: readonly unknown[];
+  content?: string;
+}) {
+  const lines: string[] = [];
+  if (typeof payload.content === "string" && payload.content.length > 0) {
+    lines.push(payload.content);
   }
+
+  walkDiscordComponents(payload.components, (component) => {
+    if (typeof component.content === "string" && component.content.length > 0) {
+      lines.push(component.content);
+    }
+  });
+
+  return lines.join("\n");
 }
 
 test("report command routes moderator intake through the report API and offers a verification shortcut", async () => {
@@ -510,16 +556,16 @@ test("report command routes moderator intake through the report API and offers a
   ]);
 
   const reply = replies[0] as {
-    components: Array<{ toJSON(): { components: Array<{ custom_id?: string }> } }>;
-    content: string;
+    components: readonly unknown[];
     flags: number;
   };
-  const customId = reply.components[0].toJSON().components[0].custom_id;
+  const customId = findCustomId(reply, (candidate) => candidate.includes("verification_start"));
+  const replyText = extractDiscordMessageText(reply);
 
-  expect(reply.flags).toBe(MessageFlags.Ephemeral);
-  expect(reply.content).toContain("case_123");
-  expect(reply.content).toContain("persistence is still pending");
-  expect(reply.content).toContain("Moderator warning posted in <#channel_alerts>.");
+  expect(reply.flags).toBe(MessageFlags.Ephemeral | MessageFlags.IsComponentsV2);
+  expect(replyText).toContain("case_123");
+  expect(replyText).toContain("persistence is still pending");
+  expect(replyText).toContain("Moderator warning posted in <#channel_alerts>.");
   expect(parseComponentCustomId(customId ?? "")).toMatchObject({
     entityId: "case_123~user_123",
     guildId: "guild_123",
@@ -534,7 +580,7 @@ test("report command routes moderator intake through the report API and offers a
 });
 
 test("report command truncates oversized follow-up notes before replying to Discord", async () => {
-  const replies: Array<{ content: string; flags: MessageFlags }> = [];
+  const replies: Array<{ components?: readonly unknown[]; content?: string; flags: MessageFlags }> = [];
   const handler = createInteractionHandler({
     apiClient: createTestApiClient({
       createReport: async () => ({
@@ -565,16 +611,17 @@ test("report command truncates oversized follow-up notes before replying to Disc
       memberPermissions: createGuildInteractionPermissions(PermissionFlagsBits.KickMembers),
       reply: async (payload) => {
         assertDiscordPayloadWithinLimits(payload as { content?: string });
-        replies.push(payload as { content: string; flags: MessageFlags });
+        replies.push(payload as { components?: readonly unknown[]; content?: string; flags: MessageFlags });
       },
       userId: "mod_123",
     }),
   );
 
   expect(replies).toHaveLength(1);
-  expect(replies[0]!.content.length).toBeLessThanOrEqual(2_000);
-  expect(replies[0]!.content).toContain("Moderator warning update:");
-  expect(replies[0]!.content.endsWith("…")).toBe(true);
+  expect(replies[0]!.flags).toBe(MessageFlags.Ephemeral | MessageFlags.IsComponentsV2);
+  const replyText = extractDiscordMessageText(replies[0]!);
+  expect(replyText).toContain("Moderator warning update:");
+  expect(replyText.endsWith("…")).toBe(true);
 });
 
 test("humanify setup refuses members who are not server admins", async () => {
@@ -595,12 +642,11 @@ test("humanify setup refuses members who are not server admins", async () => {
     }),
   );
 
-  expect(replies).toEqual([
-    expect.objectContaining({
-      content: "Only server admins can run Humanify setup.",
-      flags: MessageFlags.Ephemeral,
-    }),
-  ]);
+  expect(replies).toHaveLength(1);
+  expect((replies[0] as { flags: number }).flags).toBe(MessageFlags.Ephemeral | MessageFlags.IsComponentsV2);
+  expect(extractDiscordMessageText(replies[0] as { components?: readonly unknown[]; content?: string })).toContain(
+    "Only server admins can run Humanify setup.",
+  );
 });
 
 test("humanify setup loads the current config and opens a guided setup flow for server admins", async () => {
@@ -673,6 +719,7 @@ test("humanify setup loads the current config and opens a guided setup flow for 
         };
       },
     }),
+    verifierBaseUrl: "http://127.0.0.1:3212",
   });
 
   await handler(
@@ -698,11 +745,12 @@ test("humanify setup loads the current config and opens a guided setup flow for 
     flags: number;
   };
 
-  expect(reply.flags).toBe(MessageFlags.Ephemeral);
-  expect(reply.content).toContain("Step 1 of 7");
-  expect(reply.content).toContain("Pick the channels Humanify should use");
-  expect(reply.content).toContain("<#channel_alerts>");
-  expect(reply.content).toContain("<@&role_verified_human>");
+  expect(reply.flags).toBe(MessageFlags.Ephemeral | MessageFlags.IsComponentsV2);
+  const replyText = extractDiscordMessageText(reply);
+  expect(replyText).toContain("Step 1 of 7");
+  expect(replyText).toContain("Pick the channels Humanify should use");
+  expect(replyText).toContain("<#channel_alerts>");
+  expect(replyText).toContain("<@&role_verified_human>");
   expect(parseSetupFlowCustomId(findCustomId(reply, (customId) => parseSetupFlowCustomId(customId).action === "next"))).toMatchObject({
     action: "next",
     guildId: "guild_123",
@@ -825,6 +873,7 @@ test("humanify setup saves the guided selections through the real guild config r
         };
       },
     }),
+    verifierBaseUrl: "http://127.0.0.1:3212",
   });
 
   await handler(
@@ -923,12 +972,12 @@ test("humanify setup saves the guided selections through the real guild config r
   ]);
 
   expect(updates).not.toHaveLength(0);
-  expect(latest.content).toContain("Setup saved");
-  expect(latest.content).toContain("<#channel_alerts_live>");
-  expect(latest.content).toContain("Only prove nationality");
-  expect(latest.content).toContain("Face check required: Yes");
-  expect(latest.content).toContain("<@&role_verified_human_live>");
-  expect(latest.components).toEqual([]);
+  const latestText = extractDiscordMessageText(latest as { components?: readonly unknown[]; content?: string });
+  expect(latestText).toContain("Setup saved");
+  expect(latestText).toContain("<#channel_alerts_live>");
+  expect(latestText).toContain("Only prove nationality");
+  expect(latestText).toContain("Face check required: Yes");
+  expect(latestText).toContain("<@&role_verified_human_live>");
 });
 
 test("humanify panel posts a reusable verification button and clicking it returns a verifier link", async () => {
@@ -1013,12 +1062,12 @@ test("humanify panel posts a reusable verification button and clicking it return
 
   expect(postedMessages).toHaveLength(1);
   const postedMessage = postedMessages[0] as {
-    components: Array<{ toJSON(): { components: Array<{ custom_id?: string }> } }>;
-    content: string;
+    components: readonly unknown[];
   };
-  expect(postedMessage.content).toContain("Humanify verification");
-  expect(postedMessage.content).toContain("<@&role_verified_human>");
-  const panelButtonId = postedMessage.components[0].toJSON().components[0].custom_id!;
+  const postedMessageText = extractDiscordMessageText(postedMessage);
+  expect(postedMessageText).toContain("Humanify verification");
+  expect(postedMessageText).toContain("<@&role_verified_human>");
+  const panelButtonId = findCustomId(postedMessage, (candidate) => candidate.includes("verification_panel"));
 
   await handler(
     createComponentInteraction({
@@ -1041,9 +1090,10 @@ test("humanify panel posts a reusable verification button and clicking it return
       guildId: "guild_123",
     },
   ]);
-  expect((replies[1] as { content: string }).content).toContain("http://127.0.0.1:3212/verify");
-  expect((replies[1] as { content: string }).content).toContain("sessionId=session_123");
-  expect((replies[1] as { content: string }).content).toContain("token=challenge_token_123");
+  const verificationReplyText = extractDiscordMessageText(replies[1] as { components?: readonly unknown[]; content?: string });
+  expect(verificationReplyText).toContain("http://127.0.0.1:3212/verify");
+  expect(verificationReplyText).toContain("sessionId=session_123");
+  expect(verificationReplyText).toContain("token=challenge_token_123");
 });
 
 test("humanify setup truncates oversized bundle labels and summaries before rendering Discord select menus", async () => {
@@ -1150,9 +1200,17 @@ test("humanify setup truncates oversized bundle labels and summaries before rend
   await runComponent({ action: "next", kind: "button" });
 
   expect(updates).not.toHaveLength(0);
-  const bundleSelect = latest.components[0]!.toJSON().components?.[0] as {
-    options?: Array<{ description?: string; label?: string }>;
-  };
+  let bundleSelect:
+    | {
+      options?: Array<{ description?: string; label?: string }>;
+    }
+    | undefined;
+  walkDiscordComponents(latest.components, (component) => {
+    if (!bundleSelect && Array.isArray(component.options)) {
+      bundleSelect = component as typeof bundleSelect;
+    }
+  });
+
   expect(bundleSelect.options?.[0]?.label?.length).toBeLessThanOrEqual(100);
   expect(bundleSelect.options?.[0]?.description?.length).toBeLessThanOrEqual(100);
   expect(bundleSelect.options?.[0]?.label?.endsWith("…")).toBe(true);
@@ -1195,12 +1253,11 @@ test("case open refuses members who are not trusted moderators", async () => {
     }),
   );
 
-  expect(replies).toEqual([
-    expect.objectContaining({
-      content: "Only trusted moderators can open cases or verify other members.",
-      flags: MessageFlags.Ephemeral,
-    }),
-  ]);
+  expect(replies).toHaveLength(1);
+  expect((replies[0] as { flags: number }).flags).toBe(MessageFlags.Ephemeral | MessageFlags.IsComponentsV2);
+  expect(extractDiscordMessageText(replies[0] as { components?: readonly unknown[]; content?: string })).toContain(
+    "Only trusted moderators can open cases or verify other members.",
+  );
 });
 
 test("scan queues a durable single-member scan for trusted moderators", async () => {
@@ -1226,6 +1283,7 @@ test("scan queues a durable single-member scan for trusted moderators", async ()
             },
             status: "pending",
             summary: {
+              highestObservedScore: 0,
               notes: [],
               processedMemberCount: 0,
               suspiciousFindings: [],
@@ -1262,12 +1320,11 @@ test("scan queues a durable single-member scan for trusted moderators", async ()
     },
     guildId: "guild_123",
   }]);
-  expect(replies).toEqual([
-    expect.objectContaining({
-      content: expect.stringContaining("scan_request_123"),
-      flags: MessageFlags.Ephemeral,
-    }),
-  ]);
+  expect(replies).toHaveLength(1);
+  expect((replies[0] as { flags: number }).flags).toBe(MessageFlags.Ephemeral | MessageFlags.IsComponentsV2);
+  expect(extractDiscordMessageText(replies[0] as { components?: readonly unknown[]; content?: string })).toContain(
+    "scan_request_123",
+  );
 });
 
 test("scan-all stays admin-only and queues a full-guild scan", async () => {
@@ -1293,6 +1350,7 @@ test("scan-all stays admin-only and queues a full-guild scan", async () => {
             },
             status: "pending",
             summary: {
+              highestObservedScore: 0,
               notes: [],
               processedMemberCount: 0,
               suspiciousFindings: [],
@@ -1323,12 +1381,11 @@ test("scan-all stays admin-only and queues a full-guild scan", async () => {
     },
     guildId: "guild_123",
   }]);
-  expect(replies).toEqual([
-    expect.objectContaining({
-      content: expect.stringContaining("full-server scan"),
-      flags: MessageFlags.Ephemeral,
-    }),
-  ]);
+  expect(replies).toHaveLength(1);
+  expect((replies[0] as { flags: number }).flags).toBe(MessageFlags.Ephemeral | MessageFlags.IsComponentsV2);
+  expect(extractDiscordMessageText(replies[0] as { components?: readonly unknown[]; content?: string })).toContain(
+    "full-server scan",
+  );
 });
 
 test("scan-all refuses moderators who are not admins", async () => {
@@ -1352,12 +1409,11 @@ test("scan-all refuses moderators who are not admins", async () => {
     }),
   );
 
-  expect(replies).toEqual([
-    expect.objectContaining({
-      content: "Only server admins can run Humanify setup.",
-      flags: MessageFlags.Ephemeral,
-    }),
-  ]);
+  expect(replies).toHaveLength(1);
+  expect((replies[0] as { flags: number }).flags).toBe(MessageFlags.Ephemeral | MessageFlags.IsComponentsV2);
+  expect(extractDiscordMessageText(replies[0] as { components?: readonly unknown[]; content?: string })).toContain(
+    "Only server admins can run Humanify setup.",
+  );
 });
 
 test("verify allows members to start verification for themselves", async () => {
@@ -1386,6 +1442,7 @@ test("verify allows members to start verification for themselves", async () => {
         };
       },
     }),
+    verifierBaseUrl: "http://127.0.0.1:3212",
   });
 
   await handler(
@@ -1414,12 +1471,12 @@ test("verify allows members to start verification for themselves", async () => {
       guildId: "guild_123",
     },
   ]);
-  expect(replies).toEqual([
-    expect.objectContaining({
-      content: expect.stringContaining("session_123"),
-      flags: MessageFlags.Ephemeral,
-    }),
-  ]);
+  expect(replies).toHaveLength(1);
+  expect((replies[0] as { flags: number }).flags).toBe(MessageFlags.Ephemeral | MessageFlags.IsComponentsV2);
+  const verifyReplyText = extractDiscordMessageText(replies[0] as { components?: readonly unknown[]; content?: string });
+  expect(verifyReplyText).toContain("http://127.0.0.1:3212/verify");
+  expect(verifyReplyText).toContain("sessionId=session_123");
+  expect(verifyReplyText).toContain("token=challenge_123");
 });
 
 test("verify refuses members who try to start verification for someone else without trusted moderator permission", async () => {
@@ -1454,12 +1511,11 @@ test("verify refuses members who try to start verification for someone else with
     }),
   );
 
-  expect(replies).toEqual([
-    expect.objectContaining({
-      content: "Only trusted moderators can open cases or verify other members.",
-      flags: MessageFlags.Ephemeral,
-    }),
-  ]);
+  expect(replies).toHaveLength(1);
+  expect((replies[0] as { flags: number }).flags).toBe(MessageFlags.Ephemeral | MessageFlags.IsComponentsV2);
+  expect(extractDiscordMessageText(replies[0] as { components?: readonly unknown[]; content?: string })).toContain(
+    "Only trusted moderators can open cases or verify other members.",
+  );
 });
 
 test("message context intake opens a report and then attaches canonical Discord message evidence", async () => {
@@ -1553,12 +1609,11 @@ test("message context intake opens a report and then attaches canonical Discord 
       guildId: "guild_123",
     },
   ]);
-  expect(replies).toEqual([
-    expect.objectContaining({
-      content: expect.stringContaining("Moderator warning updated in <#channel_alerts>."),
-      flags: MessageFlags.Ephemeral,
-    }),
-  ]);
+  expect(replies).toHaveLength(1);
+  expect((replies[0] as { flags: number }).flags).toBe(MessageFlags.Ephemeral | MessageFlags.IsComponentsV2);
+  expect(extractDiscordMessageText(replies[0] as { components?: readonly unknown[]; content?: string })).toContain(
+    "Moderator warning updated in <#channel_alerts>.",
+  );
 });
 
 test("verification shortcut refreshes the advisory warning card for the linked case", async () => {
@@ -1586,6 +1641,7 @@ test("verification shortcut refreshes the advisory warning card for the linked c
         status: "updated",
       };
     },
+    verifierBaseUrl: "http://127.0.0.1:3212",
   });
 
   await handler(
@@ -1610,12 +1666,12 @@ test("verification shortcut refreshes the advisory warning card for the linked c
       guildId: "guild_123",
     },
   ]);
-  expect(replies).toEqual([
-    expect.objectContaining({
-      content: expect.stringContaining("Moderator warning updated in <#channel_alerts>."),
-      flags: MessageFlags.Ephemeral,
-    }),
-  ]);
+  expect(replies).toHaveLength(1);
+  expect((replies[0] as { flags: number }).flags).toBe(MessageFlags.Ephemeral | MessageFlags.IsComponentsV2);
+  const shortcutReplyText = extractDiscordMessageText(replies[0] as { components?: readonly unknown[]; content?: string });
+  expect(shortcutReplyText).toContain("Moderator warning updated in <#channel_alerts>.");
+  expect(shortcutReplyText).toContain("http://127.0.0.1:3212/verify");
+  expect(shortcutReplyText).toContain("sessionId=session_123");
 });
 
 test("warning-card sync posts a new advisory message and persists the canonical alert ref", async () => {
@@ -1694,10 +1750,20 @@ test("warning-card sync posts a new advisory message and persists the canonical 
       kind: "send",
     }),
   ]);
-  expect((calls[0] as { content: string }).content).toContain("Case: `case_123`");
-  expect((calls[0] as { content: string }).content).toContain("Suspected user: <@user_123> (`user_123`)");
-  expect((calls[0] as { content: string }).content).toContain("Evidence: 1 linked item.");
-  expect((calls[0] as { content: string }).content).toContain("Advisory only");
+  const postedWarningText = extractDiscordMessageText((calls[0] as { payload: { components?: readonly unknown[] } }).payload);
+  expect(postedWarningText).toContain("Humanify advisory warning");
+  expect(postedWarningText).toContain("Suspected user:** <@user_123> (`user_123`)");
+  expect(postedWarningText).toContain("1 linked item");
+  expect(postedWarningText).toContain("Advisory only");
+  const warningActionId = findCustomId(
+    (calls[0] as { payload: { components?: readonly unknown[] } }).payload,
+    (candidate) => candidate.includes("verification_start"),
+  );
+  expect(parseComponentCustomId(warningActionId)).toMatchObject({
+    entityId: "case_123~user_123",
+    guildId: "guild_123",
+    kind: "verification_start",
+  });
   expect(result).toEqual({
     note: "Moderator warning posted in <#channel_alerts> for case case_123.",
     status: "posted",
@@ -1789,9 +1855,10 @@ test("warning-card sync edits the persisted advisory message instead of repostin
       messageId: "message_alert_123",
     }),
   ]);
-  expect((calls[0] as { content: string }).content).toContain("Verification: passed via didit.");
-  expect((calls[0] as { content: string }).content).toContain("Reusable proof handoff: issuer_handoff_required via privado.");
-  expect((calls[0] as { content: string }).content).toContain("Face check: passed.");
+  const editedWarningText = extractDiscordMessageText((calls[0] as { payload: { components?: readonly unknown[] } }).payload);
+  expect(editedWarningText).toContain("State: passed via didit.");
+  expect(editedWarningText).toContain("issuer_handoff_required via privado.");
+  expect(editedWarningText).toContain("Passed.");
   expect(apiCalls).toEqual([
     {
       body: {
@@ -1960,17 +2027,57 @@ test("passive guild-member detector opens an advisory case for very new accounts
     expect.objectContaining({
       intakeSource: "detector_bridge",
       openCase: true,
-      reportReason: "Automatic detector bridge flagged a very new Discord account joining the server.",
-      reporterNotes: "Reason codes: account_age_lt_24h",
+      reportReason: "Automatic detector bridge assigned advisory member-scan score 8/10 to a very new Discord account joining the server.",
+      reporterNotes: "Advisory member-scan score: 8/10. Case-open threshold: 4/10. Reason codes: account_age_lt_24h, profile_missing_avatar",
       reporterUserId: "bot_123",
       subjectUserId: "user_123",
-      triggerFingerprint: "guild-member-add:guild_123:user_123:account_age_lt_24h",
+      triggerFingerprint: "guild-member-add:guild_123:user_123:account_age_lt_24h+profile_missing_avatar",
     }),
   ]);
   expect(warningSyncInputs).toEqual([
     expect.objectContaining({
       caseId: "case_join_123",
       guildId: "guild_123",
+    }),
+  ]);
+});
+
+test("passive guild-member detector uses the weighted advisory score for sparse synthetic profiles", async () => {
+  const reports: Array<Record<string, unknown>> = [];
+  const handler = createPassiveEventHandler({
+    apiClient: createTestApiClient({
+      createReport: async (_guildId, body) => {
+        reports.push(body as unknown as Record<string, unknown>);
+        return {
+          persistence: "persisted",
+          report: {
+            caseId: "case_join_sparse_123",
+            reportId: "report_join_sparse_123",
+          },
+        };
+      },
+    }),
+    botActorUserId: "bot_123",
+    enableMemberJoinSignals: true,
+    enableMessageSignals: false,
+    messageRuntime: createPassiveWarningRuntime(),
+    now: () => Date.UTC(2026, 3, 27, 15, 17, 10),
+  });
+
+  await handler.handleGuildMemberAdd(
+    createGuildMemberAddEvent({
+      accountCreatedAt: Date.UTC(2025, 9, 3, 0, 30, 23),
+      avatar: null,
+      userId: "1423467182293258252",
+      username: "yeusepetest_69399",
+    }),
+  );
+
+  expect(reports).toEqual([
+    expect.objectContaining({
+      reportReason: "Automatic detector bridge assigned advisory member-scan score 4/10 to a sparse Discord profile with a synthetic-looking test handle.",
+      reporterNotes: "Advisory member-scan score: 4/10. Case-open threshold: 4/10. Reason codes: profile_missing_avatar, profile_test_handle_pattern",
+      triggerFingerprint: "guild-member-add:guild_123:1423467182293258252:profile_missing_avatar+profile_test_handle_pattern",
     }),
   ]);
 });

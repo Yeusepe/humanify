@@ -14,6 +14,8 @@
  * - tooling/dev-stack.test.ts
  */
 
+import { readFileSync } from "node:fs";
+
 import { expect, test } from "bun:test";
 
 import {
@@ -35,6 +37,20 @@ test("dev stack includes Docker Compose orchestration metadata", () => {
       name: "@humanify/db migrate",
     },
   ]);
+});
+
+test("local compose keeps Temporal on a supported SQL driver", () => {
+  const composeContents = readFileSync("docker-compose.local.yml", "utf8");
+
+  expect(composeContents).toContain("DB: postgres12");
+  expect(composeContents).not.toContain("DB: postgresql");
+});
+
+test("local compose points Temporal at a real in-image dynamic config file", () => {
+  const composeContents = readFileSync("docker-compose.local.yml", "utf8");
+
+  expect(composeContents).toContain("DYNAMIC_CONFIG_FILE_PATH: /etc/temporal/config/dynamicconfig/docker.yaml");
+  expect(composeContents).not.toContain("development-sql.yaml");
 });
 
 test("dev stack includes all local services and UI surfaces", () => {

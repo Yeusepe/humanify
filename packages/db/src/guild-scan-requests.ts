@@ -58,12 +58,14 @@ export type GuildScanRequestStatus = "claimed" | "completed" | "failed" | "pendi
 
 export type GuildScanRequestSummary = {
   completedAt?: string;
+  highestObservedScore: number;
   lastScannedUserId?: string;
   notes: string[];
   processedMemberCount: number;
   suspiciousFindings: Array<{
     caseId?: string;
     reasonCodes: string[];
+    score: number;
     userId: string;
   }>;
   suspiciousMemberCount: number;
@@ -165,12 +167,14 @@ function toIsoString(value: string | Date | null | undefined) {
 function normalizeSummary(summary: GuildScanRequestSummary | null | undefined): GuildScanRequestSummary {
   return {
     completedAt: summary?.completedAt,
+    highestObservedScore: summary?.highestObservedScore ?? 0,
     lastScannedUserId: summary?.lastScannedUserId,
     notes: [...(summary?.notes ?? [])],
     processedMemberCount: summary?.processedMemberCount ?? 0,
     suspiciousFindings: (summary?.suspiciousFindings ?? []).map((finding) => ({
       caseId: finding.caseId,
       reasonCodes: [...finding.reasonCodes],
+      score: finding.score,
       userId: finding.userId,
     })),
     suspiciousMemberCount: summary?.suspiciousMemberCount ?? 0,

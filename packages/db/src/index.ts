@@ -22,24 +22,24 @@
 
 export {
   createPostgresGuildChannelConfigRepository,
-} from "./guild-channel-config";
+} from "./guild-channel-config.ts";
 export type {
   GuildChannelConfigRecord,
   GuildChannelConfigRepository,
   PersistedGuildChannelConfigResult,
-} from "./guild-channel-config";
+} from "./guild-channel-config.ts";
 export {
   createPostgresGuildVerificationConfigRepository,
-} from "./guild-verification-config";
+} from "./guild-verification-config.ts";
 export type {
   GuildVerificationConfigRecord,
   GuildVerificationConfigRepository,
   PersistedGuildVerificationConfigResult,
   VerificationRoleGrantBinding,
-} from "./guild-verification-config";
+} from "./guild-verification-config.ts";
 export {
   createPostgresGuildScanRequestRepository,
-} from "./guild-scan-requests";
+} from "./guild-scan-requests.ts";
 export type {
   GuildScanRequestRecord,
   GuildScanRequestRepository,
@@ -47,7 +47,7 @@ export type {
   GuildScanRequestStatus,
   GuildScanRequestSummary,
   PersistedGuildScanRequestResult,
-} from "./guild-scan-requests";
+} from "./guild-scan-requests.ts";
 export {
   createDatabaseConfigFromEnv,
   getConnectionTarget,
@@ -55,26 +55,26 @@ export {
   getMigrationDirectoryPath,
   getMigrationStatus,
   migrateDatabase,
-} from "./migrator";
+} from "./migrator.ts";
 export type {
   AppliedMigration,
   DatabaseConfig,
   DiscoveredMigration,
   MigrationResult,
   MigrationStatus,
-} from "./migrator";
+} from "./migrator.ts";
 export {
   createPostgresModeratorWarningCardsRepository,
-} from "./moderator-warning-cards";
+} from "./moderator-warning-cards.ts";
 export type {
   ModeratorWarningAlertMessageRef,
   ModeratorWarningCard,
   ModeratorWarningCardsRepository,
   PersistedModeratorWarningAlertMessageRefResult,
-} from "./moderator-warning-cards";
+} from "./moderator-warning-cards.ts";
 export {
   createPostgresReportCasesRepository,
-} from "./reports-cases";
+} from "./reports-cases.ts";
 export type {
   AppliedLearningResult,
   CaseOutcomeKind,
@@ -88,14 +88,14 @@ export type {
   PersistedReportResult,
   RiskQueueItem,
   ReportCasesRepository,
-} from "./reports-cases";
-export { createPostgresVerificationSessionsRepository } from "./verification-sessions";
+} from "./reports-cases.ts";
+export { createPostgresVerificationSessionsRepository } from "./verification-sessions.ts";
 export type {
   VerificationSessionRecord,
   VerificationSessionReleaseResult,
   VerificationSessionState,
   VerificationSessionsRepository,
-} from "./verification-sessions";
+} from "./verification-sessions.ts";
 
 export type CanonicalMutation = {
   dataRef: string;

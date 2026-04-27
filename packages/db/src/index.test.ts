@@ -76,3 +76,20 @@ test("canonical write plans preserve outbox events after postgres commit", () =>
   expect(plan.commitOrder).toEqual(["postgres", "outbox", "redis-streams"]);
   expect(plan.outbox[0]?.kind).toBe("guild.policy.updated");
 });
+
+test("the db package can be imported by the Node-based scan worker runtime", () => {
+  const result = Bun.spawnSync([
+    "node",
+    "--input-type=module",
+    "--experimental-strip-types",
+    "-e",
+    "const mod = await import('./packages/db/src/index.ts'); console.log(typeof mod.createPostgresGuildScanRequestRepository);",
+  ], {
+    cwd: process.cwd(),
+    stderr: "pipe",
+    stdout: "pipe",
+  });
+
+  expect(result.exitCode).toBe(0);
+  expect(Buffer.from(result.stdout).toString("utf8").trim()).toBe("function");
+});
