@@ -49,6 +49,8 @@ test("overview renders the moderation dashboard framing", async () => {
   expect(markup).toContain("Moderation command center");
   expect(markup).toContain("Pending projections");
   expect(markup).toContain("Bun authoritative");
+  expect(markup).toContain("Operator navigation");
+  expect(markup).toContain("Owner visibility");
 });
 
 test("cases query plan keeps list and detail boundaries honest", () => {

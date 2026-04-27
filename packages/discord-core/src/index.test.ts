@@ -50,6 +50,7 @@ test("component IDs round-trip through the shared discord-core format", () => {
     entityId: "case_123",
     guildId: "guild_123",
     kind: "review",
+    version: 1,
   });
 
   expect(parseComponentCustomId(customId)).toEqual({
@@ -58,6 +59,42 @@ test("component IDs round-trip through the shared discord-core format", () => {
     kind: "review",
     version: 1,
   });
+});
+
+test("verification shortcut component IDs stay within Discord's 100 character limit", () => {
+  const entityId = "a0147b1e-82db-4418-aed0-15a5f0786c27~1423467182293258252";
+  const customId = buildComponentCustomId({
+    entityId,
+    guildId: "1422780738331213867",
+    kind: "verification_start",
+  });
+
+  expect(customId.length).toBeLessThanOrEqual(100);
+  expect(parseComponentCustomId(customId)).toMatchObject({
+    entityId,
+    guildId: "1422780738331213867",
+    kind: "verification_start",
+  });
+});
+
+test("component ID parser remains backward compatible with legacy verbose IDs", () => {
+  const legacyCustomId =
+    "humanify:v1:verification_start:1422780738331213867:a0147b1e-82db-4418-aed0-15a5f0786c27~1423467182293258252";
+
+  expect(parseComponentCustomId(legacyCustomId)).toEqual({
+    entityId: "a0147b1e-82db-4418-aed0-15a5f0786c27~1423467182293258252",
+    guildId: "1422780738331213867",
+    kind: "verification_start",
+    version: 1,
+  });
+});
+
+test("v2 component IDs fail fast when a kind is missing a compact identifier", () => {
+  expect(() => buildComponentCustomId({
+    entityId: "case_123",
+    guildId: "guild_123",
+    kind: "review",
+  })).toThrow('Humanify component kind "review" is missing a compact v2 identifier.');
 });
 
 test("setup flow component IDs round-trip through the setup-scoped helper", () => {
@@ -71,7 +108,7 @@ test("setup flow component IDs round-trip through the setup-scoped helper", () =
     action: "next",
     draftId: "draft_123",
     guildId: "guild_123",
-    version: 1,
+    version: 2,
   });
 });
 

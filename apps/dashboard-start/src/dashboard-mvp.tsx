@@ -524,27 +524,59 @@ function DashboardLayout({
           variant: "tertiary",
         },
       ]}
+      sidebar={
+        <div className="flex h-full flex-col gap-5">
+          <div className="space-y-3">
+            <p className="text-sm font-semibold tracking-[0.16em] text-muted uppercase">Operator navigation</p>
+            <div className="grid gap-2">
+              {dashboardSections.map((section) => (
+                <Link
+                  className={`rounded-2xl border px-4 py-3 transition duration-200 motion-safe:hover:-translate-y-0.5 ${statusClassName(
+                    currentPath === section.href,
+                  )}`}
+                  key={section.href}
+                  to={section.href}
+                >
+                  <p className="text-sm font-semibold tracking-tight">{section.title}</p>
+                  <p className="mt-1 text-sm leading-6">{section.description}</p>
+                </Link>
+              ))}
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <p className="text-sm font-semibold tracking-[0.16em] text-muted uppercase">System boundaries</p>
+            <div className="grid gap-2">
+              {safetyBoundaries.map((boundary) => (
+                <div
+                  className="rounded-2xl border border-white/10 bg-content2/80 px-4 py-3 text-sm font-medium text-foreground"
+                  key={boundary}
+                >
+                  {boundary}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      }
+      sidebarDescription="One owner-facing workspace for queue posture, verification policy, and execution boundaries. Read states stay explicit so operators can trust what they are seeing."
+      sidebarTitle="Moderation command center"
       title="Moderation command center"
     >
       <div className="space-y-6">
-        <Card className="border border-white/10 bg-content2/55 shadow-[0_18px_44px_rgba(3,7,18,0.24)]" variant="secondary">
-          <Card.Header className="gap-3">
-            <Card.Title>{sectionTitle}</Card.Title>
-            <Card.Description>{sectionDescription}</Card.Description>
-          </Card.Header>
-          <Card.Content className="grid gap-3 md:grid-cols-4">
-            {dashboardSections.map((section) => (
-              <Link
-                className={`rounded-3xl border px-4 py-3 transition ${statusClassName(currentPath === section.href)}`}
-                key={section.href}
-                to={section.href}
-              >
-                <p className="text-sm font-semibold tracking-tight">{section.title}</p>
-                <p className="mt-1 text-sm leading-6">{section.description}</p>
-              </Link>
-            ))}
-          </Card.Content>
-        </Card>
+        <div className="rounded-[28px] border border-white/10 bg-content1/88 px-5 py-5 shadow-[0_18px_48px_rgba(3,7,18,0.2)] backdrop-blur-xl md:px-6">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+            <div className="space-y-2">
+              <p className="text-sm font-semibold tracking-[0.16em] text-accent uppercase">{sectionTitle}</p>
+              <p className="max-w-3xl text-sm leading-7 text-muted">{sectionDescription}</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <StatusText>Owner visibility</StatusText>
+              <StatusText>Read-honest UI</StatusText>
+              <StatusText>Projection safe</StatusText>
+            </div>
+          </div>
+        </div>
 
         {children}
       </div>

@@ -73,6 +73,14 @@ test("verification search parsing only keeps meaningful signed-link fields", () 
   expect(hasVerificationLink(parsed)).toBe(true);
 });
 
+test("verifier home renders the member-facing session framing", async () => {
+  const markup = await renderRoute("/");
+
+  expect(markup).toContain("Secure verification");
+  expect(markup).toContain("Session journey");
+  expect(markup).toContain("Trust boundary");
+});
+
 test("verifier flow defaults to the local Bun API port unless configured", () => {
   expect(getVerifierApiBaseUrl()).toBe("http://127.0.0.1:3211");
   expect(getVerifierApiBaseUrl({ VITE_HUMANIFY_API_BASE_URL: "https://api.humanify.test/" })).toBe(

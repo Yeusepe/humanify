@@ -15,8 +15,11 @@
 
 import { expect, test } from "bun:test";
 
+import { parseComponentCustomId } from "@humanify/discord-core";
+
 import { createScanActivities } from "./activities";
 import { buildTemporalWorkflowId } from "./index";
+import { buildModeratorWarningCardContent } from "./moderator-warning";
 import { createEmptyScanSummary, discordSnowflakeToTimestamp, mergeScanSummary, processMemberScanCandidate } from "./scan-runtime";
 
 function toComponentJson(component: unknown): Record<string, unknown> {
@@ -44,6 +47,48 @@ function extractDiscordMessageText(payload: { components?: readonly unknown[] })
 
   walk(payload.components);
   return lines.join("\n");
+}
+
+function walkDiscordComponents(
+  components: readonly unknown[] | undefined,
+  visitor: (component: Record<string, unknown>) => void,
+) {
+  for (const component of components ?? []) {
+    const json = toComponentJson(component);
+    visitor(json);
+
+    if (Array.isArray(json.components)) {
+      walkDiscordComponents(json.components, visitor);
+    }
+  }
+}
+
+function findCustomId(payload: {
+  components?: readonly unknown[];
+}, matcher: (customId: string) => boolean) {
+  let match: string | undefined;
+  walkDiscordComponents(payload.components, (component) => {
+    const customId = typeof component.custom_id === "string" ? component.custom_id : undefined;
+    if (!match && customId && matcher(customId)) {
+      match = customId;
+    }
+  });
+
+  if (match) {
+    return match;
+  }
+
+  throw new Error("Expected component custom ID was not found.");
+}
+
+function assertDiscordPayloadWithinLimits(payload: {
+  components?: readonly unknown[];
+}) {
+  walkDiscordComponents(payload.components, (component) => {
+    if (typeof component.custom_id === "string" && component.custom_id.length > 100) {
+      throw new Error(`custom_id exceeded Discord's limit: ${component.custom_id.length}`);
+    }
+  });
 }
 
 test("Temporal workflow ids stay stable for the canonical scan request id", () => {
@@ -157,6 +202,54 @@ test("processing a suspicious member opens a canonical report and syncs the mode
       userId: "user_123",
     }],
     suspiciousMemberCount: 1,
+  });
+});
+
+test("warning-card payload keeps verification shortcuts within Discord component limits", () => {
+  const payload = buildModeratorWarningCardContent("1422780738331213867", {
+    alertMessageRef: {
+      channelId: "channel_alerts",
+      messageId: "message_alert_123",
+      messageState: "active",
+    },
+    case: {
+      caseId: "a0147b1e-82db-4418-aed0-15a5f0786c27",
+      reason: "Potentially automated account with prior moderator concern.",
+      severity: 4,
+      status: "open",
+      subjectUserId: "1423467182293258252",
+    },
+    evidenceSummary: {
+      evidenceCount: 1,
+      latestEvidence: {
+        messagePreview: "Claim your free Nitro gift now",
+      },
+    },
+    faceCheck: undefined,
+    reportsSummary: {
+      latestReportReason: "fake Nitro lure",
+      reportCount: 1,
+      reporterCount: 1,
+    },
+    reusableCredentialBridge: undefined,
+    verification: {
+      caseLinkage: "case_linked",
+      providerId: "didit",
+      providerStatus: "approved",
+      state: "released",
+      summary: {
+        satisfiedClaims: ["age_over_18"],
+      },
+    },
+  });
+
+  assertDiscordPayloadWithinLimits(payload);
+  const actionId = findCustomId(payload, (customId) => customId.includes("verification") || customId.includes("vs"));
+
+  expect(parseComponentCustomId(actionId)).toMatchObject({
+    entityId: "a0147b1e-82db-4418-aed0-15a5f0786c27~1423467182293258252",
+    guildId: "1422780738331213867",
+    kind: "verification_start",
   });
 });
 

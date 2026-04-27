@@ -107,6 +107,44 @@ export const humanifyTrustedModeratorPermissionFlags = [
   PermissionFlagsBits.ManageRoles,
 ] as const;
 
+const discordComponentCustomIdMaxLength = 100;
+
+const compactComponentKindByKind = {
+  setup_flow: "sf",
+  verification_panel: "vp",
+  verification_start: "vs",
+} as const satisfies Record<string, string>;
+
+const compactComponentKindToKind = Object.fromEntries(
+  Object.entries(compactComponentKindByKind).map(([kind, compact]) => [compact, kind]),
+) as Record<string, string>;
+
+function encodeComponentKind(kind: string, version: number) {
+  if (version < 2) {
+    return kind;
+  }
+
+  const encodedKind = compactComponentKindByKind[kind as keyof typeof compactComponentKindByKind];
+  if (!encodedKind) {
+    throw new Error(`Humanify component kind "${kind}" is missing a compact v${version} identifier.`);
+  }
+
+  return encodedKind;
+}
+
+function decodeComponentKind(encodedKind: string, version: number) {
+  if (version < 2) {
+    return encodedKind;
+  }
+
+  const kind = compactComponentKindToKind[encodedKind];
+  if (!kind) {
+    throw new Error(`Humanify component ID uses unknown compact v${version} kind "${encodedKind}".`);
+  }
+
+  return kind;
+}
+
 function createPermissionsBitField(memberPermissions: MemberPermissionsLike) {
   return memberPermissions ? new PermissionsBitField(memberPermissions) : null;
 }
@@ -330,20 +368,35 @@ export function buildComponentCustomId(input: {
   kind: string;
   version?: number;
 }) {
-  return `humanify:v${input.version ?? 1}:${input.kind}:${input.guildId}:${input.entityId}`;
+  const version = input.version ?? 2;
+  const encodedKind = encodeComponentKind(input.kind, version);
+  const customId = `humanify:v${version}:${encodedKind}:${input.guildId}:${input.entityId}`;
+  if (customId.length > discordComponentCustomIdMaxLength) {
+    throw new Error(
+      `Humanify component custom ID exceeded Discord's ${discordComponentCustomIdMaxLength} character limit for ${input.kind}.`,
+    );
+  }
+
+  return customId;
 }
 
 export function parseComponentCustomId(customId: string) {
-  const [prefix, version, kind, guildId, entityId] = customId.split(":");
-  if (prefix !== "humanify" || !version?.startsWith("v") || !kind || !guildId || !entityId) {
+  const [prefix, versionToken, encodedKind, guildId, ...entityParts] = customId.split(":");
+  const entityId = entityParts.join(":");
+  if (prefix !== "humanify" || !versionToken?.startsWith("v") || !encodedKind || !guildId || !entityId) {
+    throw new Error("Component custom ID is not a Humanify identifier.");
+  }
+
+  const version = Number.parseInt(versionToken.slice(1), 10);
+  if (!Number.isFinite(version)) {
     throw new Error("Component custom ID is not a Humanify identifier.");
   }
 
   return {
     entityId,
     guildId,
-    kind,
-    version: Number.parseInt(version.slice(1), 10),
+    kind: decodeComponentKind(encodedKind, version),
+    version,
   };
 }
 

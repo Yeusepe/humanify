@@ -411,9 +411,11 @@ function createWarningRuntime(overrides: Partial<ModeratorWarningMessageRuntime>
         calls.push({ channelId, kind: "delete", messageId });
       },
       async editMessage(channelId, messageId, payload) {
+        assertDiscordPayloadWithinLimits(payload as { components?: readonly unknown[]; content?: string });
         calls.push({ channelId, kind: "edit", messageId, payload });
       },
       async sendMessage(channelId, payload) {
+        assertDiscordPayloadWithinLimits(payload as { components?: readonly unknown[]; content?: string });
         calls.push({ channelId, kind: "send", payload });
         return {
           messageId: "message_alert_123",
@@ -591,7 +593,7 @@ test("report command routes moderator intake through the report API and offers a
     components: readonly unknown[];
     flags: number;
   };
-  const customId = findCustomId(reply, (candidate) => candidate.includes("verification_start"));
+  const customId = findCustomId(reply, (candidate) => parseComponentCustomId(candidate).kind === "verification_start");
   const replyText = extractDiscordMessageText(reply);
 
   expect(reply.flags).toBe(MessageFlags.Ephemeral | MessageFlags.IsComponentsV2);
@@ -1099,7 +1101,7 @@ test("humanify panel posts a reusable verification button and clicking it return
   const postedMessageText = extractDiscordMessageText(postedMessage);
   expect(postedMessageText).toContain("Humanify verification");
   expect(postedMessageText).toContain("<@&role_verified_human>");
-  const panelButtonId = findCustomId(postedMessage, (candidate) => candidate.includes("verification_panel"));
+  const panelButtonId = findCustomId(postedMessage, (candidate) => parseComponentCustomId(candidate).kind === "verification_panel");
 
   await handler(
     createComponentInteraction({
@@ -1988,7 +1990,7 @@ test("warning-card sync posts a new advisory message and persists the canonical 
   expect(postedWarningText).toContain("Advisory only");
   const warningActionId = findCustomId(
     (calls[0] as { payload: { components?: readonly unknown[] } }).payload,
-    (candidate) => candidate.includes("verification_start"),
+    (candidate) => parseComponentCustomId(candidate).kind === "verification_start",
   );
   expect(parseComponentCustomId(warningActionId)).toMatchObject({
     entityId: "case_123~user_123",
@@ -1997,6 +1999,71 @@ test("warning-card sync posts a new advisory message and persists the canonical 
   });
   expect(result).toEqual({
     note: "Moderator warning posted in <#channel_alerts> for case case_123.",
+    status: "posted",
+  });
+});
+
+test("warning-card sync keeps realistic verification shortcut IDs within Discord limits", async () => {
+  const { calls, runtime } = createWarningRuntime();
+
+  const caseId = "a0147b1e-82db-4418-aed0-15a5f0786c27";
+  const guildId = "1422780738331213867";
+  const subjectUserId = "1423467182293258252";
+
+  const result = await syncModeratorWarningCard({
+    apiClient: createTestApiClient({
+      getCaseWarningCard: async () => createWarningCard({
+        case: {
+          caseId,
+          openedAt: "2026-01-01T00:00:00.000Z",
+          reason: "Potentially automated account with prior moderator concern.",
+          severity: 4,
+          status: "open",
+          subjectUserId,
+        },
+        scope: { caseId, guildId },
+      }),
+      getGuildChannelConfig: async () => ({
+        channelConfig: {
+          guildId,
+          moderatorAlertChannelId: "channel_alerts",
+          source: "persisted",
+        },
+        persistence: "persisted",
+      }),
+      updateWarningCardAlertMessage: async () => ({
+        alertMessageRef: {
+          caseId,
+          channelId: "channel_alerts",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          lastActorService: "bot-bun",
+          messageId: "message_alert_123",
+          messageState: "active",
+          messageUrl: `https://discord.com/channels/${guildId}/channel_alerts/message_alert_123`,
+          subjectUserId,
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+        persistence: "persisted",
+        queueDelivery: "pending_outbox_publish",
+      }),
+    }),
+    caseId,
+    guildId,
+    messageRuntime: runtime,
+  });
+
+  const warningActionId = findCustomId(
+    (calls[0] as { payload: { components?: readonly unknown[] } }).payload,
+    (candidate) => candidate.includes("verification_start") || candidate.includes(":vs:"),
+  );
+  expect(warningActionId.length).toBeLessThanOrEqual(100);
+  expect(parseComponentCustomId(warningActionId)).toMatchObject({
+    entityId: `${caseId}~${subjectUserId}`,
+    guildId,
+    kind: "verification_start",
+  });
+  expect(result).toEqual({
+    note: `Moderator warning posted in <#channel_alerts> for case ${caseId}.`,
     status: "posted",
   });
 });

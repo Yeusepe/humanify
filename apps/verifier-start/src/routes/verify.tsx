@@ -482,6 +482,36 @@ function VerificationRoute() {
           variant: "tertiary",
         },
       ]}
+      sidebar={
+        <div className="space-y-5">
+          <div className="space-y-3">
+            <p className="text-sm font-semibold tracking-[0.16em] text-muted uppercase">Session journey</p>
+            <div className="grid gap-2">
+              {checklist.map((item) => (
+                <div
+                  className="rounded-2xl border border-white/10 bg-content2/80 px-4 py-3"
+                  key={item.title}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm font-medium text-foreground">{item.title}</p>
+                    <StatusBadge status={item.status} />
+                  </div>
+                  <p className="mt-2 text-sm leading-6 text-muted">{item.detail}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <p className="text-sm font-semibold tracking-[0.16em] text-muted uppercase">Trust boundary</p>
+            <div className="rounded-2xl border border-white/10 bg-content2/80 px-4 py-4 text-sm leading-7 text-muted">
+              Proof completion in the browser is informative only. Release stays blocked until Humanify receives and verifies the provider receipt server-side.
+            </div>
+          </div>
+        </div>
+      }
+      sidebarDescription="A guided verification workspace that keeps the next step obvious, the privacy boundary visible, and the release decision on the trusted server path."
+      sidebarTitle="Verification workspace"
       title="Verification workspace"
     >
       <div className="space-y-6">
@@ -991,6 +1021,21 @@ function DetailRow({ label, value }: Readonly<{ label: string; value: string }>)
       <span className="font-medium text-foreground">{label}</span>
       <span className="break-all text-muted">{value}</span>
     </div>
+  );
+}
+
+function StatusBadge({ status }: Readonly<{ status: "blocked" | "complete" | "pending" }>) {
+  const tone =
+    status === "complete"
+      ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-200"
+      : status === "blocked"
+        ? "border-amber-400/20 bg-amber-400/10 text-amber-200"
+        : "border-white/10 bg-white/5 text-muted";
+
+  return (
+    <span className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold tracking-[0.14em] uppercase ${tone}`}>
+      {status}
+    </span>
   );
 }
 

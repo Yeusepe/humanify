@@ -52,6 +52,36 @@ function VerifierHome() {
           variant: "tertiary",
         },
       ]}
+      sidebar={
+        <div className="space-y-5">
+          <div className="space-y-3">
+            <p className="text-sm font-semibold tracking-[0.16em] text-muted uppercase">Session journey</p>
+            <div className="grid gap-2">
+              {[
+                "Open the signed Discord link.",
+                "Review the proof method your server allows.",
+                "Complete the provider step.",
+                "Wait for the Bun-side release decision.",
+              ].map((step, index) => (
+                <div
+                  className="rounded-2xl border border-white/10 bg-content2/80 px-4 py-3 text-sm leading-6 text-foreground"
+                  key={step}
+                >
+                  <span className="mr-2 text-accent">{index + 1}.</span>
+                  {step}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <p className="text-sm font-semibold tracking-[0.16em] text-muted uppercase">Trust boundary</p>
+            <div className="rounded-2xl border border-white/10 bg-content2/80 px-4 py-4 text-sm leading-7 text-muted">
+              Humanify reflects server state, provider eligibility, and release progress. It does not invent a pass result in the browser.
+            </div>
+          </div>
+        </div>
+      }
       title="Secure verification"
     >
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1.15fr)_0.85fr]">
