@@ -17,6 +17,8 @@
 import { expect, test } from "bun:test";
 
 import {
+  assertDevStackBootConfig,
+  createDevStackEnvironment,
   createDevStackPlan,
   isRepoOwnedManagedListener,
   terminateManagedSubprocess,
@@ -154,6 +156,61 @@ test("dev stack derives readiness and preflight ports from env-configured servic
     "http://127.0.0.1:5103/healthz",
     "http://127.0.0.1:5104/healthz",
   ]);
+});
+
+test("dev stack derives API-facing data-plane URLs for child processes from the local port plan", () => {
+  const sourceEnv = {
+    HUMANIFY_POSTGRES_DB: "humanify_dev",
+    HUMANIFY_POSTGRES_PASSWORD: "secret",
+    HUMANIFY_POSTGRES_PORT: "5544",
+    HUMANIFY_POSTGRES_USER: "humanify_app",
+    HUMANIFY_REDIS_PORT: "6380",
+    HUMANIFY_SKIP_BOT: "1",
+  };
+  const plan = createDevStackPlan(sourceEnv);
+  const environment = createDevStackEnvironment(plan, sourceEnv);
+
+  expect(environment.HUMANIFY_POSTGRES_URL).toBe("postgres://humanify_app:secret@127.0.0.1:5544/humanify_dev");
+  expect(environment.HUMANIFY_REDIS_URL).toBe("redis://127.0.0.1:6380");
+});
+
+test("dev stack fails before startup when required Discord OAuth credentials are missing", () => {
+  const sourceEnv = {
+    DISCORD_BOT_TOKEN: "test-token",
+    HUMANIFY_SESSION_SECRET: "session-secret",
+  };
+  const plan = createDevStackPlan(sourceEnv);
+  const environment = createDevStackEnvironment(plan, sourceEnv);
+
+  expect(() => assertDevStackBootConfig(environment)).toThrow(
+    "Configuration validation failed for DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET, DISCORD_REDIRECT_URI.",
+  );
+});
+
+test("dev stack reports the full missing API boot credential set in one pass", () => {
+  const sourceEnv = {
+    DISCORD_BOT_TOKEN: "test-token",
+  };
+  const plan = createDevStackPlan(sourceEnv);
+  const environment = createDevStackEnvironment(plan, sourceEnv);
+
+  expect(() => assertDevStackBootConfig(environment)).toThrow(
+    "Configuration validation failed for HUMANIFY_SESSION_SECRET, DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET, DISCORD_REDIRECT_URI.",
+  );
+});
+
+test("dev stack accepts the documented API boot credentials before startup", () => {
+  const sourceEnv = {
+    DISCORD_BOT_TOKEN: "test-token",
+    DISCORD_CLIENT_ID: "123456789012345678",
+    DISCORD_CLIENT_SECRET: "discord-client-secret",
+    DISCORD_REDIRECT_URI: "http://127.0.0.1:3211/auth/discord/callback",
+    HUMANIFY_SESSION_SECRET: "session-secret",
+  };
+  const plan = createDevStackPlan(sourceEnv);
+  const environment = createDevStackEnvironment(plan, sourceEnv);
+
+  expect(() => assertDevStackBootConfig(environment)).not.toThrow();
 });
 
 test("Windows shutdown kills the managed process tree instead of only the direct child", () => {

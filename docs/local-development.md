@@ -118,6 +118,9 @@ Important variables:
 | Variable | Purpose |
 | --- | --- |
 | `DISCORD_BOT_TOKEN` | required for the bot unless explicitly skipped |
+| `DISCORD_CLIENT_ID` | required for Bun API Discord OAuth boot preflight |
+| `DISCORD_CLIENT_SECRET` | required for Bun API Discord OAuth boot preflight |
+| `DISCORD_REDIRECT_URI` | required Discord OAuth callback URL for Bun API boot |
 | `HUMANIFY_SKIP_BOT` | explicit opt-out for botless local work |
 | `HUMANIFY_ENABLED_VERIFICATION_PROVIDERS` | comma-separated provider ids enabled in the Bun API (`self,world_id,didit` by default) |
 | `HUMANIFY_DIDIT_API_KEY` | Didit server API key used by `apps\api-bun` to create, inspect, and purge capture sessions |
@@ -127,6 +130,7 @@ Important variables:
 | `HUMANIFY_API_PORT` | Bun API port |
 | `HUMANIFY_VERIFIER_BASE_URL` | absolute verifier shell base URL used when Bun builds Didit callback and launch URLs |
 | `HUMANIFY_DATABASE_URL` | optional full Postgres connection string for Bun-side migration/bootstrap tooling |
+| `HUMANIFY_SESSION_SECRET` | required API session secret; `bun run dev` preflights it before starting local services |
 | `HUMANIFY_POSTGRES_HOST` | host used by host-run Bun tooling when `HUMANIFY_DATABASE_URL` is unset |
 | `HUMANIFY_POSTGRES_PORT` | host Postgres port used by Docker publish + host-run Bun tooling |
 | `HUMANIFY_*_BIND_ADDR` | Rust service bind addresses |
@@ -139,6 +143,8 @@ Important variables:
 | `VITE_HUMANIFY_ENABLED_VERIFICATION_PROVIDERS` | comma-separated provider ids shown in the verifier UI; keep this aligned with the API variable above |
 
 SQLite/libSQL-based local prediction state remains file-backed and does not require a separate container yet.
+
+`bun run dev` now validates the documented Bun API boot contract up front. If `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET`, `DISCORD_REDIRECT_URI`, or `HUMANIFY_SESSION_SECRET` are missing, the launcher exits before starting Docker Compose or child processes.
 
 ## 7. Stopping the stack
 

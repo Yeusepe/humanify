@@ -21,6 +21,12 @@
 
 import { fetch as bunFetch } from "bun";
 import { createServer } from "node:net";
+import {
+  ConfigError,
+  loadDataPlaneConfig,
+  loadDiscordOAuthConfig,
+  loadSessionConfig,
+} from "../packages/config/src/index.ts";
 
 type DevProcessSpec = {
   name: string;
@@ -139,6 +145,11 @@ function requiredPort(name: string, port: number): RequiredPortSpec {
     name,
     port,
   };
+}
+
+function readOptionalEnvValue(source: NodeJS.ProcessEnv, key: string) {
+  const value = source[key]?.trim();
+  return value ? value : undefined;
 }
 
 export function createDevStackPlan(env: NodeJS.ProcessEnv = process.env): DevStackPlan {
@@ -294,10 +305,52 @@ export function createDevStackPlan(env: NodeJS.ProcessEnv = process.env): DevSta
   return { notices, composeFile, composeProjectName, processes, setupCommands, ports, requiredPorts };
 }
 
-function readEnvironment(): Record<string, string> {
-  return Object.fromEntries(
-    Object.entries(process.env).flatMap(([key, value]) => (typeof value === "string" ? [[key, value]] : [])),
+export function createDevStackEnvironment(
+  plan: DevStackPlan,
+  source: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  const environment = Object.fromEntries(
+    Object.entries(source).flatMap(([key, value]) => (typeof value === "string" ? [[key, value]] : [])),
   );
+  const postgresHost = readOptionalEnvValue(source, "HUMANIFY_POSTGRES_HOST") ?? "127.0.0.1";
+  const postgresUser = readOptionalEnvValue(source, "HUMANIFY_POSTGRES_USER") ?? "humanify";
+  const postgresPassword = readOptionalEnvValue(source, "HUMANIFY_POSTGRES_PASSWORD") ?? "humanify";
+  const postgresDatabase = readOptionalEnvValue(source, "HUMANIFY_POSTGRES_DB") ?? "humanify";
+  const redisHost = readOptionalEnvValue(source, "HUMANIFY_REDIS_HOST") ?? "127.0.0.1";
+
+  environment.HUMANIFY_POSTGRES_URL =
+    readOptionalEnvValue(source, "HUMANIFY_POSTGRES_URL")
+    ?? readOptionalEnvValue(source, "HUMANIFY_DATABASE_URL")
+    ?? `postgres://${encodeURIComponent(postgresUser)}:${encodeURIComponent(postgresPassword)}@${postgresHost}:${plan.ports.postgres}/${encodeURIComponent(postgresDatabase)}`;
+  environment.HUMANIFY_REDIS_URL =
+    readOptionalEnvValue(source, "HUMANIFY_REDIS_URL")
+    ?? `redis://${redisHost}:${plan.ports.redis}`;
+
+  return environment;
+}
+
+export function assertDevStackBootConfig(environment: NodeJS.ProcessEnv): void {
+  const issues = new Map<string, { key: string; message: string }>();
+
+  for (const loader of [loadDataPlaneConfig, loadSessionConfig, loadDiscordOAuthConfig]) {
+    try {
+      loader(environment);
+    } catch (error) {
+      if (!(error instanceof ConfigError)) {
+        throw error;
+      }
+
+      for (const issue of error.issues) {
+        if (!issues.has(issue.key)) {
+          issues.set(issue.key, issue);
+        }
+      }
+    }
+  }
+
+  if (issues.size > 0) {
+    throw new ConfigError(Array.from(issues.values()));
+  }
 }
 
 function runComposeCommand(
@@ -599,7 +652,8 @@ async function pipeOutput(
 
 async function runDevStack() {
   const plan = createDevStackPlan();
-  const environment = readEnvironment();
+  const environment = createDevStackEnvironment(plan);
+  assertDevStackBootConfig(environment);
   let infrastructureStarted = false;
   cleanupRepoOwnedManagedListeners(plan, {
     log: (message) => console.warn(message),
