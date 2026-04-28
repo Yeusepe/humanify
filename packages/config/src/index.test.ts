@@ -23,6 +23,8 @@ import {
   loadApiBindingConfig,
   loadBotApiConfig,
   loadDiditConfig,
+  loadOptionalDiscordVerificationAuthConfig,
+  loadDiscordVerificationAuthConfig,
   loadDiscordOAuthConfig,
   loadObservabilityConfig,
   loadPolicyClampConfig,
@@ -46,6 +48,42 @@ test("discord oauth config requires a full server-side callback bundle", () => {
       DISCORD_REDIRECT_URI: "https://humanify.test/callback",
     }),
   ).toThrow(ConfigError);
+});
+
+test("discord verification auth config derives Better Auth base URLs and safer verification scopes", () => {
+  expect(
+    loadDiscordVerificationAuthConfig({
+      DISCORD_CLIENT_ID: "client",
+      DISCORD_CLIENT_SECRET: "secret",
+      HUMANIFY_API_PORT: "4211",
+      HUMANIFY_SESSION_SECRET: "session-secret",
+      HUMANIFY_VERIFIER_BASE_URL: "https://verifier.humanify.test/",
+    }),
+  ).toEqual({
+    apiBaseUrl: "http://127.0.0.1:4211",
+    authBasePath: "/auth/better",
+    betterAuthSecret: "session-secret",
+    clientId: "client",
+    clientSecret: "secret",
+    scopes: ["identify", "email", "connections"],
+    verifierBaseUrl: "https://verifier.humanify.test",
+  });
+});
+
+test("discord verification auth config stays disabled when the verifier app base URL is not configured", () => {
+  expect(
+    loadOptionalDiscordVerificationAuthConfig({
+      DISCORD_CLIENT_ID: "client",
+      DISCORD_CLIENT_SECRET: "secret",
+      HUMANIFY_SESSION_SECRET: "session-secret",
+    }),
+  ).toBeUndefined();
+
+  expect(
+    loadOptionalDiscordVerificationAuthConfig({
+      HUMANIFY_VERIFIER_BASE_URL: "https://verifier.humanify.test",
+    }),
+  ).toBeUndefined();
 });
 
 test("didit config validates the minimum API, webhook, workflow, and verifier return URL bundle", () => {

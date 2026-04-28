@@ -25,6 +25,7 @@ export type VerificationClaimDefinition = {
 export const verificationClaimCategories = [
   "age",
   "citizenship",
+  "account",
   "identity",
   "biometric",
   "personhood",
@@ -40,6 +41,10 @@ export const verificationClaimDisclosureModes = [
 export const verificationClaimSourceAttributes = [
   "date_of_birth",
   "nationality",
+  "social_account_age",
+  "social_account_profile",
+  "social_account_connections",
+  "social_account_email_verification",
   "identity_document",
   "liveness_signal",
   "face_check",
@@ -85,6 +90,20 @@ const verificationClaimDefinitions = [
     sourceAttributes: ["nationality"],
     summary: "Selective-disclosure proof of nationality without exposing the full underlying document.",
     title: "Nationality",
+  },
+  {
+    category: "account",
+    disclosureMode: "attested_fact",
+    id: "discord_account_trust",
+    sourceAttributes: [
+      "social_account_age",
+      "social_account_profile",
+      "social_account_connections",
+      "social_account_email_verification",
+    ],
+    summary:
+      "Normalized Discord account-trust attestation built from OAuth-approved account age, profile completeness, verified-email, and linked-account signals without storing raw tokens or the full provider payload.",
+    title: "Discord account trust",
   },
   {
     category: "identity",
@@ -162,6 +181,22 @@ const disclosedAttributeClaimIdSet = new Set<string>(disclosedAttributeClaimIds)
 
 const verificationClaimBundles = [
   {
+    bestFor: "The server wants a lighter Discord-native trust gate before escalating users into stronger document or reusable-proof flows.",
+    bundleId: "humanify_discord_account_trust_v1",
+    claims: ["discord_account_trust"],
+    futureExtensions: [
+      "guild-specific trust thresholds once moderator-confirmed learning feedback tunes the scorer",
+      "additional social-account evidence sources under the same normalized trust claim contract",
+    ],
+    operatorStorageGuarantees: [
+      "Humanify stores only normalized Discord trust facts, scorer outputs, and coarse linked-account summaries.",
+      "Humanify does not store OAuth secrets, raw Discord connection payloads, or the full upstream provider response body.",
+      "Discord account trust is advisory identity evidence and can be combined with stronger proof lanes when a server needs more confidence.",
+    ],
+    summary: "Use Discord-native account signals when the server wants a lightweight trust gate before stronger proof is required.",
+    title: "Discord account trust",
+  },
+  {
     bestFor: "The server only needs an age gate and you want to reveal as little as possible.",
     bundleId: "humanify_id_age_over_18_v1",
     claims: ["age_over_18"],
@@ -212,7 +247,7 @@ const verificationClaimBundles = [
 ] as const satisfies readonly VerificationClaimBundle[];
 
 const defaultVerificationClaimBundle = {
-  ...verificationClaimBundles[2],
+  ...verificationClaimBundles.find((bundle) => bundle.bundleId === "humanify_id_age_and_nationality_v1")!,
 } as const satisfies VerificationClaimBundle;
 
 function cloneClaimBundle(bundle: VerificationClaimBundle): VerificationClaimBundle {

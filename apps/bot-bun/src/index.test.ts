@@ -49,21 +49,7 @@ function createChatCommandInteraction(input: {
   getString?: (name: string) => string | null;
   getSubcommand?: () => string;
   getUser?: (name: string) => { id: string; send?: (payload: unknown) => Promise<void>; username?: string } | null;
-  guild?: {
-    members: {
-      fetch(userId: string): Promise<{
-        roles: {
-          add(roleIds: readonly string[] | string[], reason?: string): Promise<void>;
-        };
-        user: {
-          id: string;
-          send?: (payload: unknown) => Promise<void>;
-          username?: string;
-        };
-      }>;
-    };
-    name?: string;
-  };
+  guild?: any;
   memberPermissions?: PermissionsBitField | null;
   reply?: (payload: unknown) => Promise<void>;
   userId?: string;
@@ -99,21 +85,7 @@ function createChatCommandInteraction(input: {
 
 function createComponentInteraction(input: {
   customId: string;
-  guild?: {
-    members: {
-      fetch(userId: string): Promise<{
-        roles: {
-          add(roleIds: readonly string[] | string[], reason?: string): Promise<void>;
-        };
-        user: {
-          id: string;
-          send?: (payload: unknown) => Promise<void>;
-          username?: string;
-        };
-      }>;
-    };
-    name?: string;
-  };
+  guild?: any;
   kind: "button" | "channel_select" | "role_select" | "string_select";
   memberPermissions?: PermissionsBitField | null;
   reply?: (payload: unknown) => Promise<void>;
@@ -178,6 +150,8 @@ function createTestApiClient(overrides: Partial<BotApiClient> = {}): BotApiClien
     getGuildChannelConfig: async () => ({
       channelConfig: {
         guildId: "guild_123",
+        managedResources: [],
+        setupMode: "manual",
         source: "not_configured",
       },
       persistence: "not_configured",
@@ -231,10 +205,14 @@ function createTestApiClient(overrides: Partial<BotApiClient> = {}): BotApiClien
         auditLogChannelId: body.auditLogChannelId,
         createdAt: "2026-01-01T00:00:00.000Z",
         guildId,
+        managedResources: body.managedResources ?? [],
         moderationLogChannelId: body.moderationLogChannelId,
         moderatorAlertChannelId: body.moderatorAlertChannelId,
         reviewChannelId: body.reviewChannelId,
+        setupMode: body.setupMode ?? "manual",
         updatedAt: "2026-01-01T00:00:00.000Z",
+        verificationChannelId: body.verificationChannelId,
+        verificationPanelMessageId: body.verificationPanelMessageId,
       },
       persistence: "persisted",
       queueDelivery: "pending_outbox_publish",
@@ -694,9 +672,11 @@ test("humanify setup loads the current config and opens a guided setup flow for 
           channelConfig: {
             auditLogChannelId: "channel_audit",
             guildId,
+            managedResources: [],
             moderationLogChannelId: "channel_mod_log",
             moderatorAlertChannelId: "channel_alerts",
             reviewChannelId: "channel_review",
+            setupMode: "manual",
             source: "persisted",
           },
           persistence: "persisted",
@@ -781,8 +761,8 @@ test("humanify setup loads the current config and opens a guided setup flow for 
 
   expect(reply.flags).toBe(MessageFlags.Ephemeral | MessageFlags.IsComponentsV2);
   const replyText = extractDiscordMessageText(reply);
-  expect(replyText).toContain("Step 1 of 7");
-  expect(replyText).toContain("Pick the channels Humanify should use");
+  expect(replyText).toContain("Step 1 of 8");
+  expect(replyText).toContain("Choose setup mode");
   expect(replyText).toContain("<#channel_alerts>");
   expect(replyText).toContain("<@&role_verified_human>");
   expect(parseSetupFlowCustomId(findCustomId(reply, (customId) => parseSetupFlowCustomId(customId).action === "next"))).toMatchObject({
@@ -800,6 +780,8 @@ test("humanify setup saves the guided selections through the real guild config r
       getGuildChannelConfig: async (guildId) => ({
         channelConfig: {
           guildId,
+          managedResources: [],
+          setupMode: "manual",
           source: "not_configured",
         },
         persistence: "not_configured",
@@ -855,10 +837,14 @@ test("humanify setup saves the guided selections through the real guild config r
             auditLogChannelId: body.auditLogChannelId,
             createdAt: "2026-01-01T00:00:00.000Z",
             guildId,
+            managedResources: body.managedResources ?? [],
             moderationLogChannelId: body.moderationLogChannelId,
             moderatorAlertChannelId: body.moderatorAlertChannelId,
             reviewChannelId: body.reviewChannelId,
+            setupMode: body.setupMode ?? "manual",
             updatedAt: "2026-01-01T00:00:00.000Z",
+            verificationChannelId: body.verificationChannelId,
+            verificationPanelMessageId: body.verificationPanelMessageId,
           },
           persistence: "persisted",
           queueDelivery: "pending_outbox_publish",
@@ -952,6 +938,8 @@ test("humanify setup saves the guided selections through the real guild config r
     );
   }
 
+  await runComponent({ action: "setup_mode", kind: "string_select", values: ["manual"] });
+  await runComponent({ action: "next", kind: "button" });
   await runComponent({ action: "channel_alert", kind: "channel_select", values: ["channel_alerts_live"] });
   await runComponent({ action: "channel_review", kind: "channel_select", values: ["channel_review_live"] });
   await runComponent({ action: "channel_audit", kind: "channel_select", values: ["channel_audit_live"] });
@@ -993,15 +981,19 @@ test("humanify setup saves the guided selections through the real guild config r
       kind: "verification",
     },
     {
-      body: {
-        actorUserId: "admin_123",
-        auditLogChannelId: "channel_audit_live",
-        moderationLogChannelId: "channel_mod_log_live",
-        moderatorAlertChannelId: "channel_alerts_live",
-        reviewChannelId: "channel_review_live",
-      },
-      guildId: "guild_123",
-      kind: "channels",
+        body: {
+          actorUserId: "admin_123",
+          auditLogChannelId: "channel_audit_live",
+          managedResources: [],
+          moderationLogChannelId: "channel_mod_log_live",
+          moderatorAlertChannelId: "channel_alerts_live",
+          reviewChannelId: "channel_review_live",
+          setupMode: "manual",
+          verificationChannelId: undefined,
+          verificationPanelMessageId: undefined,
+        },
+        guildId: "guild_123",
+        kind: "channels",
     },
   ]);
 
@@ -1012,6 +1004,240 @@ test("humanify setup saves the guided selections through the real guild config r
   expect(latestText).toContain("Only prove nationality");
   expect(latestText).toContain("Face check required: Yes");
   expect(latestText).toContain("<@&role_verified_human_live>");
+});
+
+test("humanify setup can automatically provision the verification channel, panel, and managed release roles", async () => {
+  const apiCalls: unknown[] = [];
+  const replies: unknown[] = [];
+  const updates: unknown[] = [];
+  const createdChannels: string[] = [];
+  const createdRoles: string[] = [];
+  const sentPanels: unknown[] = [];
+  const managedRoleIds = new Map([
+    ["Verified Human", "role_verified_human_auto"],
+    ["Quarantine", "role_quarantine_auto"],
+    ["18+", "role_age_18_auto"],
+    ["21+", "role_age_21_auto"],
+  ]);
+  const verificationChannel = {
+    id: "channel_prove_you_are_human",
+    isTextBased: () => true,
+    messages: {
+      async fetch() {
+        throw { code: 10_008 };
+      },
+    },
+    name: "prove-youre-human",
+    send: async (payload: unknown) => {
+      sentPanels.push(payload);
+      return {
+        id: "message_verify_panel_auto",
+      };
+    },
+  };
+  const guild = {
+    channels: {
+      cache: {
+        find() {
+          return undefined;
+        },
+      },
+      async create(input: { name: string }) {
+        createdChannels.push(input.name);
+        return verificationChannel;
+      },
+      async fetch() {
+        return null;
+      },
+    },
+    id: "guild_123",
+    members: {
+      async fetch() {
+        throw new Error("automatic setup should not need to fetch arbitrary members");
+      },
+      me: {
+        permissions: createGuildInteractionPermissions(
+          PermissionFlagsBits.ManageChannels,
+          PermissionFlagsBits.ManageRoles,
+        ),
+        roles: {
+          highest: {
+            id: "role_bot_highest",
+          },
+        },
+      },
+    },
+    roles: {
+      comparePositions() {
+        return 1;
+      },
+      async create(input: { name: string }) {
+        createdRoles.push(input.name);
+        return {
+          id: managedRoleIds.get(input.name) ?? `role_${input.name}`,
+          name: input.name,
+        };
+      },
+      async fetch() {
+        return null;
+      },
+    },
+  };
+  const handler = createInteractionHandler({
+    apiClient: createTestApiClient({
+      updateGuildChannelConfig: async (guildId, body) => {
+        apiCalls.push({ body, guildId, kind: "channels" });
+        return {
+          channelConfig: {
+            auditLogChannelId: body.auditLogChannelId,
+            createdAt: "2026-01-01T00:00:00.000Z",
+            guildId,
+            managedResources: body.managedResources ?? [],
+            moderationLogChannelId: body.moderationLogChannelId,
+            moderatorAlertChannelId: body.moderatorAlertChannelId,
+            reviewChannelId: body.reviewChannelId,
+            setupMode: body.setupMode ?? "manual",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            verificationChannelId: body.verificationChannelId,
+            verificationPanelMessageId: body.verificationPanelMessageId,
+          },
+          persistence: "persisted",
+          queueDelivery: "pending_outbox_publish",
+        };
+      },
+      updateGuildVerificationConfig: async (guildId, body) => {
+        apiCalls.push({ body, guildId, kind: "verification" });
+        return {
+          persistence: "persisted",
+          queueDelivery: "pending_outbox_publish",
+          verificationConfig: {
+            availableBundles: [],
+            availableProviderIds: ["didit", "privado", "self", "world_id"],
+            defaultProviderId: body.defaultProviderId,
+            enabledProviderIds: body.enabledProviderIds,
+            faceVerificationRequired: body.faceVerificationRequired,
+            fallbackRoles: body.trustedRoleIds,
+            guildId,
+            roleGrantBindings: body.roleGrantBindings,
+            requiredBundleIds: body.requiredBundleIds,
+            requiredBundles: [],
+            source: "persisted",
+            suspiciousRoleIds: body.suspiciousRoleIds,
+            trustedRoleIds: body.trustedRoleIds,
+          },
+        };
+      },
+    }),
+    verifierBaseUrl: "http://127.0.0.1:3212",
+  });
+
+  await handler(
+    createChatCommandInteraction({
+      commandName: "humanify",
+      getSubcommand: () => "setup",
+      memberPermissions: createGuildInteractionPermissions(PermissionFlagsBits.Administrator),
+      reply: async (payload) => {
+        replies.push(payload);
+      },
+      userId: "admin_123",
+    }),
+  );
+
+  let latest = replies[0] as {
+    components: Array<{ toJSON(): { components?: Array<{ custom_id?: string }> } }>;
+    content: string;
+  };
+
+  async function runComponent(input: {
+    action?: string;
+    kind: "button" | "channel_select" | "role_select" | "string_select";
+    values?: string[];
+  }) {
+    const customId = findCustomId(
+      latest,
+      (candidate) => !input.action || parseSetupFlowCustomId(candidate).action === input.action,
+    );
+
+    await handler(
+      createComponentInteraction({
+        customId,
+        guild,
+        kind: input.kind,
+        memberPermissions: createGuildInteractionPermissions(PermissionFlagsBits.Administrator),
+        update: async (payload) => {
+          updates.push(payload);
+          latest = payload as typeof latest;
+        },
+        userId: "admin_123",
+        values: input.values,
+      }),
+    );
+  }
+
+  await runComponent({ action: "setup_mode", kind: "string_select", values: ["automatic"] });
+  await runComponent({ action: "next", kind: "button" });
+  await runComponent({ action: "next", kind: "button" });
+  await runComponent({ action: "next", kind: "button" });
+  await runComponent({ action: "next", kind: "button" });
+  await runComponent({ action: "save", kind: "button" });
+
+  expect(createdChannels).toEqual(["prove-youre-human"]);
+  expect(createdRoles).toEqual(["Verified Human", "Quarantine", "18+", "21+"]);
+  expect(sentPanels).toHaveLength(1);
+  expect(apiCalls).toEqual([
+    {
+      body: {
+        actorUserId: "admin_123",
+        defaultProviderId: "didit",
+        defaultReusableProofBackendId: undefined,
+        enabledProviderIds: ["didit", "privado", "self", "world_id"],
+        faceVerificationRequired: false,
+        requiredBundleIds: ["humanify_id_age_and_nationality_v1"],
+        roleGrantBindings: [
+          { roleId: "role_verified_human_auto", trigger: "verified_human" },
+          { roleId: "role_age_18_auto", trigger: "age_over_18" },
+          { roleId: "role_age_21_auto", trigger: "age_over_21" },
+        ],
+        suspiciousRoleIds: ["role_quarantine_auto"],
+        trustedRoleIds: [],
+      },
+      guildId: "guild_123",
+      kind: "verification",
+    },
+    {
+      body: {
+        actorUserId: "admin_123",
+        auditLogChannelId: undefined,
+        managedResources: expect.arrayContaining([
+          expect.objectContaining({
+            id: "channel_prove_you_are_human",
+            kind: "channel",
+            purpose: "verification_channel",
+          }),
+          expect.objectContaining({
+            id: "message_verify_panel_auto",
+            kind: "message",
+            purpose: "verification_panel_message",
+          }),
+          expect.objectContaining({
+            id: "role_verified_human_auto",
+            kind: "role",
+            purpose: "verified_human_role",
+          }),
+        ]),
+        moderationLogChannelId: undefined,
+        moderatorAlertChannelId: "channel_prove_you_are_human",
+        reviewChannelId: undefined,
+        setupMode: "automatic",
+        verificationChannelId: "channel_prove_you_are_human",
+        verificationPanelMessageId: "message_verify_panel_auto",
+      },
+      guildId: "guild_123",
+      kind: "channels",
+    },
+  ]);
+  expect(extractDiscordMessageText(latest)).toContain("Setup saved");
+  expect(extractDiscordMessageText(latest)).toContain("Automatic provisioning");
 });
 
 test("humanify panel posts a reusable verification button and clicking it returns a verifier link", async () => {
@@ -1138,6 +1364,8 @@ test("humanify setup truncates oversized bundle labels and summaries before rend
       getGuildChannelConfig: async (guildId) => ({
         channelConfig: {
           guildId,
+          managedResources: [],
+          setupMode: "manual",
           source: "not_configured",
         },
         persistence: "not_configured",
@@ -1227,6 +1455,8 @@ test("humanify setup truncates oversized bundle labels and summaries before rend
     );
   }
 
+  await runComponent({ action: "setup_mode", kind: "string_select", values: ["manual"] });
+  await runComponent({ action: "next", kind: "button" });
   await runComponent({ action: "channel_alert", kind: "channel_select", values: ["channel_alerts_live"] });
   await runComponent({ action: "next", kind: "button" });
   await runComponent({ action: "next", kind: "button" });
@@ -1554,15 +1784,15 @@ test("verify notifies and contains the target member for moderator-started verif
       guild: {
         members: {
           async fetch() {
-            return {
-              roles: {
-                async add(roleIds, reason) {
+              return {
+                roles: {
+                async add(roleIds: readonly string[] | string[], reason?: string) {
                   containmentCalls.push({ reason, roleIds: [...roleIds] });
                 },
               },
               user: {
                 id: "subject_123",
-                async send(payload) {
+                async send(payload: unknown) {
                   dmPayloads.push(payload);
                 },
                 username: "subject",
@@ -1859,13 +2089,13 @@ test("verification shortcut refreshes the advisory warning card for the linked c
           async fetch() {
             return {
               roles: {
-                async add(roleIds, reason) {
+                async add(roleIds: readonly string[] | string[], reason?: string) {
                   containmentCalls.push({ reason, roleIds: [...roleIds] });
                 },
               },
               user: {
                 id: "user_123",
-                async send(payload) {
+                async send(payload: unknown) {
                   dmPayloads.push(payload);
                 },
                 username: "user",
@@ -1930,7 +2160,9 @@ test("warning-card sync posts a new advisory message and persists the canonical 
       getGuildChannelConfig: async (guildId) => ({
         channelConfig: {
           guildId,
+          managedResources: [],
           moderatorAlertChannelId: "channel_alerts",
+          setupMode: "manual",
           source: "persisted",
         },
         persistence: "persisted",
@@ -2026,7 +2258,9 @@ test("warning-card sync keeps realistic verification shortcut IDs within Discord
       getGuildChannelConfig: async () => ({
         channelConfig: {
           guildId,
+          managedResources: [],
           moderatorAlertChannelId: "channel_alerts",
+          setupMode: "manual",
           source: "persisted",
         },
         persistence: "persisted",
@@ -2117,7 +2351,9 @@ test("warning-card sync edits the persisted advisory message instead of repostin
       getGuildChannelConfig: async (guildId) => ({
         channelConfig: {
           guildId,
+          managedResources: [],
           moderatorAlertChannelId: "channel_alerts",
+          setupMode: "manual",
           source: "persisted",
         },
         persistence: "persisted",
@@ -2190,6 +2426,8 @@ test("warning-card sync refuses to pretend success when the moderator alert chan
       getGuildChannelConfig: async (guildId) => ({
         channelConfig: {
           guildId,
+          managedResources: [],
+          setupMode: "manual",
           source: "not_configured",
         },
         persistence: "not_configured",

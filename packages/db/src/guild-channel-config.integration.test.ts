@@ -67,13 +67,36 @@ integrationTest("guild channel config persists canonical moderator alert and log
         traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
       },
     },
-    body: {
-      actorUserId,
-      auditLogChannelId: `audit_${scope}`,
-      moderationLogChannelId: `warning_log_${scope}`,
-      moderatorAlertChannelId: `alerts_${scope}`,
-      reviewChannelId: `review_${scope}`,
-    },
+      body: {
+        actorUserId,
+        auditLogChannelId: `audit_${scope}`,
+        managedResources: [
+          {
+            id: `channel_verify_${scope}`,
+            kind: "channel",
+            ownedBy: "humanify",
+            purpose: "verification_channel",
+          },
+          {
+            id: `message_verify_${scope}`,
+            kind: "message",
+            ownedBy: "humanify",
+            purpose: "verification_panel_message",
+          },
+          {
+            id: `role_verified_${scope}`,
+            kind: "role",
+            ownedBy: "humanify",
+            purpose: "verified_human_role",
+          },
+        ],
+        moderationLogChannelId: `warning_log_${scope}`,
+        moderatorAlertChannelId: `alerts_${scope}`,
+        reviewChannelId: `review_${scope}`,
+        setupMode: "automatic",
+        verificationChannelId: `channel_verify_${scope}`,
+        verificationPanelMessageId: `message_verify_${scope}`,
+      },
     guildId,
     traceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   });
@@ -83,9 +106,24 @@ integrationTest("guild channel config persists canonical moderator alert and log
   expect(persisted.channelConfig).toEqual(
     expect.objectContaining({
       auditLogChannelId: `audit_${scope}`,
+      managedResources: expect.arrayContaining([
+        expect.objectContaining({
+          id: `channel_verify_${scope}`,
+          kind: "channel",
+          purpose: "verification_channel",
+        }),
+        expect.objectContaining({
+          id: `message_verify_${scope}`,
+          kind: "message",
+          purpose: "verification_panel_message",
+        }),
+      ]),
       moderationLogChannelId: `warning_log_${scope}`,
       moderatorAlertChannelId: `alerts_${scope}`,
       reviewChannelId: `review_${scope}`,
+      setupMode: "automatic",
+      verificationChannelId: `channel_verify_${scope}`,
+      verificationPanelMessageId: `message_verify_${scope}`,
     }),
   );
 
@@ -93,9 +131,19 @@ integrationTest("guild channel config persists canonical moderator alert and log
   expect(readBack).toEqual(
     expect.objectContaining({
       auditLogChannelId: `audit_${scope}`,
+      managedResources: expect.arrayContaining([
+        expect.objectContaining({
+          id: `channel_verify_${scope}`,
+          kind: "channel",
+          purpose: "verification_channel",
+        }),
+      ]),
       moderationLogChannelId: `warning_log_${scope}`,
       moderatorAlertChannelId: `alerts_${scope}`,
       reviewChannelId: `review_${scope}`,
+      setupMode: "automatic",
+      verificationChannelId: `channel_verify_${scope}`,
+      verificationPanelMessageId: `message_verify_${scope}`,
     }),
   );
 });

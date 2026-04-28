@@ -57,10 +57,27 @@ export type GuildChannelConfigRecord = {
   auditLogChannelId?: string;
   createdAt: string;
   guildId: string;
+  managedResources: GuildManagedDiscordResourceRecord[];
   moderationLogChannelId?: string;
   moderatorAlertChannelId: string;
   reviewChannelId?: string;
+  setupMode: "automatic" | "manual";
+  verificationChannelId?: string;
+  verificationPanelMessageId?: string;
   updatedAt: string;
+};
+
+export type GuildManagedDiscordResourceRecord = {
+  id: string;
+  kind: "channel" | "message" | "role";
+  ownedBy: "humanify";
+  purpose:
+    | "age_over_18_role"
+    | "age_over_21_role"
+    | "quarantine_role"
+    | "verification_channel"
+    | "verification_panel_message"
+    | "verified_human_role";
 };
 
 export type PersistedGuildChannelConfigResult = {
@@ -77,9 +94,13 @@ export type GuildChannelConfigRepository = {
     body: {
       actorUserId: string;
       auditLogChannelId?: string;
+      managedResources?: GuildManagedDiscordResourceRecord[];
       moderationLogChannelId?: string;
       moderatorAlertChannelId: string;
       reviewChannelId?: string;
+      setupMode?: "automatic" | "manual";
+      verificationChannelId?: string;
+      verificationPanelMessageId?: string;
     };
     guildId: string;
     requestFingerprint?: string;
@@ -91,11 +112,65 @@ type GuildChannelConfigRow = {
   audit_log_channel_id: string | null;
   created_at: string | Date;
   guild_id: string;
+  managed_resources: unknown;
   moderation_log_channel_id: string | null;
   moderator_alert_channel_id: string;
   review_channel_id: string | null;
+  setup_mode: string;
   updated_at: string | Date;
+  verification_channel_id: string | null;
+  verification_panel_message_id: string | null;
 };
+
+function normalizeManagedResources(value: unknown): GuildManagedDiscordResourceRecord[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const normalized: GuildManagedDiscordResourceRecord[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    if (typeof item !== "object" || item === null) {
+      continue;
+    }
+
+    const candidate = item as Record<string, unknown>;
+    const id = typeof candidate.id === "string" ? candidate.id.trim() : "";
+    const kind = candidate.kind;
+    const ownedBy = candidate.ownedBy;
+    const purpose = candidate.purpose;
+    if (
+      !id
+      || (kind !== "channel" && kind !== "message" && kind !== "role")
+      || ownedBy !== "humanify"
+      || (
+        purpose !== "age_over_18_role"
+        && purpose !== "age_over_21_role"
+        && purpose !== "quarantine_role"
+        && purpose !== "verification_channel"
+        && purpose !== "verification_panel_message"
+        && purpose !== "verified_human_role"
+      )
+    ) {
+      continue;
+    }
+
+    const dedupeKey = `${kind}:${purpose}:${id}`;
+    if (seen.has(dedupeKey)) {
+      continue;
+    }
+
+    seen.add(dedupeKey);
+    normalized.push({
+      id,
+      kind,
+      ownedBy,
+      purpose,
+    });
+  }
+
+  return normalized;
+}
 
 function createSqlClient(connectionString: string) {
   return postgres(connectionString, {
@@ -270,10 +345,14 @@ function mapRow(row: GuildChannelConfigRow): GuildChannelConfigRecord {
     auditLogChannelId: row.audit_log_channel_id ?? undefined,
     createdAt: new Date(row.created_at).toISOString(),
     guildId: row.guild_id,
+    managedResources: normalizeManagedResources(row.managed_resources),
     moderationLogChannelId: row.moderation_log_channel_id ?? undefined,
     moderatorAlertChannelId: row.moderator_alert_channel_id,
     reviewChannelId: row.review_channel_id ?? undefined,
+    setupMode: row.setup_mode === "automatic" ? "automatic" : "manual",
     updatedAt: new Date(row.updated_at).toISOString(),
+    verificationChannelId: row.verification_channel_id ?? undefined,
+    verificationPanelMessageId: row.verification_panel_message_id ?? undefined,
   };
 }
 
@@ -285,6 +364,10 @@ async function readConfig(sql: QueryClient, guildId: string) {
       review_channel_id,
       audit_log_channel_id,
       moderation_log_channel_id,
+      setup_mode,
+      verification_channel_id,
+      verification_panel_message_id,
+      managed_resources,
       created_at,
       updated_at
     FROM guild_channel_configs
@@ -326,6 +409,10 @@ export function createPostgresGuildChannelConfigRepository(input: {
             review_channel_id,
             audit_log_channel_id,
             moderation_log_channel_id,
+            setup_mode,
+            verification_channel_id,
+            verification_panel_message_id,
+            managed_resources,
             created_by_user_id,
             updated_by_user_id
           )
@@ -335,6 +422,10 @@ export function createPostgresGuildChannelConfigRepository(input: {
             ${input.body.reviewChannelId ?? null},
             ${input.body.auditLogChannelId ?? null},
             ${input.body.moderationLogChannelId ?? null},
+            ${input.body.setupMode ?? "manual"},
+            ${input.body.verificationChannelId ?? null},
+            ${input.body.verificationPanelMessageId ?? null},
+            ${transaction.json(normalizeManagedResources(input.body.managedResources))},
             ${input.body.actorUserId},
             ${input.body.actorUserId}
           )
@@ -344,6 +435,10 @@ export function createPostgresGuildChannelConfigRepository(input: {
             review_channel_id = excluded.review_channel_id,
             audit_log_channel_id = excluded.audit_log_channel_id,
             moderation_log_channel_id = excluded.moderation_log_channel_id,
+            setup_mode = excluded.setup_mode,
+            verification_channel_id = excluded.verification_channel_id,
+            verification_panel_message_id = excluded.verification_panel_message_id,
+            managed_resources = excluded.managed_resources,
             updated_by_user_id = excluded.updated_by_user_id,
             updated_at = now()
         `;
@@ -354,9 +449,13 @@ export function createPostgresGuildChannelConfigRepository(input: {
           idempotencyKey: input.artifacts.idempotency.key,
           metadata: {
             auditLogChannelId: input.body.auditLogChannelId ?? null,
+            managedResources: normalizeManagedResources(input.body.managedResources),
             moderationLogChannelId: input.body.moderationLogChannelId ?? null,
             moderatorAlertChannelId: input.body.moderatorAlertChannelId,
             reviewChannelId: input.body.reviewChannelId ?? null,
+            setupMode: input.body.setupMode ?? "manual",
+            verificationChannelId: input.body.verificationChannelId ?? null,
+            verificationPanelMessageId: input.body.verificationPanelMessageId ?? null,
           },
           requestId: input.artifacts.idempotency.requestId,
           targetId: input.guildId,

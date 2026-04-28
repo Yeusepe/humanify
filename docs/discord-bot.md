@@ -17,7 +17,9 @@ Governing docs:
 Upstream docs:
 - discord.js: https://discord.js.org/docs/packages/discord.js/main
 - Discord developer docs: https://discord.com/developers/docs/intro
+- Discord user flags: https://discord.com/developers/docs/resources/user#user-object-user-flags
 - Discord OAuth2: https://discord.com/developers/docs/topics/oauth2
+- Community Discord flag inventory: https://github.com/Delitefully/DiscordLists/blob/master/flags.md
 - Bun workspaces: https://bun.sh/docs/install/workspaces
 - Bun environment variables: https://bun.sh/docs/runtime/env
 - OpenTelemetry JS propagation: https://opentelemetry.io/docs/languages/js/propagation/
@@ -39,7 +41,7 @@ The bot does **not** own final policy decisions. It submits normalized events to
 
 | Command or action | Purpose | Backend dependency |
 | --- | --- | --- |
-| `/humanify setup` | initial guild setup, channel/role selection, capability checks | API guild-config routes |
+| `/humanify setup` | initial guild setup, setup-mode selection, channel/role selection or automatic provisioning, capability checks | API guild-config routes |
 | `/humanify panel [channel]` | post a reusable member-facing verification button into the current or chosen channel | API guild-config routes + verifier base URL |
 | `/scan user:@member` | queue a durable single-member advisory score scan and warning refresh | scan routes + Temporal worker |
 | `/scan-all` | queue a durable full-guild member scan | scan routes + Temporal worker |
@@ -60,13 +62,13 @@ The current bot spine makes the first real moderation intake surface concrete:
 
 | Surface | Current behavior | Safety posture |
 | --- | --- | --- |
-| `/humanify setup` | server-admin guided setup flow for channel, role, verification-path, proof-bundle, and face-check choices without leaving Discord | admin-only at command registration and runtime; reads current guild config from the API, keeps the language plain, and only saves through the real guild-config routes |
-| `/humanify panel [channel]` | posts a reusable `Verify with Humanify` button for members | admin-only at runtime; button clicks create a real verification session for the clicking member and return the signed verifier link ephemerally |
+| `/humanify setup` | server-admin guided setup flow for setup mode, channel/role choices, verification-path, proof-bundle, and face-check choices without leaving Discord | admin-only at command registration and runtime; reads current guild config from the API, keeps the language plain, saves only through the real guild-config routes, and can provision a Humanify-managed verification channel/panel/release-role set when the admin chooses automatic setup |
+| `/humanify panel [channel]` | posts a reusable `Verify with Humanify` button for members | admin-only at command registration and runtime; button clicks create a real verification session for the clicking member and return the signed verifier link ephemerally |
 | `/scan user:@member` | queues one canonical `single_member` scan request | admin-only at command registration so ordinary members do not see it by default; runtime still enforces the trusted-moderator rule if an admin later widens command access in Discord, and the Temporal worker later posts a moderator-visible completion summary even when no suspicious case is opened |
 | `/scan-all` | queues one canonical `all_members` scan request | admin-only at command registration and runtime; the reply stays explicit that Humanify has only queued the durable workflow so far, and the worker later posts the final summary to the configured moderation surface |
-| `/report user reason [notes]` | opens a report via the API and plans a case when one does not already exist | replies honestly that persistence is still pending and offers a verification shortcut only as additional intake |
-| `/case open user reason [notes]` | opens a manual case via the report intake route | trusted-moderator-only at runtime; no moderation action is executed from the command response |
-| `/verify user [capability]` | creates a verification session tied to the Discord member | self-verification stays available; verifying another member requires a trusted moderator, and moderator-started sessions now DM the target user with the verifier link, explain why verification is required, and apply any configured containment roles before the final release |
+| `/report user reason [notes]` | opens a report via the API and plans a case when one does not already exist | admin-scoped at command registration so ordinary members do not see it by default; runtime still answers honestly about the current persistence boundary and any follow-up verification shortcut |
+| `/case open user reason [notes]` | opens a manual case via the report intake route | admin-scoped at command registration so ordinary members do not see it by default; if a guild admin later widens the command in Discord, Humanify still keeps the trusted-moderator runtime gate and never executes moderation directly from the command response |
+| `/verify user [capability]` | creates a verification session tied to the Discord member | admin-scoped at command registration so ordinary members do not see it by default; if a guild admin later widens the command in Discord, self-verification still works for the actor's own account while cross-user starts keep the trusted-moderator gate, DM the target user with the verifier link, explain why verification is required, and apply any configured containment roles before the final release |
 | message context `Report message to Humanify` | opens a report and then attaches canonical Discord message metadata (`messageId`, `channelId`, message URL, preview) as evidence | evidence is queued as planned canonical write work, not synthetic success |
 | button `Start verification` | creates a verification session bound to the case/user pair encoded in the shared Humanify custom ID | self-verification stays available, cross-user starts require a trusted moderator, and moderator-triggered starts now DM the target user, apply configured containment roles, and return the signed verifier URL plus the linked warning-card follow-up note |
 
@@ -108,6 +110,129 @@ Two runtime flags now control passive Discord ingestion:
 | `HUMANIFY_BOT_ENABLE_MESSAGE_SIGNALS` | `false` | enables `messageCreate` detector-bridge reporting and requests the Discord message-content intents needed for first-message-link / mention-burst / duplicate-pattern detection |
 
 `HUMANIFY_BOT_ENABLE_MESSAGE_SIGNALS=true` must only be enabled when the Discord application is approved for the message-content intent and the server owner wants passive content-based bot catching turned on.
+
+### 3.2 Discord account-flag normalization and scoring map
+
+The current shipped member scan still uses the shared base profile/account signals from `packages\discord-core`. The expanded Discord-flag map below is the governing scoring plan for any future flag-aware enrichment so the detector does not treat badges, system accounts, or platform-abuse states as ad hoc one-offs.
+
+Scoring rules:
+
+1. start from the existing shared member-scan base score (`account_age_*`, `profile_*`)
+2. apply the account, premium, and guild-member flag deltas below
+3. clamp the final score to the shared advisory range `0..10`
+4. open or refresh the advisory case at the current `watch` threshold (`4/10`)
+5. treat non-human/service classifications separately from human-risk scoring
+
+Guardrails:
+
+- public/documented `public_flags` are the normal bot-side source of truth today
+- undocumented/private flags from trusted enrichment sources are advisory unless they describe an explicit Discord abuse or disabled-account state
+- trust-positive cosmetic or premium signals must never erase an already-strong abuse signal
+- `USED_*_CLIENT` flags may subtract at most **2 total**
+- purchased-premium flags may subtract at most **2 total**
+- premium-usage flags may subtract at most **1 total**
+- HypeSquad family flags may subtract at most **1 total**
+- trust-positive reductions are capped at **-4 total** unless the account carries an official high-trust flag (`STAFF`, `PARTNER`, collaborator, or `CERTIFIED_MODERATOR`)
+
+#### 3.2.1 Base shared score inputs
+
+| Reason code | Meaning | Points |
+| --- | --- | ---: |
+| `account_age_lt_24h` | Discord account younger than 24 hours | +6 |
+| `account_age_lt_7d` | Discord account younger than 7 days | +3 |
+| `profile_missing_avatar` | no avatar set | +2 |
+| `profile_test_handle_pattern` | sparse missing-avatar profile also looks like a synthetic test handle | +2 |
+
+#### 3.2.2 User-account flags
+
+| Discord flag | Meaning | Detector treatment | Points |
+| --- | --- | --- | ---: |
+| `STAFF` | Discord employee | official high-trust override | -6 |
+| `PARTNER` | Partnered Server Owner | official high-trust override | -5 |
+| `HYPESQUAD` | HypeSquad Events member | weak trust-positive badge | -1 |
+| `BUG_HUNTER_LEVEL_1` | Bug Hunter Level 1 | medium trust-positive badge | -2 |
+| `MFA_SMS` | SMS recovery enabled for 2FA | telemetry only; not enough to trust | 0 |
+| `PREMIUM_PROMO_DISMISSED` | dismissed Nitro promotion | telemetry only | 0 |
+| `HYPESQUAD_ONLINE_HOUSE_1` | House Bravery | weak trust-positive badge | -1 |
+| `HYPESQUAD_ONLINE_HOUSE_2` | House Brilliance | weak trust-positive badge | -1 |
+| `HYPESQUAD_ONLINE_HOUSE_3` | House Balance | weak trust-positive badge | -1 |
+| `PREMIUM_EARLY_SUPPORTER` | Early Supporter | medium trust-positive account-age proxy | -2 |
+| `TEAM_USER` | team pseudo-user | classify as service/team account; do not human-score | special |
+| `INTERNAL_APPLICATION` | internal application-related account state | classify as internal/service if surfaced; do not human-score | special |
+| `SYSTEM` | official Discord system user | exempt from human-risk scoring | special |
+| `HAS_UNREAD_URGENT_MESSAGES` | unread urgent system message | telemetry only | 0 |
+| `BUG_HUNTER_LEVEL_2` | Bug Hunter Level 2 | strong trust-positive badge | -3 |
+| `UNDERAGE_DELETED` | pending deletion for underage DOB flow | high-risk invalid-account state; floor score to 8 and require manual review | floor 8 |
+| `VERIFIED_BOT` | verified bot account | classify as bot/service; do not human-score | special |
+| `VERIFIED_DEVELOPER` | early verified bot developer | medium trust-positive builder signal | -2 |
+| `CERTIFIED_MODERATOR` | Moderator Programs Alumni | official moderator-trust signal | -4 |
+| `BOT_HTTP_INTERACTIONS` | bot with interactions endpoint | classify as bot/service when the subject is a bot; otherwise telemetry only | special |
+| `SPAMMER` | Discord marked the account as spammer | hard abuse override; immediate advisory case | override 10 |
+| `DISABLE_PREMIUM` | Nitro features disabled | telemetry only | 0 |
+| `ACTIVE_DEVELOPER` | active developer | strong trust-positive builder signal | -3 |
+| `HIGH_GLOBAL_RATE_LIMIT` | high global rate limit | slight risk-positive signal if surfaced by trusted enrichment; never sole trigger | +1 |
+| `DELETED` | account deleted | invalid subject; skip human scoring and refresh canonical identity state | special |
+| `DISABLED_SUSPICIOUS_ACTIVITY` | disabled for suspicious activity | hard abuse override; immediate advisory case | override 10 |
+| `SELF_DELETED` | account self-deleted | invalid subject; skip human scoring and refresh canonical identity state | special |
+| `PREMIUM_DISCRIMINATOR` | premium discriminator history | weak trust-positive cosmetic signal | -1 |
+| `USED_DESKTOP_CLIENT` | has used desktop client | weak trust-positive maturity signal | -1 |
+| `USED_WEB_CLIENT` | has used web client | weak trust-positive maturity signal | -1 |
+| `USED_MOBILE_CLIENT` | has used mobile client | weak trust-positive maturity signal | -1 |
+| `DISABLED` | currently disabled | high-risk disabled-account state; floor score to 8 and require manual review | floor 8 |
+| `VERIFIED_EMAIL` | verified email | medium trust-positive hygiene signal | -2 |
+| `QUARANTINED` | account quarantined | hard abuse override; immediate advisory case | override 10 |
+| `COLLABORATOR` | collaborator with staff permissions | official high-trust override | -5 |
+| `RESTRICTED_COLLABORATOR` | restricted collaborator with staff permissions | official high-trust override | -4 |
+
+#### 3.2.3 Purchased user flags
+
+These should only lightly reduce score because payment is a weak legitimacy proxy and can be compromised.
+
+| Purchased flag | Meaning | Detector treatment | Points |
+| --- | --- | --- | ---: |
+| `NITRO_CLASSIC` | user purchased Nitro Classic | weak trust-positive premium purchase | -1 |
+| `NITRO` | user purchased Nitro | weak trust-positive premium purchase | -1 |
+| `GUILD_BOOST` | user purchased a guild boost | weak trust-positive community investment signal | -1 |
+| `NITRO_BASIC` | user purchased Nitro Basic | weak trust-positive premium purchase | -1 |
+
+#### 3.2.4 Premium-usage user flags
+
+These are cosmetic maturity hints only and should remain low-weight.
+
+| Premium usage flag | Meaning | Detector treatment | Points |
+| --- | --- | --- | ---: |
+| `PREMIUM_DISCRIMINATOR` | used premium discriminator | weak trust-positive cosmetic signal | -1 |
+| `ANIMATED_AVATAR` | used animated avatar | weak trust-positive cosmetic signal | -1 |
+| `PROFILE_BANNER` | used profile banner | weak trust-positive cosmetic signal | -1 |
+
+#### 3.2.5 Guild-member flags
+
+These are guild-scoped context flags rather than account-global trust badges, so they should stay secondary to account/profile signals.
+
+| Guild member flag | Meaning | Detector treatment | Points |
+| --- | --- | --- | ---: |
+| `DID_REJOIN` | member left and rejoined | slight risk-positive churn signal | +1 |
+| `COMPLETED_ONBOARDING` | member completed onboarding | slight trust-positive guild maturity signal | -1 |
+| `BYPASSES_VERIFICATION` | member bypasses guild verification requirements | policy/configuration signal only; never a trust bonus | 0 |
+| `STARTED_ONBOARDING` | member started onboarding | telemetry only until combined with other behavior signals | 0 |
+
+#### 3.2.6 Reason-code normalization rules
+
+When Discord flags become first-class detector inputs, normalize them into stable reason codes instead of logging raw bitfields:
+
+- account flags -> `flag_<signal>` (for example `flag_spammer`, `flag_active_developer`, `flag_verified_email`)
+- guild-member flags -> `guild_member_<signal>` (for example `guild_member_did_rejoin`, `guild_member_completed_onboarding`)
+- purchased or premium-usage flags -> still normalize under `flag_<signal>` because they are account-level enrichment, not message content
+
+#### 3.2.7 Flag families that do **not** directly change user points
+
+The community list also includes application, activity, channel, system-channel, thread-member, message, and SKU flags. Those are not part of the account-risk point map. If Humanify later consumes them, they should become:
+
+- `message_*` reasons for message flags (for example a Discord link warning turning into a domain/message reason)
+- `behavior_*` or `guild_member_*` reasons for guild-scoped state
+- infrastructure or bot-capability checks for application flags
+
+They should not be mixed into the human account trust score as if they were user badges.
 
 Slash commands register globally by default, which is the multi-guild production shape. `HUMANIFY_BOT_COMMAND_GUILD_ID` exists only as an optional development override when you intentionally want faster command propagation in one Discord server; leaving it unset preserves the normal multi-guild global registration path.
 
@@ -162,11 +287,14 @@ Current executor rule for the first slice: if the API returns only `planned_not_
 Guild setup should persist the current capability snapshot so the API can clamp actions before they reach the executor.
 The setup/channel-config slice now also has canonical API reads and writes for:
 
+- setup-mode persistence (`manual` vs `automatic`)
 - current channel setup hydration via `GET /guilds/:guildId/channels`
 - required `moderatorAlertChannelId`
 - optional `reviewChannelId`
 - optional `auditLogChannelId`
 - optional `moderationLogChannelId`
+- optional `verificationChannelId` and `verificationPanelMessageId`
+- tracked `managedResources` so later bot passes know which Discord resources Humanify owns
 
 Moderator warning, review flows, and `/humanify setup` should read those canonical channel IDs instead of relying on command-local state.
 
@@ -190,10 +318,11 @@ Authorization rules for the current command surface:
 1. `/humanify setup` is server-admin-only.
 2. `/humanify panel` is server-admin-only.
 3. Trusted moderator actions must fail closed when the actor lacks current guild permissions or the runtime cannot read them.
-4. The shared trusted-moderator gate covers the current moderation-oriented entry points (`/case open` and starting verification for another member).
-5. Member-facing verification entry points must remain available for the actor's own account.
-6. `/scan` is admin-scoped at command registration because Discord global command defaults can only express one required permission bitset; if a guild admin later widens the command in Discord, Humanify still enforces the trusted-moderator runtime gate.
-7. `/scan-all` requires the server-admin gate at both command registration and runtime.
+4. `/report`, `/case open`, and `/verify` are admin-scoped at command registration so ordinary members do not see those slash entry points by default.
+5. The shared trusted-moderator gate still covers `/case open` and starting verification for another member in case a guild admin later widens those command permissions inside Discord.
+6. Member-facing verification entry points still exist through Discord buttons and other case-linked flows; when `/verify` is explicitly widened by a guild admin, self-verification continues to work for the actor's own account.
+7. `/scan` is admin-scoped at command registration because Discord global command defaults can only express one required permission bitset; if a guild admin later widens the command in Discord, Humanify still enforces the trusted-moderator runtime gate.
+8. `/scan-all` requires the server-admin gate at both command registration and runtime.
 
 ### 6.1 Durable member scans
 
@@ -213,15 +342,24 @@ Both commands stay honest about the workflow boundary:
 
 `/humanify setup` now walks a server admin through these plain-language steps inside Discord:
 
-1. choose alert/review/audit/mod-log channels
-2. choose trusted moderator roles and suspicious roles
-3. choose post-verification role grants for `verified_human`, `18+`, and `21+`
-4. choose enabled verification paths and the default path
-5. choose required proof bundles
-6. choose whether a face check is required
-7. confirm and save through `PUT /guilds/:guildId/channels` plus `PUT /guilds/:guildId/verification`
+1. choose `manual` or `automatic` setup mode
+2. in manual mode, choose alert/review/audit/mod-log channels
+3. in manual mode, choose trusted moderator roles and suspicious roles
+4. in manual mode, choose post-verification role grants for `verified_human`, `18+`, and `21+`
+5. choose enabled verification paths and the default path
+6. choose required proof bundles
+7. choose whether a face check is required
+8. confirm and save through `PUT /guilds/:guildId/channels` plus `PUT /guilds/:guildId/verification`
 
 The flow stays honest about unsaved progress: nothing is saved until the admin reaches the final confirm step and the API accepts the writes.
+
+Automatic setup currently provisions and tracks this first owned-resource set:
+
+1. a Humanify-managed text channel named `prove-youre-human`
+2. the reusable `Verify with Humanify` panel message in that channel
+3. `Verified Human`, `Quarantine`, `18+`, and `21+` roles
+
+When automatic setup runs, Humanify persists those refs as owned `managedResources`, points the verification channel/panel fields at the created Discord objects, and maps the created roles back into `suspiciousRoleIds` plus the `verified_human` / `age_over_18` / `age_over_21` role grants. If the bot lacks `Manage Channels` or `Manage Roles`, or if a conflicting non-owned `prove-youre-human` channel already exists, setup fails loudly instead of silently guessing.
 
 After setup, `/humanify panel` lets the admin post the reusable verification button into a member-facing channel. That button always creates a fresh guild-scoped verification session for the clicking member, and any configured verification role grants are only applied after the canonical verification session reaches `released`.
 

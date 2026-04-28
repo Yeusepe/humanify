@@ -93,6 +93,14 @@ export type VerificationProviderBoundary = {
 
 export type VerificationSummary = {
   authoritativeSource?: string;
+  verificationDecision?: {
+    action: "escalate_review" | "keep_quarantined" | "release_now" | "require_stronger_evidence" | "wait_for_provider";
+    matchedClaims?: HumanifyClaimKey[];
+    message: string;
+    missingClaims?: HumanifyClaimKey[];
+    releaseEligible: boolean;
+    reviewRequired: boolean;
+  };
   faceVerificationPassed?: boolean;
   faceVerificationPerformed?: boolean;
   nullifierRefs?: string[];

@@ -106,7 +106,7 @@ Humanify keeps verification architecture generic by splitting concrete adapters 
 
 | Strategy role | What the adapter does | Humanify responsibility | Default / primary concrete adapter | Explicit non-goal |
 | --- | --- | --- | --- | --- |
-| capture provider | runs a first-time capture flow and returns an attested session result | create the Bun-owned session, bind the Discord challenge, receive the server receipt, normalize the result, and apply policy | **Didit** is the default first-time capture provider | importing a third-party full KYC session into Humanify as a storage shortcut |
+| capture provider | runs a first-time capture flow or account-signal handoff and returns a Bun-normalized session result | create the Bun-owned session, bind the Discord challenge, receive the server receipt, normalize the result, and apply policy | **Didit** remains the default first-time capture provider; **Discord** is now a capture provider for the shared `discord_account_trust` claim | importing a third-party full KYC session into Humanify as a storage shortcut |
 | reusable proof backend | requests reusable proofs from user-held credentials or wallet state and verifies them off-chain | create the verifier request, present proof options, require server-side verification, and store only proof receipts | **Privado** is the primary reusable-proof backend | treating browser completion as proof or storing the full credential payload |
 | policy consumer / strategy pipeline | evaluates normalized outcomes against guild policy and controls role release | Bun API + verifier + bot own challenge binding, policy evaluation, audit, and release decisions | **Humanify** | custodying identity documents or becoming the canonical identity wallet |
 
@@ -258,6 +258,28 @@ Guild verification config can now attach Discord role releases to normalized ver
 
 The verifier client calls the Bun release endpoint only after the canonical session reaches `passed`. Humanify then applies the configured roles, records the release summary, and surfaces the final `released` state back to the verifier UI.
 
+### 4.5.1 Setup mode and managed Discord resources
+
+Guild setup now has two explicit operating modes:
+
+1. `manual`: admins choose the existing Discord channels and roles Humanify should use
+2. `automatic`: Humanify creates and tracks the first verification channel/panel/release-role set itself
+
+The canonical setup snapshot returned by `GET /guilds/:guildId/channels` and persisted by `PUT /guilds/:guildId/channels` now carries:
+
+- `setupMode`
+- optional `verificationChannelId`
+- optional `verificationPanelMessageId`
+- a `managedResources` inventory of Humanify-owned Discord objects
+
+Automatic setup currently creates:
+
+- a `prove-youre-human` text channel
+- the reusable verification panel message in that channel
+- `Verified Human`, `Quarantine`, `18+`, and `21+` roles
+
+Those owned refs exist so later bot passes can safely refresh the panel and role mapping without blindly claiming unrelated admin-managed resources.
+
 ### 4.6 Verification containment at session start
 
 When a trusted moderator starts verification for another member, Humanify uses the configured `suspiciousRoleIds` as immediate containment roles for that verification session.
@@ -403,9 +425,14 @@ The current verifier spine is intentionally generic, but the default Didit captu
 13. The verifier app forwards `x-request-id` and W3C `traceparent` on its session fetch, challenge-complete, reusable-proof start, and reusable-proof verification requests so troubleshooting lines up with the same correlation model as Bun and Rust services.
 
 14. `GET /verification/sessions/:sessionId?token=...` and the Didit callback response may now surface that persisted reusable-credential bridge summary so the UI and privacy runbooks can see the honest handoff boundary without pretending that Humanify already issued a reusable credential.
-15. `GET /verification/sessions/:sessionId?token=...` now surfaces the persisted normalized `verification` summary itself when Bun has already reconciled a Didit callback or Privado proof read, so operators can confirm the stored minimal-custody fields without reading raw provider payloads.
+15. `GET /verification/sessions/:sessionId?token=...` now surfaces the persisted normalized `verification` summary itself when Bun has already reconciled a Didit callback, Privado proof read, or Discord Better Auth handoff, so operators can confirm the stored minimal-custody fields without reading raw provider payloads.
 
-This means the verifier app currently relies on a Bun-authored signed link rather than a user-entered Discord short code or completed OAuth account binding. Those richer steps remain explicit follow-on work and must not be faked client-side.
+16. Discord account verification is now a real shared-provider lane:
+   - challenge completion may choose the `humanify_discord_account_trust_v1` bundle
+   - Humanify stores only a signed provider-start token plus a redirect launch contract before leaving the verifier
+   - Better Auth owns the Discord sign-in redirect and callback session cookies under the mounted `/auth/better` boundary
+   - `GET /verification/providers/discord/handoff` is the Bun-owned reconciliation step that reads the Better Auth session, verifies the Discord account matches the verification-session subject, fetches approved connection signals when the configured scopes allow it, and persists only normalized trust facts and reason codes
+   - browser completion alone never passes the session; Bun must record the normalized result plus the shared `verificationDecision` (`release_now`, `require_stronger_evidence`, `keep_quarantined`, or `escalate_review`) before release can proceed
 
 ## 5. Route and callback responsibilities
 
@@ -414,7 +441,8 @@ This means the verifier app currently relies on a Bun-authored signed link rathe
 | Session start | `POST /guilds/:guildId/verification/sessions` | create canonical session before sending challenge |
 | Session fetch | `GET /verification/sessions/:sessionId` | expose only guild/user-authorized state |
 | Challenge completion | `POST /verification/challenges/:challengeId/complete` | same Discord user, same guild, short-lived single-use challenge |
-| Reusable-proof request start | `POST /verification/sessions/:sessionId/providers/:providerId/start` | signed provider-start token, provider-enabled config, no browser-created proof requests |
+| Provider request start | `POST /verification/sessions/:sessionId/providers/:providerId/start` | signed provider-start token, provider-enabled config, no browser-created proof requests or ad-hoc OAuth redirects |
+| Discord auth handoff | `GET /verification/providers/discord/handoff` | Better Auth session exists, signed-in Discord account matches the session subject, normalized account trust is persisted before redirect |
 | Reusable-proof status verification | `POST /verification/providers/:providerId/proof` | signed provider-session token, server-side status read, minimal normalized proof evidence only |
 | Strategy handoff receipt | `POST /callbacks/providers/:providerId` | verify the concrete adapter's server receipt, enforce replay safety, and require the adapter to be enabled for the guild |
 | Release decision | `POST /verification/sessions/:sessionId/release` | Bun evaluates policy, applies release roles, clears configured containment roles, and writes the audit row |
@@ -439,6 +467,18 @@ Reusable-proof start and verification stay disabled unless Bun has explicit Priv
 
 When those variables are absent, Humanify may still render Privado in shared catalogs for future capability planning, but Bun must not create or verify reusable proofs for it.
 
+## 6.2 Discord Better Auth runtime configuration
+
+Discord account verification stays disabled unless Bun has an explicit Better Auth verification bundle:
+
+- `HUMANIFY_VERIFIER_BASE_URL` - verifier app base URL used for the post-auth return path
+- `DISCORD_CLIENT_ID`
+- `DISCORD_CLIENT_SECRET`
+- `HUMANIFY_SESSION_SECRET` or `BETTER_AUTH_SECRET`
+- optional `HUMANIFY_BETTER_AUTH_BASE_PATH` when the mounted Better Auth path should differ from `/auth/better`
+
+When those variables are absent, Humanify may still surface Discord in shared catalogs for planning and setup, but Bun must not start or reconcile the Discord provider lane.
+
 ## 7. How verification interacts with moderation
 
 - verification lowers uncertainty and may downgrade risk, but it does not erase prior evidence or case history
@@ -448,7 +488,7 @@ When those variables are absent, Humanify may still render Privado in shared cat
 
 ## 8. Dependencies for later phases
 
-- `packages\auth` must implement Discord OAuth2 authorize URL building, signed state/CSRF handling, verifier challenge tokens, and session cookie helpers to match this document
+- `packages\auth` now owns verifier challenge tokens plus signed provider-start tokens; Discord browser auth itself is delegated to the app-local Better Auth bridge instead of a hand-rolled OAuth callback path
 - bot challenge delivery and release receipts must match `docs\discord-bot.md`
 - API callback and release routes must match `docs\api.md`
 - release now clears configured containment roles together with the final verification role grants; future work can still extend this into richer quarantine-policy variants without reintroducing fake success paths

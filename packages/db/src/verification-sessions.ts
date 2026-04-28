@@ -89,6 +89,27 @@ export type VerificationSessionReleaseResult = {
   triggerKeys: string[];
 };
 
+export type VerificationSessionProviderStartRecord = {
+  launch?: Record<string, unknown>;
+  providerId: string;
+  providerReferenceId?: string;
+  requestedClaims: string[];
+  sessionId: string;
+  status: string;
+};
+
+export type VerificationSessionProviderResultRecord = {
+  artifactKind: string;
+  launch?: Record<string, unknown>;
+  providerId: string;
+  providerReferenceId: string;
+  requestedClaims: string[];
+  resultSummary: Record<string, unknown>;
+  sessionId: string;
+  state: Exclude<VerificationSessionState, "challenge_issued" | "released">;
+  status: string;
+};
+
 export type VerificationSessionsRepository = {
   createSession(input: {
     artifacts?: CanonicalArtifacts;
@@ -107,6 +128,7 @@ export type VerificationSessionsRepository = {
     guildId: string;
     userId: string;
   }): Promise<VerificationSessionRecord[]>;
+  markProviderChallengeStarted(input: VerificationSessionProviderStartRecord): Promise<VerificationSessionRecord | undefined>;
   markDiditSessionCreated(input: {
     callbackUrl: string;
     providerSessionId: string;
@@ -142,6 +164,7 @@ export type VerificationSessionsRepository = {
     sessionId: string;
     state: Exclude<VerificationSessionState, "challenge_issued" | "released">;
   }): Promise<VerificationSessionRecord | undefined>;
+  recordProviderResult(input: VerificationSessionProviderResultRecord): Promise<VerificationSessionRecord | undefined>;
   markReleased(input: {
     release: VerificationSessionReleaseResult;
     sessionId: string;
@@ -568,12 +591,31 @@ export function createPostgresVerificationSessionsRepository(input: {
       return await readSessionsForSubject(sql, input);
     },
 
+    async markProviderChallengeStarted(input) {
+      await sql`
+        UPDATE verification_sessions
+        SET
+          state = ${"provider_pending"},
+          provider_status = ${sql.json(toJsonCompatible({
+            launch: input.launch,
+            providerSessionId: input.providerReferenceId,
+            requestedClaims: input.requestedClaims,
+            selectedProvider: input.providerId,
+            status: input.status,
+          }))},
+          updated_at = now()
+        WHERE session_id = ${input.sessionId}::uuid
+      `;
+
+      return await readSession(sql, input.sessionId);
+    },
+
     async markDiditSessionCreated(input) {
       await sql`
         UPDATE verification_sessions
         SET
           state = ${"provider_pending"},
-          provider_status = ${sql.json({
+          provider_status = ${sql.json(toJsonCompatible({
             callbackUrl: input.callbackUrl,
             launch: {
               mode: "didit_sdk",
@@ -587,7 +629,7 @@ export function createPostgresVerificationSessionsRepository(input: {
             selectedProvider: "didit",
             status: "didit_session_created",
             workflowId: input.workflowId,
-          })},
+          }))},
           updated_at = now()
         WHERE session_id = ${input.sessionId}::uuid
       `;
@@ -695,6 +737,24 @@ export function createPostgresVerificationSessionsRepository(input: {
     },
 
     async recordReusableProofResult(input) {
+      return await this.recordProviderResult({
+        artifactKind: "reusable_proof_receipt",
+        launch: undefined,
+        providerId: input.providerId,
+        providerReferenceId: input.providerSessionId,
+        requestedClaims: input.requestedClaims,
+        resultSummary: input.resultSummary,
+        sessionId: input.sessionId,
+        state: input.state,
+        status: input.state === "passed"
+          ? "provider_proof_verified"
+          : input.state === "failed"
+            ? "provider_proof_failed"
+            : "pending_provider_verification",
+      });
+    },
+
+    async recordProviderResult(input) {
       const current = await readSession(sql, input.sessionId);
       if (!current) {
         return undefined;
@@ -703,15 +763,11 @@ export function createPostgresVerificationSessionsRepository(input: {
       await sql.begin(async (transaction) => {
         const providerStatus = {
           ...current.providerStatus,
-          launch: current.providerStatus.launch,
-          providerSessionId: input.providerSessionId,
+          launch: input.launch ?? current.providerStatus.launch,
+          providerSessionId: input.providerReferenceId,
           requestedClaims: input.requestedClaims,
           selectedProvider: input.providerId,
-          status: input.state === "passed"
-            ? "provider_proof_verified"
-            : input.state === "failed"
-              ? "provider_proof_failed"
-              : "pending_provider_verification",
+          status: input.status,
         };
 
         await transaction`
@@ -730,7 +786,7 @@ export function createPostgresVerificationSessionsRepository(input: {
           WHERE
             session_id = ${input.sessionId}::uuid
             AND provider_name = ${input.providerId}
-            AND artifact_kind = ${"reusable_proof_receipt"}
+            AND artifact_kind = ${input.artifactKind}
         `;
 
         await transaction`
@@ -749,8 +805,8 @@ export function createPostgresVerificationSessionsRepository(input: {
             ${current.guildId},
             ${current.userId},
             ${input.providerId},
-            ${"reusable_proof_receipt"},
-            ${input.providerSessionId},
+            ${input.artifactKind},
+            ${input.providerReferenceId},
             ${input.state},
             ${transaction.json(toJsonCompatible(input.resultSummary))}
           )

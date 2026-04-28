@@ -16,6 +16,7 @@
 import type {
   AppliedLearningResult,
   CaseOutcomeKind,
+  GuildChannelConfigRecord,
   GuildChannelConfigRepository,
   GuildScanRequestRecord,
   GuildScanRequestRepository,
@@ -699,10 +700,14 @@ export function createInMemoryGuildChannelConfigRepository(): GuildChannelConfig
     auditLogChannelId?: string;
     createdAt: string;
     guildId: string;
+    managedResources: GuildChannelConfigRecord["managedResources"];
     moderationLogChannelId?: string;
     moderatorAlertChannelId: string;
     reviewChannelId?: string;
+    setupMode: GuildChannelConfigRecord["setupMode"];
     updatedAt: string;
+    verificationChannelId?: string;
+    verificationPanelMessageId?: string;
   }>();
   const idempotencyReceipts = new Map<string, unknown>();
 
@@ -738,10 +743,14 @@ export function createInMemoryGuildChannelConfigRepository(): GuildChannelConfig
         auditLogChannelId: input.body.auditLogChannelId,
         createdAt: previous?.createdAt ?? now,
         guildId: input.guildId,
+        managedResources: input.body.managedResources?.map((resource) => ({ ...resource })) ?? [],
         moderationLogChannelId: input.body.moderationLogChannelId,
         moderatorAlertChannelId: input.body.moderatorAlertChannelId,
         reviewChannelId: input.body.reviewChannelId,
+        setupMode: input.body.setupMode ?? "manual",
         updatedAt: now,
+        verificationChannelId: input.body.verificationChannelId,
+        verificationPanelMessageId: input.body.verificationPanelMessageId,
       };
 
       configs.set(input.guildId, channelConfig);
@@ -1067,6 +1076,25 @@ export function createInMemoryVerificationSessionsRepository(): VerificationSess
         }));
     },
 
+    async markProviderChallengeStarted(input) {
+      const current = sessions.get(input.sessionId);
+      if (!current) {
+        return undefined;
+      }
+
+      current.providerStatus = {
+        launch: input.launch,
+        providerSessionId: input.providerReferenceId,
+        requestedClaims: [...input.requestedClaims],
+        selectedProvider: input.providerId,
+        status: input.status,
+      };
+      current.state = "provider_pending";
+      current.updatedAt = new Date().toISOString();
+      sessions.set(input.sessionId, current);
+      return await this.getSession(input.sessionId);
+    },
+
     async markDiditSessionCreated(input) {
       const current = sessions.get(input.sessionId);
       if (!current) {
@@ -1119,6 +1147,24 @@ export function createInMemoryVerificationSessionsRepository(): VerificationSess
     },
 
     async recordReusableProofResult(input) {
+      return await this.recordProviderResult({
+        artifactKind: "reusable_proof_receipt",
+        launch: undefined,
+        providerId: input.providerId,
+        providerReferenceId: input.providerSessionId,
+        requestedClaims: input.requestedClaims,
+        resultSummary: input.resultSummary,
+        sessionId: input.sessionId,
+        state: input.state,
+        status: input.state === "passed"
+          ? "provider_proof_verified"
+          : input.state === "failed"
+            ? "provider_proof_failed"
+            : "pending_provider_verification",
+      });
+    },
+
+    async recordProviderResult(input) {
       const current = sessions.get(input.sessionId);
       if (!current) {
         return undefined;
@@ -1126,14 +1172,11 @@ export function createInMemoryVerificationSessionsRepository(): VerificationSess
 
       current.providerStatus = {
         ...current.providerStatus,
-        providerSessionId: input.providerSessionId,
+        launch: input.launch ?? current.providerStatus.launch,
+        providerSessionId: input.providerReferenceId,
         requestedClaims: [...input.requestedClaims],
         selectedProvider: input.providerId,
-        status: input.state === "passed"
-          ? "provider_proof_verified"
-          : input.state === "failed"
-            ? "provider_proof_failed"
-            : "pending_provider_verification",
+        status: input.status,
       };
       current.resultSummary = {
         ...input.resultSummary,

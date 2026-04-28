@@ -17,6 +17,10 @@
 
 import { createRequestTelemetryContext, injectRequestTelemetryHeaders, type TraceContext } from "@humanify/telemetry";
 import {
+  discordSnowflakeToTimestamp,
+  evaluateDiscordAccountTrust,
+} from "@humanify/discord-core";
+import {
   buildPrivadoWalletLaunch,
   createPrivadoReusableCredentialBridge,
   createPrivadoVerificationPlan,
@@ -31,8 +35,10 @@ import {
   type VerificationProviderDefinition,
 } from "@humanify/verification-providers";
 import {
+  loadOptionalDiscordVerificationAuthConfig,
   loadDiditConfig,
   loadPrivadoVerifierConfig,
+  type DiscordVerificationAuthConfig,
   type DiditConfig,
   type EnvSource,
   type PrivadoVerifierConfig,
@@ -42,6 +48,8 @@ import type {
   VerificationSessionState,
   VerificationSessionsRepository,
 } from "@humanify/db";
+
+import type { BetterAuthBridge } from "../auth/better-auth";
 
 import { createDiditClient, type DiditClient } from "../didit";
 import { ApiRouteError } from "../api-route-error";
@@ -58,11 +66,14 @@ export type PrivadoVerifierBackendClient = {
 };
 
 export type ApiVerificationOptionRuntimeOverrides = {
+  betterAuthBridge?: BetterAuthBridge;
   diditClient?: DiditClient;
   privadoVerifierBackendClient?: PrivadoVerifierBackendClient;
 };
 
 export type ApiVerificationOptionEnvironment = {
+  betterAuthBridge?: BetterAuthBridge;
+  discordVerificationAuthConfig?: DiscordVerificationAuthConfig;
   diditClient?: DiditClient;
   diditConfig?: DiditConfig;
   privadoVerifierBackendClient?: PrivadoVerifierBackendClient;
@@ -95,6 +106,7 @@ type RuntimeRequestContext = {
 type ChallengeCompletionInput = {
   challengeId: string;
   provider: VerificationProviderDefinition;
+  providerStartToken?: string;
   requestedClaims: HumanifyClaimKey[];
   requiredCapabilities: string[];
   runtimeEnvironment: ApiVerificationOptionEnvironment;
@@ -166,6 +178,92 @@ type ApiVerificationOptionRuntime = {
     updatedSession: VerificationSessionRecord;
   }>;
 };
+
+type VerificationDecisionSummary = {
+  action: "escalate_review" | "keep_quarantined" | "release_now" | "require_stronger_evidence" | "wait_for_provider";
+  matchedClaims: HumanifyClaimKey[];
+  message: string;
+  missingClaims: HumanifyClaimKey[];
+  releaseEligible: boolean;
+  reviewRequired: boolean;
+};
+
+function summarizeVerificationDecision(input: {
+  provider: VerificationProviderDefinition["id"];
+  requestedClaims: HumanifyClaimKey[];
+  riskScore?: number;
+  satisfiedClaims: HumanifyClaimKey[];
+  state: VerificationSessionState;
+}): VerificationDecisionSummary {
+  const matchedClaims = input.requestedClaims.filter((claim) => input.satisfiedClaims.includes(claim));
+  const missingClaims = input.requestedClaims.filter((claim) => !input.satisfiedClaims.includes(claim));
+
+  if (input.state === "provider_pending" || input.state === "challenge_issued") {
+    return {
+      action: "wait_for_provider",
+      matchedClaims,
+      message: "Humanify is still waiting for the provider's server-side verification result.",
+      missingClaims,
+      releaseEligible: false,
+      reviewRequired: false,
+    };
+  }
+
+  if (input.state === "passed" && missingClaims.length === 0) {
+    return {
+      action: "release_now",
+      matchedClaims,
+      message: "The current verification evidence satisfies this server's requested proof bundle.",
+      missingClaims,
+      releaseEligible: true,
+      reviewRequired: false,
+    };
+  }
+
+  if (input.state === "expired" || input.state === "cancelled") {
+    return {
+      action: "require_stronger_evidence",
+      matchedClaims,
+      message: "This verification attempt did not finish. Start another proof path to continue.",
+      missingClaims,
+      releaseEligible: false,
+      reviewRequired: false,
+    };
+  }
+
+  if (typeof input.riskScore === "number" && input.riskScore >= 7) {
+    return {
+      action: "escalate_review",
+      matchedClaims,
+      message: input.provider === "discord"
+        ? "Discord account signals were too weak for automatic release, so Humanify should keep the member gated and flag the session for review."
+        : "This verification result was risky enough that Humanify should keep the member gated and flag the session for review.",
+      missingClaims,
+      releaseEligible: false,
+      reviewRequired: true,
+    };
+  }
+
+  if (matchedClaims.length > 0 || missingClaims.length > 0) {
+    return {
+      action: "require_stronger_evidence",
+      matchedClaims,
+      message: "Some requested verification evidence is still missing. Complete a stronger proof path before release.",
+      missingClaims,
+      releaseEligible: false,
+      reviewRequired: false,
+    };
+  }
+
+  return {
+    action: "keep_quarantined",
+    matchedClaims,
+    message: "Humanify should keep the member gated until stronger verification evidence is available.",
+    missingClaims,
+    releaseEligible: false,
+    reviewRequired: false,
+  };
+}
 
 function buildDiditCallbackUrl(config: DiditConfig, sessionId: string, token: string) {
   const callbackUrl = new URL("/verify", config.verifierBaseUrl);
@@ -266,6 +364,12 @@ function normalizeDiditDecision(input: {
       providerStatus: input.status,
       requestedClaims: input.requestedClaims,
       satisfiedClaims: Array.from(new Set(satisfiedClaims)),
+      verificationDecision: summarizeVerificationDecision({
+        provider: "didit",
+        requestedClaims: input.requestedClaims as HumanifyClaimKey[],
+        satisfiedClaims: Array.from(new Set(satisfiedClaims)) as HumanifyClaimKey[],
+        state,
+      }),
     },
     state,
   };
@@ -542,6 +646,16 @@ const privadoRuntime: ApiVerificationOptionRuntime = {
       satisfiedClaims: normalizedResult.satisfiedClaims,
       trustedIssuerScopes: normalizedResult.evidence.trustedIssuerScopes,
       verifiablePresentationCount: normalizedResult.evidence.verifiablePresentationCount,
+      verificationDecision: summarizeVerificationDecision({
+        provider: input.provider.id,
+        requestedClaims: input.requestedClaims as HumanifyClaimKey[],
+        satisfiedClaims: normalizedResult.satisfiedClaims as HumanifyClaimKey[],
+        state: normalizedResult.status === "verified"
+          ? "passed"
+          : normalizedResult.status === "failed"
+            ? "failed"
+            : "provider_pending",
+      }),
     };
     const updatedSession = await input.verificationSessionsRepository.recordReusableProofResult({
       providerId: input.provider.id,
@@ -566,6 +680,44 @@ const privadoRuntime: ApiVerificationOptionRuntime = {
   },
 };
 
+const discordRuntime: ApiVerificationOptionRuntime = {
+  async completeChallenge(input) {
+    const { betterAuthBridge, discordVerificationAuthConfig } = input.runtimeEnvironment;
+    if (!betterAuthBridge || !discordVerificationAuthConfig) {
+      throw new ApiRouteError(
+        503,
+        "dependency_unavailable",
+        "Discord account verification is not configured in this Humanify environment.",
+        true,
+      );
+    }
+
+    if (!input.providerStartToken) {
+      throw new ApiRouteError(500, "dependency_unavailable", "Discord verification start token generation is unavailable.", true);
+    }
+
+    const updatedSession = await input.verificationSessionsRepository.markProviderChallengeStarted({
+      launch: {
+        mode: "redirect",
+        providerId: "discord",
+        url: `${discordVerificationAuthConfig.apiBaseUrl}${buildReusableProofProviderStartEndpoint(input.sessionId, input.provider.id)}?providerStartToken=${encodeURIComponent(input.providerStartToken)}`,
+      },
+      providerId: input.provider.id,
+      requestedClaims: input.requestedClaims,
+      sessionId: input.sessionId,
+      status: "discord_sign_in_required",
+    });
+    if (!updatedSession) {
+      throw new ApiRouteError(404, "not_found", "Verification session was not found while recording the Discord handoff.");
+    }
+
+    return updatedSession;
+  },
+  isConfigured(input) {
+    return Boolean(input.betterAuthBridge && input.discordVerificationAuthConfig);
+  },
+};
+
 const genericRuntime: ApiVerificationOptionRuntime = {
   isConfigured() {
     return false;
@@ -574,6 +726,7 @@ const genericRuntime: ApiVerificationOptionRuntime = {
 
 const optionRuntimes: Record<string, ApiVerificationOptionRuntime> = {
   didit: diditRuntime,
+  discord: discordRuntime,
   privado: privadoRuntime,
 };
 
@@ -581,6 +734,7 @@ export function createApiVerificationOptionEnvironment(input: {
   env: EnvSource;
   overrides?: ApiVerificationOptionRuntimeOverrides;
 }): ApiVerificationOptionEnvironment {
+  const discordVerificationAuthConfig = loadOptionalDiscordVerificationAuthConfig(input.env);
   const diditConfig = loadDiditConfig(input.env);
   const privadoVerifierConfig = loadPrivadoVerifierConfig(input.env);
   const privadoVerifierBackendClient = privadoVerifierConfig.enabled
@@ -593,10 +747,114 @@ export function createApiVerificationOptionEnvironment(input: {
     : input.overrides?.diditClient;
 
   return {
+    betterAuthBridge: input.overrides?.betterAuthBridge,
+    discordVerificationAuthConfig,
     diditClient,
     diditConfig,
     privadoVerifierBackendClient,
     privadoVerifierConfig,
+  };
+}
+
+export async function reconcileDiscordVerificationResult(input: {
+  headers: Headers;
+  now: () => number;
+  requestedClaims: HumanifyClaimKey[];
+  runtimeEnvironment: ApiVerificationOptionEnvironment;
+  sessionId: string;
+  subjectUserId: string;
+  verificationSessionsRepository: VerificationSessionsRepository;
+}) {
+  const { betterAuthBridge } = input.runtimeEnvironment;
+  if (!betterAuthBridge) {
+    throw new ApiRouteError(
+      503,
+      "dependency_unavailable",
+      "Discord account verification is not configured in this Humanify environment.",
+      true,
+    );
+  }
+
+  const accountInfo = await betterAuthBridge.getDiscordAccountInfo(input.headers);
+  if (!accountInfo) {
+    throw new ApiRouteError(401, "forbidden", "Discord sign-in did not produce an account session Humanify can verify.");
+  }
+
+  if (accountInfo.user.id !== input.subjectUserId) {
+    throw new ApiRouteError(
+      403,
+      "forbidden",
+      "The signed-in Discord account does not match the member who started this verification session.",
+    );
+  }
+
+  const accessToken = await betterAuthBridge.getDiscordAccessToken(input.headers);
+  const connectionTypes = accessToken?.scopes.includes("connections")
+    ? (await betterAuthBridge.getDiscordConnections({
+        accessToken: accessToken.accessToken,
+      })).map((connection) => connection.type)
+    : [];
+  const rawData = accountInfo.data;
+  const createdTimestamp = discordSnowflakeToTimestamp(accountInfo.user.id);
+  const evaluation = evaluateDiscordAccountTrust({
+    now: input.now(),
+    snapshot: {
+      avatar: typeof rawData.avatar === "string" ? rawData.avatar : accountInfo.user.image,
+      connectionTypes,
+      createdTimestamp,
+      emailVerified: accountInfo.user.emailVerified === true,
+      globalName: typeof rawData.global_name === "string" ? rawData.global_name : accountInfo.user.name,
+      premiumType: typeof rawData.premium_type === "number" ? rawData.premium_type : undefined,
+      publicFlags: typeof rawData.public_flags === "number" ? rawData.public_flags : undefined,
+      userId: accountInfo.user.id,
+      username: typeof rawData.username === "string" ? rawData.username : accountInfo.user.name,
+    },
+  });
+  const verificationDecision = summarizeVerificationDecision({
+    provider: "discord",
+    requestedClaims: input.requestedClaims as HumanifyClaimKey[],
+    riskScore: evaluation.riskScore,
+    satisfiedClaims: evaluation.satisfied ? ["discord_account_trust"] : [],
+    state: evaluation.satisfied ? "passed" : "failed",
+  });
+  const updatedSession = await input.verificationSessionsRepository.recordProviderResult({
+    artifactKind: "account_signal_snapshot",
+    providerId: "discord",
+    providerReferenceId: accountInfo.user.id,
+    requestedClaims: input.requestedClaims,
+    resultSummary: {
+      accountCreatedAt: new Date(createdTimestamp).toISOString(),
+      authoritativeSource: "discord_better_auth_session",
+      connectionTypeCount: [...new Set(connectionTypes)].length,
+      connectionTypes: [...new Set(connectionTypes)].sort(),
+      negativeReasonCodes: evaluation.negativeReasonCodes,
+      positiveReasonCodes: evaluation.positiveReasonCodes,
+      providerReferenceId: accountInfo.user.id,
+      providerStatus: evaluation.satisfied ? "provider_account_verified" : "provider_account_insufficient",
+      requestedClaims: input.requestedClaims,
+      satisfiedClaims: evaluation.satisfied ? ["discord_account_trust"] : [],
+      trustScore: evaluation.trustScore,
+      trustSignals: {
+        emailVerified: accountInfo.user.emailVerified === true,
+        hasAvatar: Boolean(rawData.avatar ?? accountInfo.user.image),
+        hasConnections: connectionTypes.length > 0,
+        premiumType: typeof rawData.premium_type === "number" ? rawData.premium_type : null,
+        publicFlags: typeof rawData.public_flags === "number" ? rawData.public_flags : null,
+        riskScore: evaluation.riskScore,
+      },
+      verificationDecision,
+    },
+    sessionId: input.sessionId,
+    state: evaluation.satisfied ? "passed" : "failed",
+    status: evaluation.satisfied ? "provider_account_verified" : "provider_account_insufficient",
+  });
+  if (!updatedSession) {
+    throw new ApiRouteError(404, "not_found", "Verification session was not found while recording the Discord result.");
+  }
+
+  return {
+    evaluation,
+    updatedSession,
   };
 }
 

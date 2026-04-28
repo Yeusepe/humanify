@@ -61,12 +61,12 @@ The exact path names may evolve, but the route groups and ownership below remain
 | Group | Representative routes | Notes |
 | --- | --- | --- |
 | Health and metadata | `GET /healthz`, `GET /service-info`, `GET /contracts/summary`, `GET /contracts/schema` | never mutates state |
-| Auth | `POST /auth/discord/start`, `GET /auth/discord/callback`, `POST /auth/logout`, `GET /session` | owns browser session bootstrap and guild-scoped identity |
-| Guild config | `GET /guilds/:guildId/policy`, `PUT /guilds/:guildId/policy`, `GET /guilds/:guildId/channels`, `PUT /guilds/:guildId/channels`, `GET /guilds/:guildId/verification`, `PUT /guilds/:guildId/verification` | all writes create audit records; channel config reads/writes support the Discord setup flow for moderator alert plus optional review/audit/log channels, and verification config owns enabled strategy adapters, required proof bundles, face-verification policy, and default provider choices |
+| Auth | `POST /auth/discord/start`, `POST /auth/logout`, `GET /auth/session`, `ALL /auth/better/*` | owns browser session bootstrap, Better Auth-mounted Discord sign-in, and guild-scoped identity reads |
+| Guild config | `GET /guilds/:guildId/policy`, `PUT /guilds/:guildId/policy`, `GET /guilds/:guildId/channels`, `PUT /guilds/:guildId/channels`, `GET /guilds/:guildId/verification`, `PUT /guilds/:guildId/verification` | all writes create audit records; channel config reads/writes support the Discord setup flow for manual vs automatic setup, moderator alert plus optional review/audit/log channels, persisted verification-channel/panel refs, and Humanify-managed resource ownership; verification config owns enabled strategy adapters, required proof bundles, face-verification policy, and default provider choices |
 | Scans | `POST /guilds/:guildId/scans`, `GET /guilds/:guildId/scans/:scanRequestId` | persists canonical scan requests first; Temporal workers claim and execute them later |
 | Cases | `GET /guilds/:guildId/cases`, `GET /guilds/:guildId/cases/:caseId`, `GET /guilds/:guildId/cases/:caseId/warning-card`, `PUT /guilds/:guildId/cases/:caseId/warning-card/alert-message`, `POST /guilds/:guildId/cases/:caseId/review`, `POST /guilds/:guildId/cases/:caseId/appeal` | ties into `docs\cases-and-reports.md`; warning-card reads stay advisory and moderator-facing |
 | Reports and evidence | `POST /guilds/:guildId/reports`, `POST /guilds/:guildId/reports/:reportId/evidence`, `POST /guilds/:guildId/evidence/upload-url`, `POST /guilds/:guildId/evidence/:evidenceId/redact` | report intake and Discord message-link evidence now persist canonically in Postgres; blob upload URLs remain brokered, time-limited, and auditable |
-| Verification | `POST /guilds/:guildId/verification/sessions`, `GET /verification/sessions/:sessionId`, `POST /verification/challenges/:challengeId/complete`, `POST /verification/sessions/:sessionId/providers/:providerId/start`, `POST /verification/providers/:providerId/proof`, `POST /verification/sessions/:sessionId/release` | strategy/pipeline-oriented session flow; detailed verification role model lives in `docs\verification.md` |
+| Verification | `POST /guilds/:guildId/verification/sessions`, `GET /verification/sessions/:sessionId`, `POST /verification/challenges/:challengeId/complete`, `POST /verification/sessions/:sessionId/providers/:providerId/start`, `GET /verification/providers/discord/handoff`, `POST /verification/providers/:providerId/proof`, `POST /verification/sessions/:sessionId/release` | strategy/pipeline-oriented session flow; detailed verification role model lives in `docs\verification.md` |
 | Strategy callbacks | `POST /callbacks/discord/interactions`, `POST /callbacks/providers/:providerId` | raw-body verification, replay-safe, Postgres-first writes; concrete path remains provider-shaped but semantics are strategy handoff receipts |
 | Moderation | `POST /guilds/:guildId/moderation/approve`, `POST /guilds/:guildId/moderation/quarantine`, `POST /guilds/:guildId/moderation/timeout`, `POST /guilds/:guildId/moderation/kick`, `POST /guilds/:guildId/moderation/ban` | API clamps action against policy before the bot executes |
 | Read models and audit | `GET /guilds/:guildId/audit`, `GET /guilds/:guildId/risk-queue`, `GET /guilds/:guildId/users/:userId/profile` | read Postgres/Electric-backed views rather than recomputing |
@@ -142,7 +142,10 @@ interface ApiSuccessEnvelope<T> {
 Implementation details made concrete by the current spine:
 
 - `GET /service-info`, `GET /contracts/schema`, and `GET /contracts/summary` expose the API boundary metadata, shared package usage, and canonical schema references.
-- `POST /auth/discord/start` and `GET /auth/discord/callback` now use `packages\auth` plus `packages\config` to issue signed Discord OAuth state and session-cookie planning metadata without pretending a session store already exists.
+- `POST /auth/discord/start`, `GET /auth/session`, `POST /auth/logout`, and `ALL /auth/better/*` now use the app-local Better Auth bridge plus `packages\config`:
+  - Better Auth owns the Discord sign-in redirect, callback processing, and signed browser session cookies
+  - Humanify's `/auth/discord/start` route now returns the prepared Better Auth redirect URL instead of inventing a local code exchange contract
+  - the legacy `/auth/discord/callback` route remains an explicit deprecated boundary and must not be used for new verification work
 - `POST /guilds/:guildId/reports` now creates canonical Postgres state for the first real intake slice:
   - `guilds` and `user_identities` are upserted as needed so foreign keys stay honest
   - `cases` is created or re-used by `opening_fingerprint` when `openCase !== false`
@@ -171,11 +174,12 @@ Implementation details made concrete by the current spine:
   - the route exposes counts and scores only; it does not expose cross-guild reporter identities or authorize moderation actions
 - `PUT /guilds/:guildId/channels` now persists canonical guild channel configuration in Postgres instead of returning a stub:
   - the route requires `moderatorAlertChannelId` and accepts optional `reviewChannelId`, `auditLogChannelId`, and `moderationLogChannelId`
+  - the same route now also persists `setupMode`, optional `verificationChannelId`, optional `verificationPanelMessageId`, and a `managedResources` inventory so the bot can distinguish Humanify-owned Discord resources from admin-managed ones
   - `guild_channel_configs`, `audit_records`, `idempotency_receipts`, and `outbox_events` are written inside the same canonical transaction before the route returns `200 OK`
   - the response stays plain and returns the persisted channel configuration plus `queueDelivery: pending_outbox_publish`
 - `GET /guilds/:guildId/channels` now returns the current channel setup snapshot needed to hydrate `/humanify setup`:
   - when no channel row exists yet the response stays honest with `persistence: not_configured`
-  - when a row exists the response returns the persisted channel ids plus `source: persisted`
+  - when a row exists the response returns the persisted channel ids, `setupMode`, any verification-channel/panel refs, and the tracked `managedResources` inventory plus `source: persisted`
 - `PUT /guilds/:guildId/policy`, `POST /guilds/:guildId/cases/:caseId/appeal`, and the moderation routes still return `202 Accepted` planning envelopes containing:
   - a Postgres-first canonical write plan built with `packages\db`
   - idempotency metadata at the HTTP boundary
@@ -190,8 +194,12 @@ Implementation details made concrete by the current spine:
   - `GET /verification/sessions/:sessionId?token=...` verifies the signed boundary and returns the canonical persisted session/provider state plus the normalized `verification` summary, the current guild verification config snapshot, and any persisted `reusableCredentialBridge` when available instead of fabricating completion from browser state
   - `POST /verification/challenges/:challengeId/complete` re-checks that the token matches `challengeId`, `sessionId`, `guildId`, and `userId`, validates the selected concrete adapter and requested proof bundle against both `@humanify/verification-providers` and the persisted guild verification config, and either:
     - creates a real Didit session server-side and returns a Didit SDK launch contract, or
+    - records a provider-pending Discord handoff with the shared `discord_account_trust` claim bundle and a Bun-authored redirect launch contract, or
     - carries the consumer-selected proof bundle through the reusable-proof server handoff boundary (`handoffKind`, `serverEndpointPath`, `serverVerificationNote`, `providerStartEndpoint`, `providerStartToken`)
-  - `POST /verification/sessions/:sessionId/providers/:providerId/start` now starts the reusable-proof backend boundary for Privado by validating a signed start token, creating the backend request with the shared claim catalog, and returning only wallet launch metadata plus a signed provider-session token
+  - `POST /verification/sessions/:sessionId/providers/:providerId/start` now supports both:
+    - Privado reusable-proof request creation by validating a signed start token, creating the backend request with the shared claim catalog, and returning only wallet launch metadata plus a signed provider-session token
+    - Discord provider start by converting the signed provider-start token into a Better Auth sign-in redirect that returns to Humanify's Discord handoff route
+  - `GET /verification/providers/discord/handoff` now reads the Better Auth session, verifies that the signed-in Discord account matches the verification session subject, fetches approved Discord connection signals when scoped, scores the account into `discord_account_trust`, persists the normalized result, and only then redirects back to the verifier page
   - `POST /verification/providers/:providerId/proof` now reads Privado proof status server-side, normalizes the response to minimal proof evidence, persists only the minimal receipt/hash/nullifier/issuer-scope summary, and keeps release blocked unless the proof is verified
   - `POST /verification/sessions/:sessionId/release` now refuses to invent success and returns `409 conflict` until Humanify verifies the selected strategy handoff against canonical state, then applies any configured verification role grants and clears the configured `suspiciousRoleIds` containment roles in the same release step
   - `POST /callbacks/providers/didit` is now live and must verify Didit raw-body webhook signatures, fetch the authoritative Didit decision server-side, reduce it to minimal-custody summary fields, request provider-side deletion after reconciliation, and persist the honest reusable identity handoff contract when approved reusable claims are available

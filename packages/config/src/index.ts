@@ -65,6 +65,16 @@ export type DiscordOAuthConfig = {
   scopes: string[];
 };
 
+export type DiscordVerificationAuthConfig = {
+  apiBaseUrl: string;
+  authBasePath: string;
+  betterAuthSecret: string;
+  clientId: string;
+  clientSecret: string;
+  scopes: string[];
+  verifierBaseUrl: string;
+};
+
 export type DiditConfig = {
   apiKey: string;
   verificationApiBaseUrl: string;
@@ -115,6 +125,7 @@ export type PrivadoVerifierConfig = {
 
 const humanifyEnvironmentValues = ["development", "test", "production"] as const;
 const defaultOAuthScopes = ["identify", "guilds"] as const;
+const defaultDiscordVerificationScopes = ["identify", "email", "connections"] as const;
 const redactedKeyPattern = /(secret|token|password|dsn|key|cookie)/i;
 
 function readOptionalString(source: EnvSource, key: string): string | undefined {
@@ -321,6 +332,72 @@ export function loadDiscordOAuthConfig(source: EnvSource = process.env): Discord
   );
 
   return finalizeIssues(issues, { clientId, clientSecret, redirectUri, scopes });
+}
+
+export function loadDiscordVerificationAuthConfig(source: EnvSource = process.env): DiscordVerificationAuthConfig {
+  const issues: ConfigIssue[] = [];
+  const clientId = readRequiredString(source, "DISCORD_CLIENT_ID", issues);
+  const clientSecret = readRequiredString(source, "DISCORD_CLIENT_SECRET", issues);
+  const verifierBaseUrl = readUrl(source, "HUMANIFY_VERIFIER_BASE_URL", issues).replace(/\/$/u, "");
+  const explicitApiBaseUrl = readOptionalString(source, "HUMANIFY_API_BASE_URL");
+  const betterAuthSecret = readOptionalString(source, "BETTER_AUTH_SECRET")
+    ?? readRequiredString(source, "HUMANIFY_SESSION_SECRET", issues);
+  const authBasePath = readOptionalString(source, "HUMANIFY_BETTER_AUTH_BASE_PATH") ?? "/auth/better";
+  const scopes = (
+    readOptionalString(source, "DISCORD_OAUTH_SCOPES")
+      ?.split(",")
+      .map((scope) => scope.trim())
+      .filter(Boolean)
+    ?? [...defaultDiscordVerificationScopes]
+  );
+
+  let apiBaseUrl = explicitApiBaseUrl;
+  if (!apiBaseUrl) {
+    const binding = loadApiBindingConfig(source);
+    apiBaseUrl = `http://${normalizeLoopbackHost(binding.host)}:${binding.port}`;
+  }
+
+  try {
+    apiBaseUrl = new URL(apiBaseUrl).toString().replace(/\/$/u, "");
+  } catch {
+    issues.push({ key: "HUMANIFY_API_BASE_URL", message: "HUMANIFY_API_BASE_URL must be a valid absolute URL." });
+  }
+
+  if (!authBasePath.startsWith("/")) {
+    issues.push({
+      key: "HUMANIFY_BETTER_AUTH_BASE_PATH",
+      message: "HUMANIFY_BETTER_AUTH_BASE_PATH must start with '/'.",
+    });
+  }
+
+  return finalizeIssues(issues, {
+    apiBaseUrl,
+    authBasePath,
+    betterAuthSecret,
+    clientId,
+    clientSecret,
+    scopes,
+    verifierBaseUrl,
+  });
+}
+
+export function loadOptionalDiscordVerificationAuthConfig(source: EnvSource = process.env): DiscordVerificationAuthConfig | undefined {
+  if (!readOptionalString(source, "HUMANIFY_VERIFIER_BASE_URL")) {
+    return undefined;
+  }
+
+  const anyDiscordVerificationSettingPresent = Boolean(
+    readOptionalString(source, "DISCORD_CLIENT_ID")
+    || readOptionalString(source, "DISCORD_CLIENT_SECRET")
+    || readOptionalString(source, "BETTER_AUTH_SECRET")
+    || readOptionalString(source, "HUMANIFY_BETTER_AUTH_BASE_PATH")
+    || readOptionalString(source, "DISCORD_OAUTH_SCOPES"),
+  );
+  if (!anyDiscordVerificationSettingPresent) {
+    return undefined;
+  }
+
+  return loadDiscordVerificationAuthConfig(source);
 }
 
 export function loadDiditConfig(source: EnvSource = process.env): DiditConfig | undefined {

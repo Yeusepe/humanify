@@ -63,7 +63,7 @@ test("strategy selection parsing trims, deduplicates, and ignores blanks", () =>
 });
 
 test("role-split manifests keep capture flows, reusable backends, and policy consumers separate", () => {
-  expect(registeredVerificationCaptureFlowStrategies.map((strategy) => strategy.id)).toEqual(["didit"]);
+  expect(registeredVerificationCaptureFlowStrategies.map((strategy) => strategy.id)).toEqual(["didit", "discord"]);
   expect(registeredVerificationReusableProofBackendStrategies.map((strategy) => strategy.id)).toEqual([
     "privado",
     "self",
@@ -129,6 +129,7 @@ test("claim catalog keeps plain-language proof-only metadata while default bundl
   const definitions = getVerificationClaimDefinitions();
   const storageContract = bundle.operatorStorageGuarantees.join(" ");
   const ageOver21 = definitions.find((definition) => definition.id === "age_over_21");
+  const discordAccountTrust = definitions.find((definition) => definition.id === "discord_account_trust");
   const faceVerification = definitions.find((definition) => definition.id === "face_verification");
   const genderMarkerFemale = definitions.find((definition) => definition.id === "gender_marker_female");
 
@@ -136,6 +137,7 @@ test("claim catalog keeps plain-language proof-only metadata while default bundl
     "age_over_18",
     "age_over_21",
     "nationality",
+    "discord_account_trust",
     "document_identity",
     "liveness",
     "face_verification",
@@ -144,6 +146,16 @@ test("claim catalog keeps plain-language proof-only metadata while default bundl
     "gender_marker_male",
     "gender_marker_x",
   ]);
+  expect(discordAccountTrust).toMatchObject({
+    category: "account",
+    disclosureMode: "attested_fact",
+    sourceAttributes: [
+      "social_account_age",
+      "social_account_profile",
+      "social_account_connections",
+      "social_account_email_verification",
+    ],
+  });
   expect(ageOver21).toMatchObject({
     category: "age",
     disclosureMode: "proof_only",
@@ -160,6 +172,7 @@ test("claim catalog keeps plain-language proof-only metadata while default bundl
     sourceAttributes: ["gender_marker"],
   });
   expect(bundles.map((entry) => entry.bundleId)).toEqual([
+    "humanify_discord_account_trust_v1",
     "humanify_id_age_over_18_v1",
     "humanify_id_nationality_v1",
     "humanify_id_age_and_nationality_v1",
@@ -171,6 +184,9 @@ test("claim catalog keeps plain-language proof-only metadata while default bundl
 });
 
 test("strategy capability checks stay generic and role-based", () => {
+  expect(
+    verificationStrategySupportsClaims(humanifyVerificationStrategyCatalog.require("discord"), ["discord_account_trust"]),
+  ).toBe(true);
   expect(
     verificationStrategySupportsClaims(humanifyVerificationStrategyCatalog.require("didit"), [
       "document_identity",
@@ -198,13 +214,20 @@ test("strategy capability checks stay generic and role-based", () => {
 });
 
 test("provider capability metadata stays honest about face verification and reusable identity handoff roles", () => {
+  const discord = humanifyVerificationStrategyCatalog.require("discord");
   const didit = humanifyVerificationStrategyCatalog.require("didit");
   const privado = humanifyVerificationStrategyCatalog.require("privado");
   const worldId = humanifyVerificationStrategyCatalog.require("world_id");
 
+  expect(verificationStrategySupportsFaceVerificationRequirement(discord)).toBe(false);
   expect(verificationStrategySupportsFaceVerificationRequirement(didit)).toBe(true);
   expect(verificationStrategySupportsFaceVerificationRequirement(worldId)).toBe(true);
   expect(verificationStrategySupportsFaceVerificationRequirement(privado)).toBe(false);
+  expect(discord.capabilities.reusableIdentity).toMatchObject({
+    contractRole: "none",
+    disclosedAttributeKeys: [],
+    proofOnlyClaimKeys: [],
+  });
   expect(didit.capabilities.reusableIdentity).toMatchObject({
     contractRole: "seed",
     disclosedAttributeKeys: ["nationality"],
@@ -275,7 +298,7 @@ test("option configuration stays aligned with the strategy catalog without treat
       enabledOptionIds: ["didit", "privado"],
     }),
   ).toEqual({
-    availableOptionIds: ["didit", "privado", "self", "world_id"],
+    availableOptionIds: ["didit", "discord", "privado", "self", "world_id"],
     availablePipelineIds: [
       "humanify_didit_capture_v1",
       "humanify_privado_reusable_v1",

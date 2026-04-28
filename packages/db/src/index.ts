@@ -25,6 +25,7 @@ export {
 } from "./guild-channel-config.ts";
 export type {
   GuildChannelConfigRecord,
+  GuildManagedDiscordResourceRecord,
   GuildChannelConfigRepository,
   PersistedGuildChannelConfigResult,
 } from "./guild-channel-config.ts";

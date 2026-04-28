@@ -27,6 +27,7 @@ import {
   type VerificationStrategyPathway,
   type VerificationStrategyPipelineDefinition,
 } from "./pipelines";
+import { discordCaptureFlowStrategy } from "./capture-flows/discord";
 import { diditCaptureFlowStrategy } from "./capture-flows/didit";
 import { humanifyPolicyConsumerStrategy } from "./policy-consumers/humanify";
 import { privadoReusableProofBackendStrategy } from "./reusable-proof-backends/privado";
@@ -122,6 +123,7 @@ export {
   type VerificationStrategyPipelineDefinition,
 } from "./pipelines";
 export { diditCaptureFlowStrategy } from "./capture-flows/didit";
+export { discordCaptureFlowStrategy } from "./capture-flows/discord";
 export { humanifyPolicyConsumerStrategy } from "./policy-consumers/humanify";
 export { privadoReusableProofBackendStrategy } from "./reusable-proof-backends/privado";
 export { selfReusableProofBackendStrategy } from "./reusable-proof-backends/self";
@@ -141,6 +143,7 @@ const pathwaySortOrder: Record<VerificationStrategyPathway, number> = {
 
 export const registeredVerificationCaptureFlowStrategies = [
   diditCaptureFlowStrategy,
+  discordCaptureFlowStrategy,
 ] as const satisfies readonly VerificationStrategyDefinition[];
 
 export const registeredVerificationReusableProofBackendStrategies = [

@@ -50,6 +50,14 @@ export type BotActionAuthorization = {
 };
 
 export {
+  discordSnowflakeToTimestamp,
+  evaluateDiscordAccountTrust,
+  type DiscordAccountTrustEvaluation,
+  type DiscordAccountTrustReasonCode,
+  type DiscordAccountTrustSnapshot,
+} from "./account-trust.ts";
+
+export {
   buildMemberScanReportReason,
   buildMemberScanReporterNotes,
   evaluateMemberScanSnapshot,
@@ -77,7 +85,8 @@ export type SetupFlowAction =
   | "role_suspicious"
   | "role_trusted"
   | "role_verified_human"
-  | "save";
+  | "save"
+  | "setup_mode";
 
 export type ParsedSetupFlowCustomId = {
   action: SetupFlowAction;
@@ -187,6 +196,7 @@ export function createHumanifyApplicationCommands(): readonly ApplicationCommand
       type: ApplicationCommandType.ChatInput,
     },
     {
+      defaultMemberPermissions: PermissionFlagsBits.Administrator,
       description: "Open a Humanify report for a member.",
       name: humanifyBotCommandNames.report,
       options: [
@@ -212,6 +222,7 @@ export function createHumanifyApplicationCommands(): readonly ApplicationCommand
       type: ApplicationCommandType.ChatInput,
     },
     {
+      defaultMemberPermissions: PermissionFlagsBits.Administrator,
       description: "Open a Humanify case from Discord.",
       name: humanifyBotCommandNames.case,
       options: [
@@ -264,6 +275,7 @@ export function createHumanifyApplicationCommands(): readonly ApplicationCommand
       type: ApplicationCommandType.ChatInput,
     },
     {
+      defaultMemberPermissions: PermissionFlagsBits.Administrator,
       description: "Start a Humanify verification session for a member.",
       name: humanifyBotCommandNames.verify,
       options: [
@@ -418,6 +430,7 @@ const setupFlowActions = new Set<SetupFlowAction>([
   "role_trusted",
   "role_verified_human",
   "save",
+  "setup_mode",
 ]);
 
 export function buildSetupFlowCustomId(input: {

@@ -27,6 +27,8 @@ import {
   createHumanifyApplicationCommands,
   createBotGatewayIntents,
   createDiscordAuditReason,
+  discordSnowflakeToTimestamp,
+  evaluateDiscordAccountTrust,
   evaluateMemberScanSnapshot,
   extractMemberScanReasonCodes,
   memberScanWatchThresholdScore,
@@ -156,6 +158,29 @@ test("scan commands stay admin-scoped at registration so non-admins do not see t
   expect(scanAllCommand?.defaultMemberPermissions).toBe(PermissionFlagsBits.Administrator);
 });
 
+test("moderation and verification slash commands stay admin-scoped at registration", () => {
+  const commands = createHumanifyApplicationCommands();
+  const reportCommand = commands.find((command) => ("toJSON" in command ? command.toJSON().name : command.name) === "report") as
+    | {
+        defaultMemberPermissions?: bigint | string | null;
+      }
+    | undefined;
+  const caseCommand = commands.find((command) => ("toJSON" in command ? command.toJSON().name : command.name) === "case") as
+    | {
+        defaultMemberPermissions?: bigint | string | null;
+      }
+    | undefined;
+  const verifyCommand = commands.find((command) => ("toJSON" in command ? command.toJSON().name : command.name) === "verify") as
+    | {
+        defaultMemberPermissions?: bigint | string | null;
+      }
+    | undefined;
+
+  expect(reportCommand?.defaultMemberPermissions).toBe(PermissionFlagsBits.Administrator);
+  expect(caseCommand?.defaultMemberPermissions).toBe(PermissionFlagsBits.Administrator);
+  expect(verifyCommand?.defaultMemberPermissions).toBe(PermissionFlagsBits.Administrator);
+});
+
 test("member scan heuristics stay aligned with the passive new-account detector", () => {
   const newAccountEvaluation = evaluateMemberScanSnapshot({
     now: Date.UTC(2026, 0, 8, 0, 0, 0),
@@ -216,6 +241,47 @@ test("member scan heuristics stay aligned with the passive new-account detector"
   });
   expect(buildMemberScanReportReason(matureSparseEvaluation)).toContain("synthetic-looking");
   expect(buildMemberScanReporterNotes(matureSparseEvaluation)).toContain(`Advisory member-scan score: ${memberScanWatchThresholdScore}/10`);
+});
+
+test("discord account trust scoring rewards mature verified profiles and flags sparse new accounts", () => {
+  expect(discordSnowflakeToTimestamp(((BigInt(Date.UTC(2025, 0, 1, 0, 0, 0) - 1_420_070_400_000) << 22n)).toString())).toBe(
+    Date.UTC(2025, 0, 1, 0, 0, 0),
+  );
+
+  const trusted = evaluateDiscordAccountTrust({
+    now: Date.UTC(2026, 0, 8, 0, 0, 0),
+    snapshot: {
+      avatar: "avatar_hash",
+      connectionTypes: ["github", "twitter"],
+      createdTimestamp: Date.UTC(2025, 5, 1, 0, 0, 0),
+      emailVerified: true,
+      premiumType: 2,
+      userId: "user_trusted",
+      username: "trusted-user",
+    },
+  });
+  const sparse = evaluateDiscordAccountTrust({
+    now: Date.UTC(2026, 0, 8, 0, 0, 0),
+    snapshot: {
+      avatar: null,
+      connectionTypes: [],
+      createdTimestamp: Date.UTC(2026, 0, 7, 12, 0, 0),
+      emailVerified: false,
+      userId: "user_sparse",
+      username: "test_12345",
+    },
+  });
+
+  expect(trusted).toMatchObject({
+    positiveReasonCodes: ["profile_has_avatar", "account_email_verified", "account_has_connections", "account_has_premium"],
+    satisfied: true,
+    trustScore: 10,
+  });
+  expect(sparse).toMatchObject({
+    negativeReasonCodes: ["account_age_lt_24h", "profile_missing_avatar", "profile_test_handle_pattern"],
+    satisfied: false,
+    trustScore: 1,
+  });
 });
 
 test("execution plans refuse exact moderation actions when the current Discord capability is missing", () => {

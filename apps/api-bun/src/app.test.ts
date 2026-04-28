@@ -30,6 +30,7 @@ import {
   type PrivadoVerifierBackendClient,
   type VerificationRoleReleaseExecutor,
 } from "./app";
+import type { BetterAuthBridge } from "./auth/better-auth";
 import type { DiditClient } from "./didit";
 import {
   createInMemoryGuildChannelConfigRepository,
@@ -160,6 +161,75 @@ function createFakeDiditClient(): DiditClient {
   };
 }
 
+function createFakeBetterAuthBridge(): BetterAuthBridge {
+  const discordUserId = "175928847299117063";
+  return {
+    async getDiscordAccountInfo() {
+      return {
+        data: {
+          avatar: "avatar_hash",
+          premium_type: 2,
+          public_flags: 64,
+          username: "humanify-user",
+        },
+        user: {
+          email: "discord-user@humanify.test",
+          emailVerified: true,
+          id: discordUserId,
+          image: `https://cdn.discordapp.com/avatars/${discordUserId}/avatar_hash.png`,
+          name: "Humanify User",
+        },
+      };
+    },
+    async getDiscordAccessToken() {
+      return {
+        accessToken: "discord_access_token",
+        scopes: ["identify", "email", "connections"],
+      };
+    },
+    async getDiscordConnections() {
+      return [
+        {
+          id: "connection_1",
+          name: "Humanify GitHub",
+          type: "github",
+          verified: true,
+        },
+      ];
+    },
+    async getSession() {
+      return {
+        session: {
+          expiresAt: new Date(fixedNow + 3_600_000),
+          id: "auth_session_123",
+          userId: discordUserId,
+        },
+        user: {
+          email: "discord-user@humanify.test",
+          emailVerified: true,
+          id: discordUserId,
+          image: `https://cdn.discordapp.com/avatars/${discordUserId}/avatar_hash.png`,
+          name: "Humanify User",
+        },
+      };
+    },
+    async handle() {
+      return new Response("better-auth", { status: 200 });
+    },
+    async signInDiscord() {
+      return new Response(null, {
+        headers: {
+          location: "https://discord.com/oauth2/authorize?client_id=client_123&state=discord_state_123",
+        },
+        status: 302,
+      });
+    },
+    async signOut() {
+      return new Response(null, { status: 204 });
+    },
+  };
+}
+
 function createFakePrivadoVerifierBackendClient(input: {
   createProofRequestResponse?: {
     qrCode: string;
@@ -248,6 +318,7 @@ function createTestApp(input: {
     reportCasesRepository,
     verificationRoleReleaseExecutor: input.verificationRoleReleaseExecutor,
     verificationOptionRuntimeOverrides: {
+      betterAuthBridge: createFakeBetterAuthBridge(),
       diditClient: input.diditClient ?? createFakeDiditClient(),
       privadoVerifierBackendClient: input.privadoVerifierBackendClient,
     },
@@ -400,10 +471,7 @@ test("auth start builds a signed Discord OAuth bootstrap without inventing sessi
     contractVersion: string;
     data: {
       authUrl: string;
-      cookie: {
-        name: string;
-      };
-      state: string;
+      flowStatus: string;
     };
     requestId: string;
   };
@@ -411,9 +479,8 @@ test("auth start builds a signed Discord OAuth bootstrap without inventing sessi
   expect(response.status).toBe(200);
   expect(json.contractVersion).toBe(humanifyContractVersion);
   expect(response.headers.get("x-request-id")).toBe(json.requestId);
-  expect(json.data.cookie.name).toBe("humanify_session");
   expect(new URL(json.data.authUrl).origin).toBe("https://discord.com");
-  expect(json.data.state).toContain(".");
+  expect(json.data.flowStatus).toBe("better_auth_redirect_prepared");
 });
 
 test("policy writes produce a Postgres-first planning envelope", async () => {
@@ -512,7 +579,7 @@ test("verification config persists canonical provider, bundle, and role policy",
   expect(response.status).toBe(200);
   expect(json.data.persistence).toBe("persisted");
   expect(json.data.queueDelivery).toBe("pending_outbox_publish");
-  expect(json.data.verificationConfig.availableProviderIds).toEqual(["didit", "privado", "self", "world_id"]);
+  expect(json.data.verificationConfig.availableProviderIds).toEqual(["didit", "discord", "privado", "self", "world_id"]);
   expect(json.data.verificationConfig.enabledProviderIds).toEqual(["didit", "privado", "self"]);
   expect(json.data.verificationConfig.defaultProviderId).toBe("didit");
   expect(json.data.verificationConfig.defaultReusableProofBackendId).toBe("privado");
@@ -523,6 +590,7 @@ test("verification config persists canonical provider, bundle, and role policy",
     { roleId: "role_18", trigger: "age_over_18" },
   ]);
   expect(json.data.verificationConfig.availableBundles.map((bundle) => bundle.bundleId)).toEqual([
+    "humanify_discord_account_trust_v1",
     "humanify_id_age_over_18_v1",
     "humanify_id_nationality_v1",
     "humanify_id_age_and_nationality_v1",
@@ -680,9 +748,26 @@ test("channel config persists moderator alert settings for setup and warning wor
       body: JSON.stringify({
         actorUserId: "mod_123",
         auditLogChannelId: "channel_audit",
+        managedResources: [
+          {
+            id: "channel_verify",
+            kind: "channel",
+            ownedBy: "humanify",
+            purpose: "verification_channel",
+          },
+          {
+            id: "message_verify_panel",
+            kind: "message",
+            ownedBy: "humanify",
+            purpose: "verification_panel_message",
+          },
+        ],
         moderationLogChannelId: "channel_warning_log",
         moderatorAlertChannelId: "channel_alerts",
         reviewChannelId: "channel_review",
+        setupMode: "automatic",
+        verificationChannelId: "channel_verify",
+        verificationPanelMessageId: "message_verify_panel",
       }),
       headers: {
         "content-type": "application/json",
@@ -695,9 +780,17 @@ test("channel config persists moderator alert settings for setup and warning wor
     data?: {
       channelConfig: {
         auditLogChannelId?: string;
+        managedResources: Array<{
+          id: string;
+          kind: string;
+          purpose: string;
+        }>;
         moderationLogChannelId?: string;
         moderatorAlertChannelId: string;
         reviewChannelId?: string;
+        setupMode: string;
+        verificationChannelId?: string;
+        verificationPanelMessageId?: string;
       };
       persistence: string;
       queueDelivery: string;
@@ -711,13 +804,23 @@ test("channel config persists moderator alert settings for setup and warning wor
   expect(json.data?.persistence).toBe("persisted");
   expect(json.data?.queueDelivery).toBe("pending_outbox_publish");
   expect(json.data?.channelConfig).toEqual(
-    expect.objectContaining({
-      auditLogChannelId: "channel_audit",
-      moderationLogChannelId: "channel_warning_log",
-      moderatorAlertChannelId: "channel_alerts",
-      reviewChannelId: "channel_review",
-    }),
-  );
+      expect.objectContaining({
+        auditLogChannelId: "channel_audit",
+        managedResources: expect.arrayContaining([
+          expect.objectContaining({
+            id: "channel_verify",
+            kind: "channel",
+            purpose: "verification_channel",
+          }),
+        ]),
+        moderationLogChannelId: "channel_warning_log",
+        moderatorAlertChannelId: "channel_alerts",
+        reviewChannelId: "channel_review",
+        setupMode: "automatic",
+        verificationChannelId: "channel_verify",
+        verificationPanelMessageId: "message_verify_panel",
+      }),
+    );
 
   const readResponse = await app.handle(new Request("http://humanify.local/guilds/guild_123/channels"));
   const readJson = (await readResponse.json()) as {
@@ -725,10 +828,18 @@ test("channel config persists moderator alert settings for setup and warning wor
       channelConfig: {
         auditLogChannelId?: string;
         guildId: string;
+        managedResources: Array<{
+          id: string;
+          kind: string;
+          purpose: string;
+        }>;
         moderationLogChannelId?: string;
         moderatorAlertChannelId?: string;
         reviewChannelId?: string;
+        setupMode: string;
         source: string;
+        verificationChannelId?: string;
+        verificationPanelMessageId?: string;
       };
       persistence: string;
     };
@@ -737,14 +848,24 @@ test("channel config persists moderator alert settings for setup and warning wor
   expect(readResponse.status).toBe(200);
   expect(readJson.data?.persistence).toBe("persisted");
   expect(readJson.data?.channelConfig).toEqual(
-    expect.objectContaining({
-      auditLogChannelId: "channel_audit",
-      moderationLogChannelId: "channel_warning_log",
-      moderatorAlertChannelId: "channel_alerts",
-      reviewChannelId: "channel_review",
-      source: "persisted",
-    }),
-  );
+      expect.objectContaining({
+        auditLogChannelId: "channel_audit",
+        managedResources: expect.arrayContaining([
+          expect.objectContaining({
+            id: "channel_verify",
+            kind: "channel",
+            purpose: "verification_channel",
+          }),
+        ]),
+        moderationLogChannelId: "channel_warning_log",
+        moderatorAlertChannelId: "channel_alerts",
+        reviewChannelId: "channel_review",
+        setupMode: "automatic",
+        source: "persisted",
+        verificationChannelId: "channel_verify",
+        verificationPanelMessageId: "message_verify_panel",
+      }),
+    );
 });
 
 test("channel config read stays honest when a guild has not saved setup channels yet", async () => {
@@ -755,10 +876,14 @@ test("channel config read stays honest when a guild has not saved setup channels
       channelConfig: {
         auditLogChannelId?: string;
         guildId: string;
+        managedResources: Array<unknown>;
         moderationLogChannelId?: string;
         moderatorAlertChannelId?: string;
         reviewChannelId?: string;
+        setupMode: string;
         source: string;
+        verificationChannelId?: string;
+        verificationPanelMessageId?: string;
       };
       persistence: string;
     };
@@ -768,6 +893,8 @@ test("channel config read stays honest when a guild has not saved setup channels
   expect(json.data.persistence).toBe("not_configured");
   expect(json.data.channelConfig).toEqual({
     guildId: "guild_123",
+    managedResources: [],
+    setupMode: "manual",
     source: "not_configured",
   });
 });
@@ -2205,6 +2332,10 @@ test("didit callbacks verify the signature, reconcile the decision server-side, 
       verification: {
         faceVerificationPassed: boolean;
         faceVerificationPerformed: boolean;
+        verificationDecision: {
+          action: string;
+          releaseEligible: boolean;
+        };
       };
     };
   };
@@ -2214,6 +2345,12 @@ test("didit callbacks verify the signature, reconcile the decision server-side, 
   expect(webhookJson.data.session.state).toBe("passed");
   expect(webhookJson.data.providerBoundary.releaseEligible).toBe(true);
   expect(webhookJson.data.providerBoundary.status).toBe("provider_webhook_verified");
+  expect(webhookJson.data.verification.verificationDecision).toEqual(
+    expect.objectContaining({
+      action: "release_now",
+      releaseEligible: true,
+    }),
+  );
   expect(webhookJson.data.reusableCredentialBridge.status).toBe("issuer_handoff_required");
   expect(webhookJson.data.reusableCredentialBridge.targetProvider).toBe("privado");
   expect(webhookJson.data.reusableCredentialBridge.contractVersion).toBe("reusable_identity_handoff_v1");
@@ -2468,6 +2605,309 @@ test("challenge completion accepts a consumer-selected age-only proof bundle", a
 
   expect(response.status).toBe(202);
   expect(json.data.providerBoundary.requestedClaims).toEqual(["age_over_18"]);
+});
+
+test("discord handoff persists normalized account-trust evidence before release can continue", async () => {
+  const discordUserId = "175928847299117063";
+  const guildVerificationConfigRepository = createInMemoryGuildVerificationConfigRepository();
+  const verificationSessionsRepository = createInMemoryVerificationSessionsRepository();
+  await persistVerificationConfig(guildVerificationConfigRepository, {
+    defaultProviderId: "discord",
+    enabledProviderIds: ["discord", "didit", "privado", "self"],
+    requiredBundleIds: ["humanify_discord_account_trust_v1"],
+  });
+  const app = createTestApp({
+    guildVerificationConfigRepository,
+    verificationSessionsRepository,
+  });
+  const createResponse = await app.handle(
+    new Request("http://humanify.local/guilds/guild_123/verification/sessions", {
+      body: JSON.stringify({
+        requiredCapabilities: ["discord_account_trust"],
+        userId: discordUserId,
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    }),
+  );
+  const created = await createResponse.json() as {
+    data: {
+      challengeToken: string;
+      session: {
+        challengeId: string;
+        sessionId: string;
+      };
+    };
+  };
+
+  const completeResponse = await app.handle(
+    new Request(`http://humanify.local/verification/challenges/${created.data.session.challengeId}/complete`, {
+      body: JSON.stringify({
+        guildId: "guild_123",
+        providerId: "discord",
+        requestedClaims: ["discord_account_trust"],
+        sessionId: created.data.session.sessionId,
+        token: created.data.challengeToken,
+        userId: discordUserId,
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    }),
+  );
+  const completed = await completeResponse.json() as {
+    data: {
+      providerBoundary: {
+        launch?: {
+          mode: string;
+          providerId: string;
+          url: string;
+        };
+        selectedProvider?: string;
+        status: string;
+      };
+      session: {
+        state: string;
+      };
+    };
+  };
+  const launchUrl = new URL(completed.data.providerBoundary.launch!.url);
+  const providerStartToken = launchUrl.searchParams.get("providerStartToken");
+
+  expect(completeResponse.status).toBe(201);
+  expect(completed.data.providerBoundary.selectedProvider).toBe("discord");
+  expect(completed.data.providerBoundary.launch).toMatchObject({
+    mode: "redirect",
+    providerId: "discord",
+  });
+  expect(completed.data.session.state).toBe("provider_pending");
+  expect(providerStartToken).toBeTruthy();
+
+  const handoffResponse = await app.handle(
+    new Request(
+      `http://humanify.local/verification/providers/discord/handoff?providerStartToken=${encodeURIComponent(providerStartToken!)}&redirectTo=${encodeURIComponent("https://verifier.humanify.test/verify?sessionId=session_123")}`,
+      {
+        headers: {
+          cookie: "humanify-auth.session=stub",
+        },
+        method: "GET",
+      },
+    ),
+  );
+
+  expect(handoffResponse.status).toBe(302);
+  expect(handoffResponse.headers.get("location")).toBe("https://verifier.humanify.test/verify?sessionId=session_123");
+
+  const sessionResponse = await app.handle(
+    new Request(
+      `http://humanify.local/verification/sessions/${created.data.session.sessionId}?token=${encodeURIComponent(created.data.challengeToken)}`,
+    ),
+  );
+  const sessionJson = await sessionResponse.json() as {
+    data: {
+      providerBoundary: {
+        releaseEligible: boolean;
+        selectedProvider?: string;
+        status: string;
+      };
+      session: {
+        state: string;
+      };
+      verification: {
+        providerStatus: string;
+        satisfiedClaims: string[];
+        status: string;
+        verificationDecision: {
+          action: string;
+          releaseEligible: boolean;
+        };
+      };
+    };
+  };
+
+  expect(sessionResponse.status).toBe(200);
+  expect(sessionJson.data.session.state).toBe("passed");
+  expect(sessionJson.data.providerBoundary).toMatchObject({
+    releaseEligible: true,
+    selectedProvider: "discord",
+    status: "provider_account_verified",
+  });
+  expect(sessionJson.data.verification).toMatchObject({
+    providerStatus: "provider_account_verified",
+    satisfiedClaims: ["discord_account_trust"],
+    verificationDecision: {
+      action: "release_now",
+      releaseEligible: true,
+    },
+  });
+  expect(await verificationSessionsRepository.getSession(created.data.session.sessionId)).toMatchObject({
+    resultSummary: expect.objectContaining({
+      authoritativeSource: "discord_better_auth_session",
+      connectionTypes: ["github"],
+      satisfiedClaims: ["discord_account_trust"],
+      trustScore: expect.any(Number),
+      verificationDecision: expect.objectContaining({
+        action: "release_now",
+        releaseEligible: true,
+      }),
+    }),
+    state: "passed",
+  });
+});
+
+test("discord verification can run from challenge to handoff to release role action", async () => {
+  const discordUserId = "175928847299117063";
+  const verificationConfigRepository = createInMemoryGuildVerificationConfigRepository();
+  await persistVerificationConfig(verificationConfigRepository, {
+    defaultProviderId: "discord",
+    enabledProviderIds: ["discord", "didit", "privado", "self"],
+    requiredBundleIds: ["humanify_discord_account_trust_v1"],
+    roleGrantBindings: [
+      { roleId: "role_human", trigger: "verified_human" },
+      { roleId: "role_trusted_discord", trigger: "discord_account_trust" },
+    ],
+    suspiciousRoleIds: ["role_quarantine"],
+  });
+  const appliedRoleCalls: Array<{
+    guildId: string;
+    removeRoleIds: string[];
+    roleIds: string[];
+    userId: string;
+  }> = [];
+  const app = createTestApp({
+    guildVerificationConfigRepository: verificationConfigRepository,
+    verificationRoleReleaseExecutor: {
+      async applyRoleGrants(input) {
+        appliedRoleCalls.push({
+          guildId: input.guildId,
+          removeRoleIds: [...input.removeRoleIds],
+          roleIds: [...input.roleIds],
+          userId: input.userId,
+        });
+      },
+    },
+  });
+  const createResponse = await app.handle(
+    new Request("http://humanify.local/guilds/guild_123/verification/sessions", {
+      body: JSON.stringify({
+        requiredCapabilities: ["discord_account_trust"],
+        userId: discordUserId,
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    }),
+  );
+  const created = await createResponse.json() as {
+    data: {
+      challengeToken: string;
+      session: {
+        challengeId: string;
+        sessionId: string;
+      };
+    };
+  };
+
+  const completeResponse = await app.handle(
+    new Request(`http://humanify.local/verification/challenges/${created.data.session.challengeId}/complete`, {
+      body: JSON.stringify({
+        guildId: "guild_123",
+        providerId: "discord",
+        requestedClaims: ["discord_account_trust"],
+        sessionId: created.data.session.sessionId,
+        token: created.data.challengeToken,
+        userId: discordUserId,
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    }),
+  );
+  const completeJson = await completeResponse.json() as {
+    data: {
+      providerBoundary: {
+        launch?: {
+          url: string;
+        };
+      };
+    };
+  };
+  const providerStartToken = new URL(completeJson.data.providerBoundary.launch!.url).searchParams.get("providerStartToken");
+
+  await app.handle(
+    new Request(
+      `http://humanify.local/verification/providers/discord/handoff?providerStartToken=${encodeURIComponent(providerStartToken!)}&redirectTo=${encodeURIComponent("https://verifier.humanify.test/verify?sessionId=session_123")}`,
+      {
+        headers: {
+          cookie: "humanify-auth.session=stub",
+        },
+        method: "GET",
+      },
+    ),
+  );
+
+  const releaseResponse = await app.handle(
+    new Request(`http://humanify.local/verification/sessions/${created.data.session.sessionId}/release`, {
+      body: JSON.stringify({
+        guildId: "guild_123",
+        token: created.data.challengeToken,
+        userId: discordUserId,
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    }),
+  );
+  const releaseJson = await releaseResponse.json() as {
+    data: {
+      providerBoundary: {
+        nextStep: string;
+        status: string;
+      };
+      release: {
+        appliedRoleIds: string[];
+        triggerKeys: string[];
+      };
+      session: {
+        state: string;
+      };
+      verification: {
+        verificationDecision: {
+          action: string;
+          releaseEligible: boolean;
+        };
+      };
+    };
+  };
+
+  expect(releaseResponse.status).toBe(200);
+  expect(appliedRoleCalls).toEqual([
+    {
+      guildId: "guild_123",
+      removeRoleIds: ["role_quarantine"],
+      roleIds: ["role_human", "role_trusted_discord"],
+      userId: discordUserId,
+    },
+  ]);
+  expect(releaseJson.data.providerBoundary).toMatchObject({
+    nextStep: "released",
+    status: "released",
+  });
+  expect(releaseJson.data.release.appliedRoleIds).toEqual(["role_human", "role_trusted_discord"]);
+  expect(releaseJson.data.release.triggerKeys).toEqual(["verified_human", "discord_account_trust"]);
+  expect(releaseJson.data.session.state).toBe("released");
+  expect(releaseJson.data.verification.verificationDecision).toEqual(
+    expect.objectContaining({
+      action: "release_now",
+      releaseEligible: true,
+    }),
+  );
 });
 
 test("challenge completion exposes a reusable-proof start contract when Privado is configured", async () => {
@@ -2773,6 +3213,10 @@ test("Privado proof verification reduces backend status to predicates, nullifier
         proofReceiptRef?: string;
         satisfiedClaims: string[];
         status: string;
+        verificationDecision: {
+          action: string;
+          releaseEligible: boolean;
+        };
       };
     };
   };
@@ -2784,6 +3228,12 @@ test("Privado proof verification reduces backend status to predicates, nullifier
   expect(json.data.session.state).toBe("passed");
   expect(json.data.verification.status).toBe("verified");
   expect(json.data.verification.satisfiedClaims).toEqual(["age_over_18", "nationality"]);
+  expect(json.data.verification.verificationDecision).toEqual(
+    expect.objectContaining({
+      action: "release_now",
+      releaseEligible: true,
+    }),
+  );
   expect(json.data.verification.proofReceipt.proofReceiptRef).toBe("privado:session:privado_backend_session_123");
   expect(json.data.verification.proofReceipt.proofReceiptHash).toContain("sha256:");
   expect(json.data.verification.proofReceiptRef).toBe("privado:session:privado_backend_session_123");

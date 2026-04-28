@@ -52,6 +52,7 @@ test("migration inventory contains the canonical Postgres spine bootstrap", () =
     "0002_guild_scan_requests.sql",
     "0002_moderator_warning_cards.sql",
     "0003_signal_examples_outcome_links.sql",
+    "0004_guild_channel_provisioning.sql",
   ]);
   expect(migrations[0]?.sql).toContain("CREATE EXTENSION IF NOT EXISTS vector");
   expect(migrations[0]?.sql).toContain("CREATE TABLE IF NOT EXISTS guilds");
@@ -75,4 +76,7 @@ test("migration inventory contains the canonical Postgres spine bootstrap", () =
   expect(migrations[4]?.sql).toContain("ALTER TABLE signal_examples");
   expect(migrations[4]?.sql).toContain("ADD COLUMN IF NOT EXISTS source_outcome_id uuid REFERENCES case_outcomes");
   expect(migrations[4]?.sql).toContain("CREATE UNIQUE INDEX IF NOT EXISTS signal_examples_outcome_hash_idx");
+  expect(migrations[5]?.sql).toContain("ALTER TABLE guild_channel_configs");
+  expect(migrations[5]?.sql).toContain("ADD COLUMN IF NOT EXISTS setup_mode text NOT NULL DEFAULT 'manual'");
+  expect(migrations[5]?.sql).toContain("ADD COLUMN IF NOT EXISTS verification_channel_id text");
 });

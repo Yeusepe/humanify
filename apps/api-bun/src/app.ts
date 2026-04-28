@@ -26,21 +26,17 @@
 import { Elysia, t } from "elysia";
 
 import {
-  buildDiscordOAuthAuthorizeUrl,
-  createSessionCookieOptions,
-  issueDiscordOAuthState,
-  issueReusableProofStartToken,
+  issueVerificationProviderStartToken,
   issueVerifierChallengeToken,
-  verifyDiscordOAuthState,
+  verifyVerificationProviderStartToken,
   verifyReusableProofSessionToken,
-  verifyReusableProofStartToken,
   verifyVerifierChallengeToken,
 } from "@humanify/auth";
 import {
   loadAdvisoryServiceConfig,
   loadDataPlaneConfig,
   loadBotTokenConfig,
-  loadDiscordOAuthConfig,
+  loadOptionalDiscordVerificationAuthConfig,
   loadObservabilityConfig,
   loadPolicyClampConfig,
   loadServiceIdentityConfig,
@@ -66,6 +62,7 @@ import {
   createPostgresVerificationSessionsRepository,
   createIdempotencyReceipt,
   createOutboxEvent,
+  type GuildManagedDiscordResourceRecord,
   type GuildChannelConfigRepository,
   type GuildScanRequestRecord,
   type GuildScanRequestRepository,
@@ -120,6 +117,7 @@ import {
 } from "@humanify/verification-providers";
 
 import { ApiRouteError, type ApiErrorCode } from "./api-route-error";
+import { createBetterAuthBridge } from "./auth/better-auth";
 import {
   createDiscordVerificationRoleReleaseExecutor,
   type VerificationRoleReleaseExecutor,
@@ -129,6 +127,7 @@ import {
   buildProviderBoundaryFromRecord,
   buildReusableProofProviderStartEndpoint,
   getApiVerificationOptionRuntime,
+  reconcileDiscordVerificationResult,
   type ApiVerificationOptionRuntimeOverrides,
   type PrivadoVerifierBackendClient,
 } from "./verification-options/runtime";
@@ -212,10 +211,14 @@ type GuildVerificationConfigSnapshot = {
 type GuildChannelConfigSnapshot = {
   auditLogChannelId?: string;
   guildId: string;
+  managedResources: GuildManagedDiscordResourceRecord[];
   moderationLogChannelId?: string;
   moderatorAlertChannelId?: string;
   reviewChannelId?: string;
+  setupMode: "automatic" | "manual";
   source: "not_configured" | "persisted";
+  verificationChannelId?: string;
+  verificationPanelMessageId?: string;
 };
 
 type GuildScanRequestSnapshot = GuildScanRequestRecord & {
@@ -800,12 +803,23 @@ export function createApiApp(options: ApiAppOptions = {}) {
   const identity = loadServiceIdentityConfig(env, { serviceName: "@humanify/api-bun" });
   const advisoryServices = loadAdvisoryServiceConfig(env);
   const dataPlaneConfig = loadDataPlaneConfig(env);
-  const discordOAuthConfig = loadDiscordOAuthConfig(env);
+  const discordVerificationAuthConfig = loadOptionalDiscordVerificationAuthConfig(env);
   const observability = loadObservabilityConfig(env);
   const policyClampConfig = loadPolicyClampConfig(env);
+  const sessionConfig = loadSessionConfig(env);
+  const betterAuthBridge = options.verificationOptionRuntimeOverrides?.betterAuthBridge
+    ?? (discordVerificationAuthConfig
+      ? createBetterAuthBridge({
+          config: discordVerificationAuthConfig,
+          sessionTtlSeconds: sessionConfig.sessionTtlSeconds,
+        })
+      : undefined);
   const verificationOptionEnvironment = createApiVerificationOptionEnvironment({
     env,
-    overrides: options.verificationOptionRuntimeOverrides,
+    overrides: {
+      ...options.verificationOptionRuntimeOverrides,
+      betterAuthBridge,
+    },
   });
   const learningServiceClient = options.learningServiceClient ?? createLearningServiceClient({
     baseUrl: advisoryServices.learningServiceUrl,
@@ -833,7 +847,6 @@ export function createApiApp(options: ApiAppOptions = {}) {
     options.verificationSessionsRepository ?? createPostgresVerificationSessionsRepository({
       connectionString: dataPlaneConfig.postgresUrl,
     });
-  const sessionConfig = loadSessionConfig(env);
   const verificationRoleReleaseExecutor = options.verificationRoleReleaseExecutor
     ?? (env.DISCORD_BOT_TOKEN
       ? createDiscordVerificationRoleReleaseExecutor({
@@ -911,6 +924,8 @@ export function createApiApp(options: ApiAppOptions = {}) {
     if (!input.persistedConfig) {
       return {
         guildId: input.guildId,
+        managedResources: [],
+        setupMode: "manual",
         source: "not_configured",
       };
     }
@@ -918,10 +933,14 @@ export function createApiApp(options: ApiAppOptions = {}) {
     return {
       auditLogChannelId: input.persistedConfig.auditLogChannelId,
       guildId: input.guildId,
+      managedResources: input.persistedConfig.managedResources.map((resource) => ({ ...resource })),
       moderationLogChannelId: input.persistedConfig.moderationLogChannelId,
       moderatorAlertChannelId: input.persistedConfig.moderatorAlertChannelId,
       reviewChannelId: input.persistedConfig.reviewChannelId,
+      setupMode: input.persistedConfig.setupMode,
       source: "persisted",
+      verificationChannelId: input.persistedConfig.verificationChannelId,
+      verificationPanelMessageId: input.persistedConfig.verificationPanelMessageId,
     };
   }
 
@@ -1071,9 +1090,25 @@ export function createApiApp(options: ApiAppOptions = {}) {
   const channelConfigSchema = t.Object({
     actorUserId: t.String({ minLength: 1 }),
     auditLogChannelId: t.Optional(t.Nullable(t.String({ minLength: 1 }))),
+    managedResources: t.Optional(t.Array(t.Object({
+      id: t.String({ minLength: 1 }),
+      kind: t.Union([t.Literal("channel"), t.Literal("message"), t.Literal("role")]),
+      ownedBy: t.Literal("humanify"),
+      purpose: t.Union([
+        t.Literal("age_over_18_role"),
+        t.Literal("age_over_21_role"),
+        t.Literal("quarantine_role"),
+        t.Literal("verification_channel"),
+        t.Literal("verification_panel_message"),
+        t.Literal("verified_human_role"),
+      ]),
+    }))),
     moderationLogChannelId: t.Optional(t.Nullable(t.String({ minLength: 1 }))),
     moderatorAlertChannelId: t.String({ minLength: 1 }),
     reviewChannelId: t.Optional(t.Nullable(t.String({ minLength: 1 }))),
+    setupMode: t.Optional(t.Union([t.Literal("automatic"), t.Literal("manual")])),
+    verificationChannelId: t.Optional(t.Nullable(t.String({ minLength: 1 }))),
+    verificationPanelMessageId: t.Optional(t.Nullable(t.String({ minLength: 1 }))),
   });
 
   const scanRequestSchema = t.Object({
@@ -1204,7 +1239,7 @@ export function createApiApp(options: ApiAppOptions = {}) {
           },
           redis: redactUrlSecret(dataPlaneConfig.redisUrl),
         },
-        oauth: summarizeConfigForLogs(discordOAuthConfig),
+        oauth: discordVerificationAuthConfig ? summarizeConfigForLogs(discordVerificationAuthConfig) : undefined,
         observability: summarizeConfigForLogs(observability),
         routeGroups,
         sharedPackages: [
@@ -1220,47 +1255,68 @@ export function createApiApp(options: ApiAppOptions = {}) {
         telemetry,
       });
     })
+    .all(discordVerificationAuthConfig?.authBasePath ?? "/auth/better", ({ request }) => {
+      if (!betterAuthBridge) {
+        throw new ApiRouteError(
+          503,
+          "dependency_unavailable",
+          "Discord account verification is not configured in this Humanify environment.",
+          true,
+        );
+      }
+
+      return betterAuthBridge.handle(request);
+    })
+    .all(`${discordVerificationAuthConfig?.authBasePath ?? "/auth/better"}/*`, ({ request }) => {
+      if (!betterAuthBridge) {
+        throw new ApiRouteError(
+          503,
+          "dependency_unavailable",
+          "Discord account verification is not configured in this Humanify environment.",
+          true,
+        );
+      }
+
+      return betterAuthBridge.handle(request);
+    })
     .group("/auth", (app) =>
       app
         .post(
           "/discord/start",
-          ({ body, requestContext }) => {
-            const state = issueDiscordOAuthState(
-              {
-                guildId: body.guildId,
-                redirectTo: body.redirectTo,
-                stateId: crypto.randomUUID(),
-                userId: body.userId,
-              },
-              sessionConfig.sessionSecret,
-              600,
-              now(),
-            );
+          async ({ body, request, requestContext, set }) => {
+            if (!betterAuthBridge || !discordVerificationAuthConfig) {
+              throw new ApiRouteError(
+                503,
+                "dependency_unavailable",
+                "Discord account verification is not configured in this Humanify environment.",
+                true,
+              );
+            }
 
+            const signInResponse = await betterAuthBridge.signInDiscord({
+              callbackURL: body.redirectTo,
+              requestHeaders: request.headers,
+              scopes: discordVerificationAuthConfig.scopes,
+            });
+            const authUrl = signInResponse.headers.get("location");
+            if (!authUrl) {
+              throw new ApiRouteError(
+                503,
+                "dependency_unavailable",
+                "Discord sign-in did not produce a provider redirect URL.",
+                true,
+              );
+            }
+
+            set.status = 200;
             return buildEnvelope(requestContext.requestId, {
-              authUrl: buildDiscordOAuthAuthorizeUrl({
-                clientId: discordOAuthConfig.clientId,
-                prompt: body.prompt,
-                redirectUri: discordOAuthConfig.redirectUri,
-                scopes: discordOAuthConfig.scopes,
-                state,
-              }),
-              cookie: {
-                name: sessionConfig.cookieName,
-                options: createSessionCookieOptions({
-                  sameSite: "lax",
-                  secure: sessionConfig.secureCookies,
-                  ttlSeconds: sessionConfig.sessionTtlSeconds,
-                }),
-              },
-              flowStatus: "oauth_state_issued",
-              state,
+              authUrl,
+              flowStatus: "better_auth_redirect_prepared",
             });
           },
           {
             body: t.Object({
               guildId: t.String({ minLength: 1 }),
-              prompt: t.Optional(t.Union([t.Literal("consent"), t.Literal("none")])),
               redirectTo: t.String({ minLength: 1 }),
               userId: t.String({ minLength: 1 }),
             }),
@@ -1268,47 +1324,48 @@ export function createApiApp(options: ApiAppOptions = {}) {
         )
         .get(
           "/discord/callback",
-          ({ query, requestContext, set }) => {
-            const state = verifyDiscordOAuthState(query.state, sessionConfig.sessionSecret, now());
-            set.status = 202;
+          ({ requestContext, set }) => {
+            set.status = 410;
 
             return buildEnvelope(requestContext.requestId, {
-              callbackStatus: "state_verified_code_exchange_pending",
-              cookie: {
-                name: sessionConfig.cookieName,
-                options: createSessionCookieOptions({
-                  sameSite: "lax",
-                  secure: sessionConfig.secureCookies,
-                  ttlSeconds: sessionConfig.sessionTtlSeconds,
-                }),
-              },
-              state: {
-                guildId: state.guildId,
-                redirectTo: state.redirectTo,
-                userId: state.userId,
-              },
+              callbackStatus: "deprecated_use_better_auth_callback",
             });
           },
           {
             query: t.Object({
-              code: t.String({ minLength: 1 }),
-              state: t.String({ minLength: 1 }),
+              code: t.Optional(t.String({ minLength: 1 })),
+              state: t.Optional(t.String({ minLength: 1 })),
             }),
           },
         )
-        .post("/logout", ({ requestContext, set }) => {
-          set.status = 202;
-          return buildEnvelope(requestContext.requestId, {
-            flowStatus: "logout_acknowledged_session_store_pending",
-          });
+        .post("/logout", async ({ request, set }) => {
+          if (!betterAuthBridge) {
+            throw new ApiRouteError(
+              503,
+              "dependency_unavailable",
+              "Discord account verification is not configured in this Humanify environment.",
+              true,
+            );
+          }
+
+          set.headers["cache-control"] = "no-store";
+          return await betterAuthBridge.signOut(request.headers);
         })
-        .get("/session", () => {
-          throw new ApiRouteError(
-            503,
-            "dependency_unavailable",
-            "Session persistence is not wired in api-domain-spine yet.",
-            true,
-          );
+        .get("/session", async ({ request, requestContext }) => {
+          if (!betterAuthBridge) {
+            throw new ApiRouteError(
+              503,
+              "dependency_unavailable",
+              "Discord account verification is not configured in this Humanify environment.",
+              true,
+            );
+          }
+
+          const session = await betterAuthBridge.getSession(request.headers);
+
+          return buildEnvelope(requestContext.requestId, {
+            session,
+          });
         }),
     )
     .group("/guilds/:guildId", (app) =>
@@ -1519,9 +1576,13 @@ export function createApiApp(options: ApiAppOptions = {}) {
             const requestContext = ensureResponseContext(request, set);
             const channelConfig = {
               auditLogChannelId: body.auditLogChannelId ?? undefined,
+              managedResources: body.managedResources?.map((resource) => ({ ...resource })) ?? [],
               moderationLogChannelId: body.moderationLogChannelId ?? undefined,
               moderatorAlertChannelId: body.moderatorAlertChannelId,
               reviewChannelId: body.reviewChannelId ?? undefined,
+              setupMode: body.setupMode ?? "manual",
+              verificationChannelId: body.verificationChannelId ?? undefined,
+              verificationPanelMessageId: body.verificationPanelMessageId ?? undefined,
             };
             const artifacts = buildWriteArtifacts({
               aggregateId: params.guildId,
@@ -1544,22 +1605,30 @@ export function createApiApp(options: ApiAppOptions = {}) {
               idempotencyKey:
                 request.headers.get("x-idempotency-key") ?? `guild-channel-config:${params.guildId}:${requestContext.requestId}`,
               kind: "guild.channels.updated",
-              payload: {
-                actorUserId: body.actorUserId,
-                auditLogChannelId: channelConfig.auditLogChannelId ?? null,
-                guildId: params.guildId,
-                moderationLogChannelId: channelConfig.moderationLogChannelId ?? null,
-                moderatorAlertChannelId: channelConfig.moderatorAlertChannelId,
-                reviewChannelId: channelConfig.reviewChannelId ?? null,
-                routeGroup: "guild-config",
-              },
+                payload: {
+                  actorUserId: body.actorUserId,
+                  auditLogChannelId: channelConfig.auditLogChannelId ?? null,
+                  guildId: params.guildId,
+                  managedResources: channelConfig.managedResources,
+                  moderationLogChannelId: channelConfig.moderationLogChannelId ?? null,
+                  moderatorAlertChannelId: channelConfig.moderatorAlertChannelId,
+                  reviewChannelId: channelConfig.reviewChannelId ?? null,
+                  routeGroup: "guild-config",
+                  setupMode: channelConfig.setupMode,
+                  verificationChannelId: channelConfig.verificationChannelId ?? null,
+                  verificationPanelMessageId: channelConfig.verificationPanelMessageId ?? null,
+                },
               requestContext,
-              requestFingerprint: JSON.stringify({
-                auditLogChannelId: channelConfig.auditLogChannelId ?? null,
-                moderationLogChannelId: channelConfig.moderationLogChannelId ?? null,
-                moderatorAlertChannelId: channelConfig.moderatorAlertChannelId,
-                reviewChannelId: channelConfig.reviewChannelId ?? null,
-              }),
+                requestFingerprint: JSON.stringify({
+                  auditLogChannelId: channelConfig.auditLogChannelId ?? null,
+                  managedResources: channelConfig.managedResources,
+                  moderationLogChannelId: channelConfig.moderationLogChannelId ?? null,
+                  moderatorAlertChannelId: channelConfig.moderatorAlertChannelId,
+                  reviewChannelId: channelConfig.reviewChannelId ?? null,
+                  setupMode: channelConfig.setupMode,
+                  verificationChannelId: channelConfig.verificationChannelId ?? null,
+                  verificationPanelMessageId: channelConfig.verificationPanelMessageId ?? null,
+                }),
               scope: `guild-channel-config:${params.guildId}`,
               stream: "projection.refresh",
               transactionName: "guild_channel_config_update",
@@ -2477,8 +2546,8 @@ export function createApiApp(options: ApiAppOptions = {}) {
         const requestedClaims = requireKnownHumanifyClaims(body.requestedClaims, "requestedClaims", supportedHumanifyClaimIds);
         const selectedBundle = verificationClaimBundleByClaimSet.get(buildClaimSetKey(requestedClaims));
         const providerFlowConfigured = optionRuntime.isConfigured(verificationOptionEnvironment);
-        const providerStartToken = providerDefinition.role === "reusable_proof_backend"
-          ? issueReusableProofStartToken(
+        const providerStartToken = providerFlowConfigured && providerDefinition.integration.serverEndpointPath
+          ? issueVerificationProviderStartToken(
             {
               challengeId: params.challengeId,
               guildId: body.guildId,
@@ -2557,6 +2626,7 @@ export function createApiApp(options: ApiAppOptions = {}) {
           const updatedSession = await optionRuntime.completeChallenge({
             challengeId: params.challengeId,
             provider: providerDefinition,
+            providerStartToken,
             requestedClaims,
             requiredCapabilities: verified.requiredCapabilities,
             runtimeEnvironment: verificationOptionEnvironment,
@@ -2627,9 +2697,7 @@ export function createApiApp(options: ApiAppOptions = {}) {
             nextStep: providerDefinition.integration.completionMode,
             providerFlowConfigured,
             providerServerEndpoint: providerDefinition.integration.serverEndpointPath,
-            providerStartEndpoint: providerStartToken
-              ? buildReusableProofProviderStartEndpoint(body.sessionId, providerId)
-              : undefined,
+            providerStartEndpoint: providerStartToken ? buildReusableProofProviderStartEndpoint(body.sessionId, providerId) : undefined,
             providerStartToken,
             releaseEligible: false,
             requestedClaims,
@@ -2657,33 +2725,18 @@ export function createApiApp(options: ApiAppOptions = {}) {
     )
     .post(
       "/verification/sessions/:sessionId/providers/:providerId/start",
-      async ({ body, params, requestContext, set }) => {
-        const verifiedStart = verifyReusableProofStartToken(body.providerStartToken, sessionConfig.sessionSecret, now());
+      async ({ body, params, request, requestContext, set }) => {
+        const verifiedStart = verifyVerificationProviderStartToken(body.providerStartToken, sessionConfig.sessionSecret, now());
         const providerId = requireKnownVerificationProvider(params.providerId, "providerId", verificationProviderCatalog.ids());
         const providerDefinition = verificationProviderCatalog.require(providerId);
         const optionRuntime = getApiVerificationOptionRuntime(providerId);
-        const backUrl = requireAbsoluteRequestUrl(body.backUrl, "backUrl");
-        const finishUrl = requireAbsoluteRequestUrl(body.finishUrl, "finishUrl");
 
         if (verifiedStart.sessionId !== params.sessionId) {
-          throw new ApiRouteError(400, "validation_failed", "Reusable-proof start token does not match the requested sessionId.");
+          throw new ApiRouteError(400, "validation_failed", "Provider start token does not match the requested sessionId.");
         }
 
         if (verifiedStart.providerId !== providerId) {
-          throw new ApiRouteError(400, "validation_failed", "Reusable-proof start token does not match the requested providerId.");
-        }
-
-        if (providerDefinition.role !== "reusable_proof_backend") {
-          throw new ApiRouteError(400, "validation_failed", `providerId "${providerId}" is not a reusable-proof backend.`);
-        }
-
-        if (!optionRuntime.startReusableProof) {
-          throw new ApiRouteError(
-            503,
-            "dependency_unavailable",
-            `Reusable-proof start for "${providerId}" is not configured in this Humanify environment.`,
-            true,
-          );
+          throw new ApiRouteError(400, "validation_failed", "Provider start token does not match the requested providerId.");
         }
 
         const requestedClaims = requireKnownHumanifyClaims(
@@ -2691,6 +2744,90 @@ export function createApiApp(options: ApiAppOptions = {}) {
           "providerStartToken.requestedClaims",
           supportedHumanifyClaimIds,
         );
+
+        if (providerId === "discord") {
+          if (!betterAuthBridge || !discordVerificationAuthConfig) {
+            throw new ApiRouteError(
+              503,
+              "dependency_unavailable",
+              "Discord account verification is not configured in this Humanify environment.",
+              true,
+            );
+          }
+
+          const finishUrl = requireAbsoluteRequestUrl(body.finishUrl, "finishUrl");
+          if (!finishUrl) {
+            throw new ApiRouteError(400, "validation_failed", "finishUrl must be a valid absolute URL.");
+          }
+          const handoffUrl = new URL("/verification/providers/discord/handoff", request.url);
+          handoffUrl.searchParams.set("providerStartToken", body.providerStartToken);
+          handoffUrl.searchParams.set("redirectTo", finishUrl);
+          const flow = await betterAuthBridge.signInDiscord({
+            callbackURL: handoffUrl.toString(),
+            requestHeaders: request.headers,
+            scopes: discordVerificationAuthConfig.scopes,
+          });
+          const launchUrl = flow.headers.get("location");
+          if (!launchUrl) {
+            throw new ApiRouteError(
+              503,
+              "dependency_unavailable",
+              "Discord sign-in did not produce a provider redirect URL.",
+              true,
+            );
+          }
+
+          set.status = 202;
+          return buildEnvelope(requestContext.requestId, {
+            flow: {
+              providerId,
+              requestUri: launchUrl,
+            },
+            persistence: "provider_request_created",
+            providerBoundary: {
+              handoffKind: providerDefinition.integration.handoffKind,
+              launch: {
+                mode: "redirect",
+                providerId,
+                url: launchUrl,
+              },
+              nextStep: providerDefinition.integration.completionMode,
+              providerFlowConfigured: true,
+              providerServerEndpoint: providerDefinition.integration.serverEndpointPath,
+              providerStartEndpoint: buildReusableProofProviderStartEndpoint(verifiedStart.sessionId, providerId),
+              providerStartToken: body.providerStartToken,
+              releaseEligible: false,
+              requestedClaims,
+              requiredCapabilities: verifiedStart.requiredCapabilities,
+              selectedProvider: providerId,
+              serverVerificationNote: providerDefinition.integration.serverVerificationNote,
+              status: "pending_provider_verification",
+            },
+            session: {
+              challengeExpiresAt: new Date(verifiedStart.exp * 1_000).toISOString(),
+              challengeId: verifiedStart.challengeId,
+              guildId: verifiedStart.guildId,
+              releaseEligible: false,
+              requiredCapabilities: verifiedStart.requiredCapabilities,
+              sessionId: verifiedStart.sessionId,
+              source: "signed_provider_start_token",
+              state: "provider_pending",
+              userId: verifiedStart.userId,
+            },
+          });
+        }
+
+        if (providerDefinition.role !== "reusable_proof_backend" || !optionRuntime.startReusableProof) {
+          throw new ApiRouteError(
+            503,
+            "dependency_unavailable",
+            `Provider start for "${providerId}" is not configured in this Humanify environment.`,
+            true,
+          );
+        }
+
+        const backUrl = requireAbsoluteRequestUrl(body.backUrl, "backUrl");
+        const finishUrl = requireAbsoluteRequestUrl(body.finishUrl, "finishUrl");
         const runtimeResult = await optionRuntime.startReusableProof({
           backUrl,
           challengeId: verifiedStart.challengeId,
@@ -2731,6 +2868,44 @@ export function createApiApp(options: ApiAppOptions = {}) {
           backUrl: t.Optional(t.String({ minLength: 1 })),
           finishUrl: t.Optional(t.String({ minLength: 1 })),
           providerStartToken: t.String({ minLength: 1 }),
+        }),
+      },
+    )
+    .get(
+      "/verification/providers/discord/handoff",
+      async ({ query, request, set }) => {
+        const verifiedStart = verifyVerificationProviderStartToken(query.providerStartToken, sessionConfig.sessionSecret, now());
+        const redirectTo = requireAbsoluteRequestUrl(query.redirectTo, "redirectTo");
+        if (!redirectTo) {
+          throw new ApiRouteError(400, "validation_failed", "redirectTo must be a valid absolute URL.");
+        }
+
+        if (verifiedStart.providerId !== "discord") {
+          throw new ApiRouteError(400, "validation_failed", "Provider start token does not belong to the Discord verification flow.");
+        }
+
+        await reconcileDiscordVerificationResult({
+          headers: request.headers,
+          now,
+          requestedClaims: requireKnownHumanifyClaims(
+            verifiedStart.requestedClaims,
+            "providerStartToken.requestedClaims",
+            supportedHumanifyClaimIds,
+          ),
+          runtimeEnvironment: verificationOptionEnvironment,
+          sessionId: verifiedStart.sessionId,
+          subjectUserId: verifiedStart.userId,
+          verificationSessionsRepository,
+        });
+
+        set.status = 302;
+        set.headers.location = redirectTo;
+        return;
+      },
+      {
+        query: t.Object({
+          providerStartToken: t.String({ minLength: 1 }),
+          redirectTo: t.String({ minLength: 1 }),
         }),
       },
     )

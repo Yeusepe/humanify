@@ -140,6 +140,7 @@ Required redaction defaults:
 
 - authorization headers
 - cookies and session material
+- Better Auth session cookies, OAuth state cookies, and provider-session tokens
 - Discord OAuth codes and refresh/access tokens
 - provider webhook secrets and signatures
 - raw proof payloads, reusable credential bodies, and provider-issued document images
@@ -232,6 +233,8 @@ For the current verification spine, durable audit evidence means the following m
 
 | Flow | Required evidence |
 | --- | --- |
+| Discord Better Auth handoff accepted | request correlation (`requestId`, `traceId`), normalized Better Auth session summary (`auth session id`, `userId`, expiry), minimal Discord account-signal summary (`providerReferenceId`, account-created-at, connection-type count, verified-email flag, trust/risk scores, positive/negative reason codes), and the persisted `provider_account_verified` or `provider_account_insufficient` session status |
+| Discord Better Auth handoff rejected | request correlation, reject reason (`missing Better Auth session`, mismatched Discord account, expired provider-start token, or disabled provider), and no release-state transition |
 | Didit webhook accepted | request correlation (`requestId`, `traceId`), verified webhook receipt summary (`webhookType`, timestamp, workflow id, provider status), normalized result summary (`providerReferenceId`, satisfied claims, `faceVerificationPerformed`, `faceVerificationPassed`), and purge outcome (`attemptedAt`, provider delete outcome) |
 | Didit webhook rejected | request correlation, reject reason (`provider_callback_invalid`, missing `vendor_data`, mismatched provider session, or mismatched decision `vendorData`), and no canonical session mutation |
 | Privado proof verified | request correlation, provider session ref, proof receipt ref/hash, nullifier refs, trusted issuer scopes, satisfied claims, and the persisted `provider_proof_verified` session/artifact status |
@@ -240,6 +243,8 @@ For the current verification spine, durable audit evidence means the following m
 This evidence is intentionally receipt-oriented. It must not include raw webhook bodies, Didit decision arrays, JWZ values, full verifiable presentations, holder DIDs, or document imagery.
 
 Discord-specific rule: any HTTP interaction endpoint must validate the Discord signature and timestamp per the official interactions security docs before processing the body.
+
+Better Auth-specific rule: the OAuth callback and Humanify handoff boundary must treat Better Auth as the session authority for Discord sign-in, but Humanify remains the authority for verification-session mutation and trust scoring. Only the minimal account/session facts needed for audit, replay resistance, and claim evaluation may cross that boundary into durable verification state.
 
 ### 9.3 Service-to-service trust
 

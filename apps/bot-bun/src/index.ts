@@ -32,6 +32,7 @@ import {
   Client,
   Events,
   MessageFlags,
+  PermissionFlagsBits,
   RoleSelectMenuBuilder,
   StringSelectMenuBuilder,
   type ButtonInteraction,
@@ -203,14 +204,31 @@ export type BotSetupBundle = {
   title: string;
 };
 
+export type BotManagedDiscordResource = {
+  id: string;
+  kind: "channel" | "message" | "role";
+  ownedBy: "humanify";
+  purpose:
+    | "age_over_18_role"
+    | "age_over_21_role"
+    | "quarantine_role"
+    | "verification_channel"
+    | "verification_panel_message"
+    | "verified_human_role";
+};
+
 export type BotGuildChannelConfigReadResponse = {
   channelConfig: {
     auditLogChannelId?: string;
     guildId: string;
+    managedResources: BotManagedDiscordResource[];
     moderationLogChannelId?: string;
     moderatorAlertChannelId?: string;
     reviewChannelId?: string;
+    setupMode: "automatic" | "manual";
     source: "not_configured" | "persisted";
+    verificationChannelId?: string;
+    verificationPanelMessageId?: string;
   };
   persistence: "not_configured" | "persisted";
 };
@@ -218,9 +236,13 @@ export type BotGuildChannelConfigReadResponse = {
 export type BotGuildChannelConfigWriteBody = {
   actorUserId: string;
   auditLogChannelId?: string;
+  managedResources?: BotManagedDiscordResource[];
   moderationLogChannelId?: string;
   moderatorAlertChannelId: string;
   reviewChannelId?: string;
+  setupMode?: "automatic" | "manual";
+  verificationChannelId?: string;
+  verificationPanelMessageId?: string;
 };
 
 export type BotGuildChannelConfigWriteResponse = {
@@ -228,10 +250,14 @@ export type BotGuildChannelConfigWriteResponse = {
     auditLogChannelId?: string;
     createdAt: string;
     guildId: string;
+    managedResources: BotManagedDiscordResource[];
     moderationLogChannelId?: string;
     moderatorAlertChannelId: string;
     reviewChannelId?: string;
+    setupMode: "automatic" | "manual";
     updatedAt: string;
+    verificationChannelId?: string;
+    verificationPanelMessageId?: string;
   };
   persistence: "persisted";
   queueDelivery: "pending_outbox_publish";
@@ -935,15 +961,19 @@ async function updateMessageComponent(
   });
 }
 
-type SetupStep = "bundles" | "channels" | "confirm" | "face" | "grants" | "providers" | "roles";
+type SetupStep = "bundles" | "channels" | "confirm" | "face" | "grants" | "mode" | "providers" | "roles";
 
 type SetupFlowDraft = {
   actorUserId: string;
   channelConfig: {
     auditLogChannelId?: string;
+    managedResources: BotManagedDiscordResource[];
     moderationLogChannelId?: string;
     moderatorAlertChannelId?: string;
     reviewChannelId?: string;
+    setupMode: "automatic" | "manual";
+    verificationChannelId?: string;
+    verificationPanelMessageId?: string;
   };
   draftId: string;
   guildId: string;
@@ -970,7 +1000,15 @@ type SetupFlowStore = {
   readDraft(draftId: string): SetupFlowDraft | undefined;
 };
 
-const setupStepOrder: readonly SetupStep[] = ["channels", "roles", "grants", "providers", "bundles", "face", "confirm"];
+const manualSetupStepOrder: readonly SetupStep[] = ["mode", "channels", "roles", "grants", "providers", "bundles", "face", "confirm"];
+const automaticSetupStepOrder: readonly SetupStep[] = ["mode", "providers", "bundles", "face", "confirm"];
+const defaultAutomaticSetupChannelName = "prove-youre-human";
+const defaultManagedRoleNames = {
+  ageOver18: "18+",
+  ageOver21: "21+",
+  quarantine: "Quarantine",
+  verifiedHuman: "Verified Human",
+} as const;
 
 const setupProviderLabels: Record<string, { description: string; title: string }> = {
   didit: {
@@ -1029,7 +1067,7 @@ function createSetupFlowStore(): SetupFlowStore {
       const draft: SetupFlowDraft = {
         ...input,
         draftId: crypto.randomUUID(),
-        step: "channels",
+        step: "mode",
         updatedAt: Date.now(),
       };
       drafts.set(draft.draftId, draft);
@@ -1117,9 +1155,13 @@ function formatBundleList(draft: SetupFlowDraft, bundleIds: readonly string[]) {
 function ensureSetupDraftConsistency(draft: SetupFlowDraft) {
   draft.channelConfig = {
     auditLogChannelId: draft.channelConfig.auditLogChannelId,
+    managedResources: draft.channelConfig.managedResources.map((resource) => ({ ...resource })),
     moderationLogChannelId: draft.channelConfig.moderationLogChannelId,
     moderatorAlertChannelId: draft.channelConfig.moderatorAlertChannelId,
     reviewChannelId: draft.channelConfig.reviewChannelId,
+    setupMode: draft.channelConfig.setupMode === "automatic" ? "automatic" : "manual",
+    verificationChannelId: draft.channelConfig.verificationChannelId,
+    verificationPanelMessageId: draft.channelConfig.verificationPanelMessageId,
   };
   draft.verificationConfig.availableProviderIds = uniqueStrings(draft.verificationConfig.availableProviderIds);
   draft.verificationConfig.enabledProviderIds = uniqueStrings(draft.verificationConfig.enabledProviderIds).filter((providerId) =>
@@ -1161,23 +1203,37 @@ function ensureSetupDraftConsistency(draft: SetupFlowDraft) {
   draft.verificationConfig.suspiciousRoleIds = uniqueStrings(draft.verificationConfig.suspiciousRoleIds);
   draft.verificationConfig.trustedRoleIds = uniqueStrings(draft.verificationConfig.trustedRoleIds);
   draft.verificationConfig.roleGrantBindings = normalizeRoleGrantBindings(draft.verificationConfig.roleGrantBindings);
+
+  if (!getSetupStepOrder(draft).includes(draft.step)) {
+    draft.step = "mode";
+  }
 }
 
-function getSetupStepIndex(step: SetupStep) {
-  return setupStepOrder.indexOf(step);
+function getSetupStepOrder(draft: SetupFlowDraft) {
+  return draft.channelConfig.setupMode === "automatic" ? automaticSetupStepOrder : manualSetupStepOrder;
 }
 
-function getPreviousSetupStep(step: SetupStep): SetupStep {
-  const index = getSetupStepIndex(step);
-  return setupStepOrder[Math.max(index - 1, 0)]!;
+function getSetupStepIndex(draft: SetupFlowDraft, step: SetupStep) {
+  return getSetupStepOrder(draft).indexOf(step);
 }
 
-function getNextSetupStep(step: SetupStep): SetupStep {
-  const index = getSetupStepIndex(step);
-  return setupStepOrder[Math.min(index + 1, setupStepOrder.length - 1)]!;
+function getPreviousSetupStep(draft: SetupFlowDraft, step: SetupStep): SetupStep {
+  const steps = getSetupStepOrder(draft);
+  const index = getSetupStepIndex(draft, step);
+  return steps[Math.max(index - 1, 0)]!;
+}
+
+function getNextSetupStep(draft: SetupFlowDraft, step: SetupStep): SetupStep {
+  const steps = getSetupStepOrder(draft);
+  const index = getSetupStepIndex(draft, step);
+  return steps[Math.min(index + 1, steps.length - 1)]!;
 }
 
 function validateSetupStep(draft: SetupFlowDraft, step: SetupStep): string | undefined {
+  if (step === "mode") {
+    return undefined;
+  }
+
   if (step === "channels" && !draft.channelConfig.moderatorAlertChannelId) {
     return "Choose the main alert channel before moving on.";
   }
@@ -1191,7 +1247,10 @@ function validateSetupStep(draft: SetupFlowDraft, step: SetupStep): string | und
   }
 
   if (step === "confirm") {
-    return validateSetupStep(draft, "channels") ?? validateSetupStep(draft, "providers") ?? validateSetupStep(draft, "bundles");
+    return getSetupStepOrder(draft)
+      .filter((entry) => entry !== "confirm")
+      .map((entry) => validateSetupStep(draft, entry))
+      .find((entry) => Boolean(entry));
   }
 
   return undefined;
@@ -1199,15 +1258,19 @@ function validateSetupStep(draft: SetupFlowDraft, step: SetupStep): string | und
 
 function buildSetupSummaryLines(draft: SetupFlowDraft) {
   return [
+    `- Setup mode: ${draft.channelConfig.setupMode === "automatic" ? "Automatic provisioning" : "Manual selection"}`,
     `- Alert channel: ${formatChannel(draft.channelConfig.moderatorAlertChannelId)}`,
     `- Review channel: ${formatChannel(draft.channelConfig.reviewChannelId)}`,
     `- Audit log channel: ${formatChannel(draft.channelConfig.auditLogChannelId)}`,
     `- Moderation log channel: ${formatChannel(draft.channelConfig.moderationLogChannelId)}`,
+    `- Verification channel: ${formatChannel(draft.channelConfig.verificationChannelId)}`,
+    `- Verification panel message: ${draft.channelConfig.verificationPanelMessageId ? `Saved (${draft.channelConfig.verificationPanelMessageId})` : "Not set"}`,
     `- Trusted moderator roles: ${formatRoleList(draft.verificationConfig.trustedRoleIds)}`,
     `- Suspicious roles: ${formatRoleList(draft.verificationConfig.suspiciousRoleIds)}`,
     `- Verified human role: ${formatOptionalRole(getRoleGrantRoleId(draft.verificationConfig.roleGrantBindings, "verified_human"))}`,
     `- 18+ role: ${formatOptionalRole(getRoleGrantRoleId(draft.verificationConfig.roleGrantBindings, "age_over_18"))}`,
     `- 21+ role: ${formatOptionalRole(getRoleGrantRoleId(draft.verificationConfig.roleGrantBindings, "age_over_21"))}`,
+    `- Humanify-managed resources: ${draft.channelConfig.managedResources.length > 0 ? draft.channelConfig.managedResources.map((resource) => resource.purpose).join(", ") : "None tracked"}`,
     `- Enabled verification paths: ${formatProviderList(draft.verificationConfig.enabledProviderIds)}`,
     `- Default verification path: ${formatProviderTitle(draft.verificationConfig.defaultProviderId)}`,
     `- Proof bundles: ${formatBundleList(draft, draft.verificationConfig.requiredBundleIds)}`,
@@ -1216,8 +1279,9 @@ function buildSetupSummaryLines(draft: SetupFlowDraft) {
 }
 
 function buildSetupPageContent(draft: SetupFlowDraft, headline: string, details: string[]) {
+  const stepOrder = getSetupStepOrder(draft);
   return truncateMessageContent([
-    `Step ${getSetupStepIndex(draft.step) + 1} of ${setupStepOrder.length} — ${headline}`,
+    `Step ${getSetupStepIndex(draft, draft.step) + 1} of ${stepOrder.length} — ${headline}`,
     "",
     ...details,
     "",
@@ -1230,7 +1294,7 @@ function buildSetupPageContent(draft: SetupFlowDraft, headline: string, details:
 function createSetupNavigationRow(draft: SetupFlowDraft) {
   const backButton = new ButtonBuilder()
     .setCustomId(buildSetupFlowCustomId({ action: "back", draftId: draft.draftId, guildId: draft.guildId }))
-    .setDisabled(draft.step === "channels")
+    .setDisabled(draft.step === "mode")
     .setLabel("Back")
     .setStyle(ButtonStyle.Secondary);
   const cancelButton = new ButtonBuilder()
@@ -1254,6 +1318,38 @@ function renderSetupFlow(draft: SetupFlowDraft) {
   ensureSetupDraftConsistency(draft);
 
   const components: ActionRowBuilder<any>[] = [];
+
+  if (draft.step === "mode") {
+    const setupModeSelect = new StringSelectMenuBuilder()
+      .setCustomId(buildSetupFlowCustomId({ action: "setup_mode", draftId: draft.draftId, guildId: draft.guildId }))
+      .setMaxValues(1)
+      .setMinValues(1)
+      .setPlaceholder(truncateDiscordComponentText("Choose how Humanify should manage verification resources", 150))
+      .setOptions(
+        {
+          default: draft.channelConfig.setupMode === "manual",
+          description: truncateDiscordComponentText("Use your existing channels and roles."),
+          label: "Manual setup",
+          value: "manual",
+        },
+        {
+          default: draft.channelConfig.setupMode === "automatic",
+          description: truncateDiscordComponentText("Humanify creates and tracks the verification channel, panel, and release roles."),
+          label: "Automatic setup",
+          value: "automatic",
+        },
+      );
+
+    components.push(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(setupModeSelect));
+    components.push(createSetupNavigationRow(draft));
+
+    return {
+      components,
+      content: buildSetupPageContent(draft, "Choose setup mode", [
+        "Pick whether Humanify should use resources you select or create and track its own verification channel, panel, and release roles.",
+      ]),
+    };
+  }
 
   if (draft.step === "channels") {
     const channelActions: Array<{
@@ -1497,6 +1593,265 @@ function renderSetupFlow(draft: SetupFlowDraft) {
       "Review the setup choices below. When you click Save, Humanify writes the real guild configuration through the API.",
     ]),
   };
+}
+
+function findManagedResource(
+  resources: readonly BotManagedDiscordResource[],
+  purpose: BotManagedDiscordResource["purpose"],
+) {
+  return resources.find((resource) => resource.purpose === purpose);
+}
+
+function upsertManagedResource(
+  resources: readonly BotManagedDiscordResource[],
+  nextResource: BotManagedDiscordResource,
+) {
+  return [
+    ...resources.filter((resource) => resource.purpose !== nextResource.purpose),
+    nextResource,
+  ];
+}
+
+function createVerificationPanelComponents(guildId: string, verificationConfig: BotGuildVerificationConfig) {
+  return createHumanifyMessagePayload({
+    actionRows: [createVerificationPanelRow(guildId)],
+    sections: [{
+      title: "Release roles after verification",
+      lines: [summarizeRoleGrantBindings(verificationConfig.roleGrantBindings)],
+    }],
+    summary: "Click the button below to start this server's current verification flow.",
+    title: "Humanify verification",
+    tone: "info",
+  }).components;
+}
+
+async function ensureAutomaticProvisioningPermissions(interaction: {
+  guild: ChatInputCommandInteraction["guild"] | ButtonInteraction["guild"] | ChannelSelectMenuInteraction["guild"] | RoleSelectMenuInteraction["guild"] | StringSelectMenuInteraction["guild"];
+}) {
+  const botMember = interaction.guild?.members.me;
+  if (!interaction.guild || !botMember) {
+    throw new Error("Humanify could not resolve the bot's guild membership, so automatic setup cannot continue.");
+  }
+
+  if (!botMember.permissions.has(PermissionFlagsBits.ManageChannels)) {
+    throw new Error("Humanify needs the Manage Channels permission before it can create the verification channel automatically.");
+  }
+
+  if (!botMember.permissions.has(PermissionFlagsBits.ManageRoles)) {
+    throw new Error("Humanify needs the Manage Roles permission before it can create the verification roles automatically.");
+  }
+
+  return botMember;
+}
+
+async function ensureManagedVerificationChannel(input: {
+  draft: SetupFlowDraft;
+  guild: NonNullable<ChatInputCommandInteraction["guild"]>;
+}) {
+  const existingRef = findManagedResource(input.draft.channelConfig.managedResources, "verification_channel");
+  if (existingRef) {
+    const existingChannel = await input.guild.channels.fetch(existingRef.id);
+    if (existingChannel?.isTextBased()) {
+      return existingChannel;
+    }
+  }
+
+  const conflictingChannel = input.guild.channels.cache.find((channel) =>
+    channel.name === defaultAutomaticSetupChannelName && channel.id !== existingRef?.id
+  );
+  if (conflictingChannel) {
+    throw new Error(
+      `Automatic setup cannot claim #${defaultAutomaticSetupChannelName} because a channel with that name already exists. Rename it or switch to manual setup.`,
+    );
+  }
+
+  return input.guild.channels.create({
+    name: defaultAutomaticSetupChannelName,
+    reason: "Humanify automatic setup created the verification channel.",
+    type: ChannelType.GuildText,
+  });
+}
+
+async function ensureManagedRole(input: {
+  botHighestRoleId: string;
+  draft: SetupFlowDraft;
+  guild: NonNullable<ChatInputCommandInteraction["guild"]>;
+  name: string;
+  purpose: Extract<
+    BotManagedDiscordResource["purpose"],
+    "age_over_18_role" | "age_over_21_role" | "quarantine_role" | "verified_human_role"
+  >;
+}) {
+  const existingRef = findManagedResource(input.draft.channelConfig.managedResources, input.purpose);
+  if (existingRef) {
+    const existingRole = await input.guild.roles.fetch(existingRef.id);
+    if (existingRole) {
+      if (input.guild.roles.comparePositions(input.botHighestRoleId, existingRole.id) <= 0) {
+        throw new Error(
+          `Automatic setup found ${existingRole.name}, but the bot can no longer manage it because it sits at or above the bot's highest role.`,
+        );
+      }
+      return existingRole;
+    }
+  }
+
+  return input.guild.roles.create({
+    name: input.name,
+    reason: `Humanify automatic setup created the ${input.name} role.`,
+  });
+}
+
+async function upsertVerificationPanelMessage(input: {
+  channel: {
+    id: string;
+    messages?: {
+      fetch(messageId: string): Promise<{
+        edit(payload: any): Promise<unknown>;
+        id: string;
+      }>;
+    };
+    send(payload: any): Promise<{ id: string }>;
+  };
+  draft: SetupFlowDraft;
+  guildId: string;
+  verificationConfig: BotGuildVerificationConfig;
+}) {
+  const existingMessageId = input.draft.channelConfig.verificationPanelMessageId;
+  if (existingMessageId && input.channel.messages) {
+    try {
+      const existingMessage = await input.channel.messages.fetch(existingMessageId);
+      await existingMessage.edit({
+        components: createVerificationPanelComponents(input.guildId, input.verificationConfig),
+      });
+      return existingMessage;
+    } catch (error) {
+      if (!isDiscordMissingMessageError(error)) {
+        throw error;
+      }
+    }
+  }
+
+  return input.channel.send({
+    components: createVerificationPanelComponents(input.guildId, input.verificationConfig),
+    flags: MessageFlags.IsComponentsV2,
+  });
+}
+
+async function provisionAutomaticSetupResources(input: {
+  draft: SetupFlowDraft;
+  interaction: ButtonInteraction | ChannelSelectMenuInteraction | RoleSelectMenuInteraction | StringSelectMenuInteraction;
+}) {
+  const botMember = await ensureAutomaticProvisioningPermissions(input.interaction);
+  const guild = input.interaction.guild;
+  if (!guild) {
+    throw new Error("Humanify lost the guild context before automatic setup could run.");
+  }
+
+  const verificationChannel = await ensureManagedVerificationChannel({
+    draft: input.draft,
+    guild,
+  });
+  const verifiedHumanRole = await ensureManagedRole({
+    botHighestRoleId: botMember.roles.highest.id,
+    draft: input.draft,
+    guild,
+    name: defaultManagedRoleNames.verifiedHuman,
+    purpose: "verified_human_role",
+  });
+  const quarantineRole = await ensureManagedRole({
+    botHighestRoleId: botMember.roles.highest.id,
+    draft: input.draft,
+    guild,
+    name: defaultManagedRoleNames.quarantine,
+    purpose: "quarantine_role",
+  });
+  const age18Role = await ensureManagedRole({
+    botHighestRoleId: botMember.roles.highest.id,
+    draft: input.draft,
+    guild,
+    name: defaultManagedRoleNames.ageOver18,
+    purpose: "age_over_18_role",
+  });
+  const age21Role = await ensureManagedRole({
+    botHighestRoleId: botMember.roles.highest.id,
+    draft: input.draft,
+    guild,
+    name: defaultManagedRoleNames.ageOver21,
+    purpose: "age_over_21_role",
+  });
+
+  input.draft.verificationConfig.suspiciousRoleIds = [quarantineRole.id];
+  input.draft.verificationConfig.roleGrantBindings = normalizeRoleGrantBindings([
+    { roleId: verifiedHumanRole.id, trigger: "verified_human" },
+    { roleId: age18Role.id, trigger: "age_over_18" },
+    { roleId: age21Role.id, trigger: "age_over_21" },
+  ]);
+  input.draft.channelConfig.verificationChannelId = verificationChannel.id;
+  input.draft.channelConfig.moderatorAlertChannelId ??= verificationChannel.id;
+  input.draft.channelConfig.managedResources = [
+    {
+      id: verificationChannel.id,
+      kind: "channel",
+      ownedBy: "humanify",
+      purpose: "verification_channel",
+    },
+    {
+      id: verifiedHumanRole.id,
+      kind: "role",
+      ownedBy: "humanify",
+      purpose: "verified_human_role",
+    },
+    {
+      id: quarantineRole.id,
+      kind: "role",
+      ownedBy: "humanify",
+      purpose: "quarantine_role",
+    },
+    {
+      id: age18Role.id,
+      kind: "role",
+      ownedBy: "humanify",
+      purpose: "age_over_18_role",
+    },
+    {
+      id: age21Role.id,
+      kind: "role",
+      ownedBy: "humanify",
+      purpose: "age_over_21_role",
+    },
+  ];
+
+  const panelMessage = await upsertVerificationPanelMessage({
+    channel: verificationChannel,
+    draft: input.draft,
+    guildId: guild.id,
+    verificationConfig: {
+      availableBundles: input.draft.verificationConfig.availableBundles.map((bundle) => ({ ...bundle })),
+      availableProviderIds: [...input.draft.verificationConfig.availableProviderIds],
+      defaultProviderId: input.draft.verificationConfig.defaultProviderId,
+      defaultReusableProofBackendId: input.draft.verificationConfig.defaultReusableProofBackendId,
+      enabledProviderIds: [...input.draft.verificationConfig.enabledProviderIds],
+      faceVerificationRequired: input.draft.verificationConfig.faceVerificationRequired,
+      fallbackRoles: [...input.draft.verificationConfig.trustedRoleIds],
+      guildId: guild.id,
+      roleGrantBindings: [...input.draft.verificationConfig.roleGrantBindings],
+      requiredBundleIds: [...input.draft.verificationConfig.requiredBundleIds],
+      requiredBundles: input.draft.verificationConfig.requiredBundleIds
+        .map((bundleId) => findBundleDefinition(input.draft, bundleId))
+        .filter((bundle): bundle is BotSetupBundle => Boolean(bundle))
+        .map((bundle) => ({ ...bundle, claims: [...bundle.claims], futureExtensions: [...bundle.futureExtensions], operatorStorageGuarantees: [...bundle.operatorStorageGuarantees] })),
+      source: "persisted",
+      suspiciousRoleIds: [...input.draft.verificationConfig.suspiciousRoleIds],
+      trustedRoleIds: [...input.draft.verificationConfig.trustedRoleIds],
+    },
+  });
+  input.draft.channelConfig.verificationPanelMessageId = panelMessage.id;
+  input.draft.channelConfig.managedResources = upsertManagedResource(input.draft.channelConfig.managedResources, {
+    id: panelMessage.id,
+    kind: "message",
+    ownedBy: "humanify",
+    purpose: "verification_panel_message",
+  });
 }
 
 function sliceMessagePreview(content: string) {
@@ -2142,9 +2497,15 @@ async function startSetupFlow(
     actorUserId: interaction.user.id,
     channelConfig: {
       auditLogChannelId: channels.channelConfig.auditLogChannelId,
+      managedResources: channels.channelConfig.managedResources.map((resource) => ({ ...resource })),
       moderationLogChannelId: channels.channelConfig.moderationLogChannelId,
-      moderatorAlertChannelId: channels.channelConfig.moderatorAlertChannelId,
+      moderatorAlertChannelId:
+        channels.channelConfig.moderatorAlertChannelId
+        ?? (interaction.channel && "id" in interaction.channel ? interaction.channel.id : undefined),
       reviewChannelId: channels.channelConfig.reviewChannelId,
+      setupMode: channels.channelConfig.setupMode,
+      verificationChannelId: channels.channelConfig.verificationChannelId,
+      verificationPanelMessageId: channels.channelConfig.verificationPanelMessageId,
     },
     guildId: interaction.guildId!,
     verificationConfig: {
@@ -2170,10 +2531,7 @@ async function startSetupFlow(
 }
 
 async function saveSetupFlow(
-  interaction: {
-    guildId: string | null;
-    update(options: InteractionUpdateOptions): Promise<unknown>;
-  },
+  interaction: ButtonInteraction | ChannelSelectMenuInteraction | RoleSelectMenuInteraction | StringSelectMenuInteraction,
   apiClient: BotApiClient,
   draft: SetupFlowDraft,
   requestTelemetry: RequestTelemetryContext,
@@ -2184,6 +2542,23 @@ async function saveSetupFlow(
     draft.notice = validationError;
     await updateMessageComponent(interaction, renderSetupFlow(draft));
     return;
+  }
+
+  if (draft.channelConfig.setupMode === "automatic") {
+    try {
+      await provisionAutomaticSetupResources({
+        draft,
+        interaction,
+      });
+    } catch (error) {
+      draft.notice = `Humanify could not finish automatic setup: ${error instanceof Error ? error.message : "unknown error"}`;
+      await updateMessageComponent(interaction, renderSetupFlow(draft));
+      return;
+    }
+  } else {
+    draft.channelConfig.managedResources = [];
+    draft.channelConfig.verificationChannelId = undefined;
+    draft.channelConfig.verificationPanelMessageId = undefined;
   }
 
   try {
@@ -2208,9 +2583,13 @@ async function saveSetupFlow(
     await apiClient.updateGuildChannelConfig(interaction.guildId!, {
       actorUserId: draft.actorUserId,
       auditLogChannelId: draft.channelConfig.auditLogChannelId,
+      managedResources: draft.channelConfig.managedResources,
       moderationLogChannelId: draft.channelConfig.moderationLogChannelId,
       moderatorAlertChannelId: draft.channelConfig.moderatorAlertChannelId!,
       reviewChannelId: draft.channelConfig.reviewChannelId,
+      setupMode: draft.channelConfig.setupMode,
+      verificationChannelId: draft.channelConfig.verificationChannelId,
+      verificationPanelMessageId: draft.channelConfig.verificationPanelMessageId,
     }, requestTelemetry);
   } catch (error) {
     draft.notice = `Humanify saved the verification settings, but the channel settings still need attention: ${error instanceof Error ? error.message : "unknown error"}`;
@@ -2274,6 +2653,15 @@ async function handleSetupFlowComponent(
     case "channel_alert":
       draft.channelConfig.moderatorAlertChannelId = interaction.isChannelSelectMenu() ? interaction.values[0] : undefined;
       break;
+    case "setup_mode":
+      draft.channelConfig.setupMode = interaction.isStringSelectMenu() && interaction.values[0] === "automatic"
+        ? "automatic"
+        : "manual";
+      if (draft.channelConfig.setupMode === "automatic" && !draft.channelConfig.moderatorAlertChannelId) {
+        draft.channelConfig.moderatorAlertChannelId =
+          interaction.channel && "id" in interaction.channel ? interaction.channel.id : draft.channelConfig.moderatorAlertChannelId;
+      }
+      break;
     case "channel_review":
       draft.channelConfig.reviewChannelId = interaction.isChannelSelectMenu() ? interaction.values[0] : undefined;
       break;
@@ -2327,14 +2715,14 @@ async function handleSetupFlowComponent(
         : draft.verificationConfig.faceVerificationRequired;
       break;
     case "back":
-      draft.step = getPreviousSetupStep(draft.step);
+      draft.step = getPreviousSetupStep(draft, draft.step);
       break;
     case "next": {
       const validationError = validateSetupStep(draft, draft.step);
       if (validationError) {
         draft.notice = validationError;
       } else {
-        draft.step = getNextSetupStep(draft.step);
+        draft.step = getNextSetupStep(draft, draft.step);
       }
       break;
     }

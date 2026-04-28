@@ -591,6 +591,39 @@ test("startDiditVerification launches the SDK and reports completed, cancelled, 
   ]);
 });
 
+test("startVerificationOptionLaunch redirects the browser for Discord account verification", async () => {
+  const assignedUrls: string[] = [];
+  const originalWindow = globalThis.window;
+  Object.assign(globalThis, {
+    window: {
+      location: {
+        assign(url: string) {
+          assignedUrls.push(url);
+        },
+      },
+    },
+  });
+
+  await startVerificationOptionLaunch({
+    launch: {
+      mode: "redirect",
+      providerId: "discord",
+      url: "https://api.humanify.test/verification/sessions/session_123/providers/discord/start?providerStartToken=signed.token",
+    },
+    onBrowserResult() {
+      throw new Error("Discord redirect launch should navigate away instead of reporting an in-page completion result.");
+    },
+  });
+
+  Object.assign(globalThis, {
+    window: originalWindow,
+  });
+
+  expect(assignedUrls).toEqual([
+    "https://api.humanify.test/verification/sessions/session_123/providers/discord/start?providerStartToken=signed.token",
+  ]);
+});
+
 test("buildVerificationChecklist keeps provider verification and release explicitly blocked", () => {
   expect(
     buildVerificationChecklist({
@@ -609,10 +642,10 @@ test("buildVerificationChecklist keeps provider verification and release explici
 test("provider options rank Self first and keep Didit as the process-and-purge fallback", () => {
   const providers = getVerificationProviderOptions();
 
-  expect(providers.map((provider) => provider.id)).toEqual(["didit", "privado", "self", "world_id"]);
+  expect(providers.map((provider) => provider.id)).toEqual(["didit", "discord", "privado", "self", "world_id"]);
   expect(providers[0]?.role).toBe("capture_provider");
   expect(providers[0]?.deletionPolicy).toContain("DELETE /v3/session/{session_id}/");
-  expect(providers[1]?.id).toBe("privado");
+  expect(providers[1]?.id).toBe("discord");
   expect(providers[1]?.integration.handoffKind).toBe("server_verified_proof");
 });
 
@@ -667,13 +700,15 @@ test("claim bundle options expose consumer-facing choices for what to prove", ()
   const bundles = getHumanifyIdClaimBundles();
 
   expect(bundles.map((bundle) => bundle.title)).toEqual([
+    "Discord account trust",
     "Only prove age over 18",
     "Only prove nationality",
     "Prove age + nationality",
   ]);
-  expect(bundles[0]?.claims).toEqual(["age_over_18"]);
-  expect(bundles[1]?.claims).toEqual(["nationality"]);
-  expect(bundles[2]?.claims).toEqual(["age_over_18", "nationality"]);
+  expect(bundles[0]?.claims).toEqual(["discord_account_trust"]);
+  expect(bundles[1]?.claims).toEqual(["age_over_18"]);
+  expect(bundles[2]?.claims).toEqual(["nationality"]);
+  expect(bundles[3]?.claims).toEqual(["age_over_18", "nationality"]);
 });
 
 test("provider compatibility is computed from shared claim support", () => {
@@ -696,11 +731,11 @@ test("default Humanify ID bundle stores predicates and nullifier receipts instea
 test("verification route separates first-time capture from reusable proofs with privacy copy", async () => {
   const markup = await renderRoute("/verify?sessionId=session_123&token=signed.token");
 
-  expect(markup).toContain("First-time capture options");
-  expect(markup).toContain("Reusable proof options");
-  expect(markup).toContain("What Humanify learns");
-  expect(markup).toContain("What Humanify does not learn");
-  expect(markup).toContain("Face verification");
+  expect(markup).toContain("Prove you&#x27;re human");
+  expect(markup).toContain("First-time capture");
+  expect(markup).toContain("Reusable proof");
+  expect(markup).toContain("What Humanify keeps");
+  expect(markup).toContain("Pick a verification method");
 });
 
 test("verifier main files stay option-driven instead of hard-coding provider brands", () => {

@@ -48,7 +48,7 @@ export type VerifierChallengePayload = {
   userId: string;
 };
 
-export type ReusableProofStartPayload = {
+export type VerificationProviderStartPayload = {
   challengeId: string;
   guildId: string;
   providerId: string;
@@ -58,11 +58,18 @@ export type ReusableProofStartPayload = {
   userId: string;
 };
 
-export type ReusableProofSessionPayload = ReusableProofStartPayload & {
+export type ReusableProofStartPayload = VerificationProviderStartPayload;
+
+export type ReusableProofSessionPayload = VerificationProviderStartPayload & {
   providerSessionId: string;
 };
 
-type SignedTokenType = "discord-oauth-state" | "verifier-challenge" | "reusable-proof-start" | "reusable-proof-session";
+type SignedTokenType =
+  | "discord-oauth-state"
+  | "verifier-challenge"
+  | "verification-provider-start"
+  | "reusable-proof-start"
+  | "reusable-proof-session";
 
 type SignedTokenPayload = Record<string, unknown> & {
   exp: number;
@@ -174,17 +181,39 @@ export function verifyVerifierChallengeToken(token: string, secret: string, now 
   return verifySignedToken<VerifierChallengePayload & SignedTokenPayload>(token, secret, "verifier-challenge", now);
 }
 
+export function issueVerificationProviderStartToken(
+  payload: VerificationProviderStartPayload,
+  secret: string,
+  ttlSeconds = 900,
+  now = Date.now(),
+): string {
+  return issueSignedToken("verification-provider-start", payload, secret, ttlSeconds, now);
+}
+
+export function verifyVerificationProviderStartToken(token: string, secret: string, now = Date.now()) {
+  return verifySignedToken<VerificationProviderStartPayload & SignedTokenPayload>(
+    token,
+    secret,
+    "verification-provider-start",
+    now,
+  );
+}
+
 export function issueReusableProofStartToken(
   payload: ReusableProofStartPayload,
   secret: string,
   ttlSeconds = 900,
   now = Date.now(),
 ): string {
-  return issueSignedToken("reusable-proof-start", payload, secret, ttlSeconds, now);
+  return issueVerificationProviderStartToken(payload, secret, ttlSeconds, now);
 }
 
 export function verifyReusableProofStartToken(token: string, secret: string, now = Date.now()) {
-  return verifySignedToken<ReusableProofStartPayload & SignedTokenPayload>(token, secret, "reusable-proof-start", now);
+  try {
+    return verifyVerificationProviderStartToken(token, secret, now);
+  } catch {
+    return verifySignedToken<ReusableProofStartPayload & SignedTokenPayload>(token, secret, "reusable-proof-start", now);
+  }
 }
 
 export function issueReusableProofSessionToken(

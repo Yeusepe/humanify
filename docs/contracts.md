@@ -110,6 +110,8 @@ Examples:
 
 - `account_age_lt_24h`
 - `first_message_link`
+- `flag_spammer`
+- `guild_member_did_rejoin`
 - `mention_burst`
 - `profile_test_handle_pattern`
 - `similar_to_confirmed_scam_template`
@@ -125,6 +127,8 @@ Examples:
 | `profile` | avatar, banner, username, profile hygiene | `profile_missing_avatar`, `profile_missing_banner`, `profile_test_handle_pattern` |
 | `message` | message content and first-contact behavior | `first_message_link`, `duplicate_message_pattern` |
 | `behavior` | spam rate, mention burst, join spike, timing anomalies | `mention_burst`, `joins_during_raid_spike` |
+| `flag` | Discord account-level flags, badges, and abuse-state enrichments | `flag_spammer`, `flag_verified_email`, `flag_active_developer` |
+| `guild_member` | guild-scoped Discord member flags and onboarding or rejoin state | `guild_member_did_rejoin`, `guild_member_completed_onboarding` |
 | `invite` | invite source and invite reputation | `invite_used_by_suspicious_accounts` |
 | `domain` | URL, domain reputation, lookalike detection | `malicious_domain_pattern`, `lookalike_domain` |
 | `report` | trusted report and moderator report signals | `confirmed_cross_server_spam_report` |
@@ -227,6 +231,56 @@ Notes:
 - Learned signals may influence score, confidence, and reasons.
 - Learned signals may not trigger raw Discord enforcement on their own.
 - A high false-positive count should reduce or nullify effective weight in policy-aware scoring.
+
+### 7.4 `VerificationSession` summary contract
+
+Verification sessions are the canonical Bun-owned bridge between Discord entrypoints, provider evidence, unified scoring, and release-to-role policy.
+
+```ts
+type VerificationSessionSummary = {
+  sessionId: string;
+  challengeId: string;
+  guildId: string;
+  userId: string;
+  state: "challenge_issued" | "provider_pending" | "passed" | "failed" | "expired" | "cancelled" | "released";
+  providerStatus: {
+    selectedProvider?: string;
+    status?: string;
+    requestedClaims?: string[];
+    launch?: {
+      mode: "didit_sdk" | "redirect";
+      providerId: string;
+      url: string;
+    };
+  };
+  resultSummary?: {
+    providerReferenceId?: string;
+    providerStatus?: string;
+    requestedClaims?: string[];
+    satisfiedClaims?: string[];
+    trustScore?: number;
+    negativeReasonCodes?: string[];
+    positiveReasonCodes?: string[];
+    verificationDecision?: {
+      action: "release_now" | "require_stronger_evidence" | "keep_quarantined" | "escalate_review" | "wait_for_provider";
+      releaseEligible: boolean;
+      reviewRequired: boolean;
+      matchedClaims: string[];
+      missingClaims: string[];
+      message: string;
+    };
+  };
+};
+```
+
+Rules:
+
+- The verification session row is the only canonical source for provider handoff state. Browser redirects, wallet openings, and provider-side completion screens are never authoritative on their own.
+- `providerStatus.launch` may describe a Bun-approved browser handoff such as a Didit SDK launch or a Discord sign-in redirect, but it must not include raw OAuth codes, cookies, access tokens, reusable credentials, or document payloads.
+- The shared claim catalog now includes `discord_account_trust`, represented by the bundle `humanify_discord_account_trust_v1`. Discord account evidence must normalize into this claim instead of being mapped onto document, nationality, or age semantics it does not prove.
+- Discord verification result summaries are receipt-oriented. They may store minimal account-signal facts such as account creation time, connection-type count, verified-email presence, trust/risk scores, and stable reason codes, but they must not store raw provider access tokens, refresh tokens, full connection payloads, or copied Discord profile blobs.
+- `satisfiedClaims` is Bun-authored and policy-facing. Providers may contribute evidence, but only Bun decides whether the normalized session result satisfies a claim bundle strongly enough to pass release policy.
+- `verificationDecision` is the normalized Bun-side outcome of that evidence review. It must answer whether Humanify should release immediately, keep the member gated, require stronger proof, or escalate for review without relying on browser-only provider status.
 
 ## 8. Policy inputs
 

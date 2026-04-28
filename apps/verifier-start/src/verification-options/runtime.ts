@@ -14,7 +14,7 @@
 
 import type { VerificationProviderDefinition } from "@humanify/verification-providers";
 
-export type VerificationOptionLaunch = {
+type DiditVerificationOptionLaunch = {
   mode: "didit_sdk";
   packageName: "@didit-protocol/sdk-web";
   providerId: "didit";
@@ -22,6 +22,14 @@ export type VerificationOptionLaunch = {
   providerStatus: string;
   url: string;
 };
+
+type RedirectVerificationOptionLaunch = {
+  mode: "redirect";
+  providerId: "discord";
+  url: string;
+};
+
+export type VerificationOptionLaunch = DiditVerificationOptionLaunch | RedirectVerificationOptionLaunch;
 
 export type VerificationOptionBrowserResult = {
   kind: "cancelled" | "completed" | "failed";
@@ -152,6 +160,45 @@ const diditBrowserLaunchRuntime: BrowserLaunchRuntime = {
   },
 };
 
+const discordBrowserLaunchRuntime: BrowserLaunchRuntime = {
+  challengeAcceptedMessage(provider) {
+    return `Challenge accepted. Humanify is ready to send you through ${provider.title} sign-in so it can score your Discord account inside this verification session.`;
+  },
+  errorMessage(provider) {
+    return `${provider.title} sign-in could not be opened.`;
+  },
+  getLaunch(boundary) {
+    return boundary.launch?.mode === "redirect"
+      && boundary.launch.providerId === "discord"
+      && typeof boundary.launch.url === "string"
+      ? boundary.launch
+      : null;
+  },
+  intro(provider) {
+    return `${provider.title} sign-in lets Humanify collect the Discord account signals this server chose to trust, then return you here with a server-side decision.`;
+  },
+  launchButtonLabel(provider, state) {
+    return state === "launching" ? `Opening ${provider.title}…` : `Continue with ${provider.title}`;
+  },
+  pendingNote() {
+    return "You will leave this page briefly, then Humanify will bring you back here once Discord sign-in finishes.";
+  },
+  async start(launch) {
+    const maybeWindow = globalThis as {
+      window?: {
+        location: {
+          assign(url: string): void;
+        };
+      };
+    };
+    if (!maybeWindow.window) {
+      throw new Error("Browser redirect launch is unavailable outside a real browser window.");
+    }
+
+    maybeWindow.window.location.assign(launch.url);
+  },
+};
+
 const privadoReusableProofRuntime: ReusableProofRuntime = {
   createRequestLabel(provider, hasExistingRequest) {
     return hasExistingRequest ? `Create a new ${provider.title} proof request` : `Create ${provider.title} proof request`;
@@ -181,6 +228,9 @@ const privadoReusableProofRuntime: ReusableProofRuntime = {
 };
 
 const optionRouteRuntimes: Partial<Record<VerificationProviderDefinition["id"], VerificationOptionRouteRuntime>> = {
+  discord: {
+    browserLaunch: discordBrowserLaunchRuntime,
+  },
   didit: {
     browserLaunch: diditBrowserLaunchRuntime,
   },
